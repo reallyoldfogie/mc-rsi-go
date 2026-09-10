@@ -20,9 +20,12 @@ rationale, current blockers, and planned scope.
 
 Mostly planning. Two pieces that only need `cRL-go`'s stable, tagged API exist:
 [`pkg/lineage`](pkg/lineage) (Teacher/Student generation/checkpoint bookkeeping) and dependency
-wiring (`go.mod` pins `cRL-go@v0.6.0` — a snapshot, not final, since cRL-go is under active
-development). mc-agent's live `rl.Environment` adapter (`rlenv`) is now real and merged on
-mc-agent's side, but mc-agent has no git remote or tags yet, so this repo has no clean way to
-depend on it, and `rlenv` itself still only knows one task. There is no leapfrog loop, task
-generator, or mc-agent integration here yet — see the roadmap document for the full picture,
+wiring (`go.mod` pins `cRL-go@v0.6.0` — a stale snapshot as of 2026-09-10; cRL-go is tagged through
+`v0.10.2`, re-bump before relying on anything past `v0.6.0`). mc-agent's live `rl.Environment`
+adapter (`rlenv`) is real and merged on mc-agent's side, and now knows three task types
+(goto/mine/craft, not one), but mc-agent still has no version tags (it does now have a git remote),
+so this repo still has no clean pinned way to depend on it. Each `rlenv.Environment` also still
+fixes its task at construction — no per-episode task switching yet, so there's nothing for a
+curriculum to vary within one run (see `docs/plans/01-curriculum-generator.md`). There is no
+leapfrog loop or mc-agent integration here yet — see the roadmap document for the full picture,
 including two mc-agent concurrency bugs found along the way.
