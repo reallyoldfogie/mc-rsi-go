@@ -136,6 +136,24 @@ func paramsPath(dir string, generation int) string {
 // Save persists params as an actorcritic checkpoint and rec as its
 // accompanying lineage record, both under dir, named after rec's
 // generation number. It fails if rec doesn't validate.
+//
+// Crash safety (docs/plans/04-training-entrypoint-and-observability.md's
+// "Done when": a process killed mid-write must not corrupt dir): the
+// params file is written first, unconditionally before the record file —
+// so a crash between the two can only ever leave a harmless orphaned
+// params file with no record ever pointing at it, never a record whose
+// params file is missing or truncated. The record file itself is written
+// atomically (writeRecordAtomically: a temp file plus os.Rename, not an
+// in-place truncate) — Latest/Load key off this exact file's existence
+// and contents to decide whether a generation exists at all, so a
+// process killed while writing it must only ever be observable as either
+// fully present (rename completed) or fully absent (killed before
+// rename), never partially written. The underlying
+// actorcritic.SaveFile's own params-file write is not itself atomic
+// (writes in place, upstream in cRL-go) — a crash mid-params-write can
+// still leave a truncated params file on disk, but since that leaves no
+// corresponding record file, Latest/Load never observes or tries to load
+// it; it's inert, not corruption a caller can trip over.
 func Save(dir string, params *actorcritic.Params, rec Record) error {
 	if err := rec.Validate(); err != nil {
 		return err
@@ -145,18 +163,32 @@ func Save(dir string, params *actorcritic.Params, rec Record) error {
 		return fmt.Errorf("lineage: saving generation %d: %w", rec.Generation, err)
 	}
 
-	file, err := os.Create(recordPath(dir, rec.Generation))
-	if err != nil {
-		return fmt.Errorf("lineage: saving generation %d record: %w", rec.Generation, err)
-	}
-	if err := json.NewEncoder(file).Encode(rec); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("lineage: saving generation %d record: %w", rec.Generation, err)
-	}
-	if err := file.Close(); err != nil {
+	if err := writeRecordAtomically(recordPath(dir, rec.Generation), rec); err != nil {
 		return fmt.Errorf("lineage: saving generation %d record: %w", rec.Generation, err)
 	}
 	return nil
+}
+
+// writeRecordAtomically writes rec as JSON to path via a temp file in the
+// same directory plus os.Rename, so path itself only ever changes in one
+// atomic filesystem step — see Save's own doc comment for why this
+// matters.
+func writeRecordAtomically(path string, rec Record) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below succeeds; cleans up the temp file on any earlier error return.
+
+	if err := json.NewEncoder(tmp).Encode(rec); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // Load reads back the actorcritic checkpoint and lineage record

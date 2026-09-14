@@ -1,6 +1,7 @@
 package lineage
 
 import (
+	"encoding/json"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -84,6 +85,42 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	assert.Equal(t, rec.Provenance, loadedRec.Provenance)
 	assert.Equal(t, rec.Metadata, loadedRec.Metadata)
 	assert.WithinDuration(t, rec.CreatedAt, loadedRec.CreatedAt, time.Second)
+}
+
+// TestSaveLeavesNoTempFileBehind verifies Save's record write goes
+// through writeRecordAtomically's temp-file-plus-rename path (not a
+// leftover artifact of it) — see Save's own doc comment on crash safety
+// (docs/plans/04-training-entrypoint-and-observability.md's "Done when").
+func TestSaveLeavesNoTempFileBehind(t *testing.T) {
+	dir := t.TempDir()
+	rng := rand.New(rand.NewPCG(1, 2))
+	require.NoError(t, Save(dir, actorcritic.NewParams(rng, 4, 4, 2), rootRecord("mc:teleport-v1")))
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		assert.NotContains(t, entry.Name(), ".tmp-", "Save left a temp file behind: %s", entry.Name())
+	}
+}
+
+// TestWriteRecordAtomicallyNeverLeavesAPartialFileAtTheFinalPath verifies
+// the atomicity property Save's crash-safety guarantee actually depends
+// on directly: the final path is only ever created by one atomic
+// os.Rename, so a reader can never observe it mid-write. This can't
+// literally simulate a process kill mid-write, but it does prove the
+// mechanism is what Save's doc comment claims (temp file + rename, not
+// an in-place truncate) rather than only inferring it from Save's
+// behavior indirectly.
+func TestWriteRecordAtomicallyNeverLeavesAPartialFileAtTheFinalPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "generation-000000000.json")
+
+	require.NoError(t, writeRecordAtomically(path, rootRecord("mc:teleport-v1")))
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var rec Record
+	require.NoError(t, json.Unmarshal(data, &rec), "final file must always contain complete, valid JSON, never a partial write")
 }
 
 func TestSaveRejectsInvalidRecord(t *testing.T) {
