@@ -2,25 +2,6 @@ module github.com/reallyoldfogie/mc-rsi-trainer
 
 go 1.27.0
 
-// Temporary, local-only: testing/mcserver.go needs mc-client-test-go's
-// ServerConfig.HostServerPort/HostRCONPort/RCONPassword fields (fixed-port
-// + fixed-password server launch, for "find it again on a later run"),
-// added but not yet tagged/pushed as of 2026-09-14. Remove this replace
-// once a new mc-client-test-go tag exists and bump the require below to
-// it — matching exactly how mc-agent's own go.mod handled this same
-// situation for its cRL-go/mc-bot-go dependencies before they were tagged.
-// replace github.com/reallyoldfogie/mc-client-test-go => ../mc-client-test-go
-
-// Temporary, local-only: pkg/curriculum/rlenvadapter needs
-// rlenv.Config.TaskSelector/TaskOverride (docs/plans/06-per-episode-task-selection-and-goal-conditioning.md),
-// added to mc-agent's rlenv package but not yet tagged/pushed past v0.0.1
-// as of 2026-09-14 — the first mc-rsi-trainer code to actually reference
-// them (docs/plans/05's and 06's own work happened entirely inside
-// mc-agent's own checkout, so this gap wasn't hit until now). Remove this
-// replace once a new mc-agent tag exists and bump the require below to
-// it.
-// replace github.com/reallyoldfogie/mc-agent => ../mc-agent
-
 require (
 	github.com/moby/moby/client v0.2.1
 	github.com/reallyoldfogie/cRL-go v0.11.1
