@@ -68,6 +68,8 @@ github.com/reallyoldfogie/mc-agent v0.0.7 h1:MajBuOxmg0AYDqWmagISnm32mCDwa8o0/Fk
 github.com/reallyoldfogie/mc-agent v0.0.7/go.mod h1:JECLUXDlBERUUvQOjgpKbl4CZ4JAF0BaJHn83mJeX0Q=
 github.com/reallyoldfogie/mc-agent v0.0.8 h1:TVDslsOzv7Nu9izyKms34V7lQLxnG3J7Yjn8Jvpk7jc=
 github.com/reallyoldfogie/mc-agent v0.0.8/go.mod h1:JECLUXDlBERUUvQOjgpKbl4CZ4JAF0BaJHn83mJeX0Q=
+github.com/reallyoldfogie/mc-agent v0.0.9 h1:8og6ju22iEnweCmfNi53gp2kXA/z6w/i0sxV2WFUoWo=
+github.com/reallyoldfogie/mc-agent v0.0.9/go.mod h1:JECLUXDlBERUUvQOjgpKbl4CZ4JAF0BaJHn83mJeX0Q=
 github.com/reallyoldfogie/mc-bot-go v0.2.4 h1:H3e4NTa+PN1I83nP0whijjpeJNNwprUdVaUrx5MUtK4=
 github.com/reallyoldfogie/mc-bot-go v0.2.4/go.mod h1:a1PEyOa8tw4vgLPQHSKKYUkQmyxNV5Btdt9e+UVuDgA=
 github.com/reallyoldfogie/mc-client-test-go v0.1.2 h1:B+X3kJFIzkT2mj9k5McJ8E/mtPSqpEp+EiwZevboRtw=
