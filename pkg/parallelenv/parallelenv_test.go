@@ -82,6 +82,57 @@ func TestDeriveSettingsDerivesDistinctUsernames(t *testing.T) {
 	}
 }
 
+func TestDeriveSharedServerSettingsNoopWhenNIsOne(t *testing.T) {
+	base := baseSettings()
+
+	derived := DeriveSharedServerSettings(base, 0, 1)
+
+	assert.Equal(t, base, derived)
+}
+
+func TestDeriveSharedServerSettingsNoopWhenNIsZero(t *testing.T) {
+	base := baseSettings()
+
+	derived := DeriveSharedServerSettings(base, 0, 0)
+
+	assert.Equal(t, base, derived)
+}
+
+func TestDeriveSharedServerSettingsKeepsConnectionAndRCONIdentical(t *testing.T) {
+	base := baseSettings()
+	base.RCON.Address = "localhost:25575"
+	base.RCON.Password = "secret"
+
+	for i := range 4 {
+		derived := DeriveSharedServerSettings(base, i, 4)
+		assert.Equal(t, base.Connection.Address, derived.Connection.Address, "index %d", i)
+		assert.Equal(t, base.RCON.Address, derived.RCON.Address, "index %d", i)
+		assert.Equal(t, base.RCON.Password, derived.RCON.Password, "index %d", i)
+	}
+}
+
+func TestDeriveSharedServerSettingsDerivesDistinctUsernames(t *testing.T) {
+	base := baseSettings()
+
+	seen := map[string]bool{}
+	for i := range 4 {
+		derived := DeriveSharedServerSettings(base, i, 4)
+		assert.False(t, seen[derived.Connection.Name], "username %q reused across indices", derived.Connection.Name)
+		seen[derived.Connection.Name] = true
+		assert.Equal(t, DeriveUsername(base.Connection.Name, i, 4), derived.Connection.Name)
+	}
+}
+
+func TestWorkingAreaOffsetIsZeroAtIndexZero(t *testing.T) {
+	assert.Equal(t, [3]float64{0, 0, 0}, WorkingAreaOffset(0, 16))
+}
+
+func TestWorkingAreaOffsetScalesWithIndexAndSeparation(t *testing.T) {
+	assert.Equal(t, [3]float64{256, 0, 0}, WorkingAreaOffset(1, 16))
+	assert.Equal(t, [3]float64{512, 0, 0}, WorkingAreaOffset(2, 16))
+	assert.Equal(t, [3]float64{128, 0, 0}, WorkingAreaOffset(2, 4))
+}
+
 func TestDeriveUsernameNoop(t *testing.T) {
 	assert.Equal(t, "botname", DeriveUsername("botname", 0, 1))
 	assert.Equal(t, "botname", DeriveUsername("botname", 0, 0))

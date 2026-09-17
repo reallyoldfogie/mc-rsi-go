@@ -82,6 +82,42 @@ func offsetPort(address string, index int) (string, error) {
 	return net.JoinHostPort(host, strconv.Itoa(port+index)), nil
 }
 
+// DeriveSharedServerSettings returns a copy of base for the (index+1)-th
+// of n bots sharing ONE server: only Connection.Name differs (via
+// DeriveUsername) — Connection.Address/RCON.Address/RCON.Password are
+// left completely unchanged from base for every index, since every bot
+// connects to the exact same server (unlike DeriveSettings' N-separate-
+// servers derivation, which offsets ports per index). n <= 1 returns
+// base unchanged, matching DeriveSettings' own convention.
+func DeriveSharedServerSettings(base mcconfig.Settings, index, n int) mcconfig.Settings {
+	if n <= 1 {
+		return base
+	}
+	derived := base
+	derived.Connection.Name = DeriveUsername(base.Connection.Name, index, n)
+	return derived
+}
+
+// blocksPerChunk is Minecraft's own chunk size — the unit a shared-
+// server working-area separation is naturally expressed in, converted
+// to blocks here so callers can reason in blocks
+// (rlenv.Config.ResetOrigin's own unit) without duplicating the
+// conversion themselves.
+const blocksPerChunk = 16
+
+// WorkingAreaOffset returns the (index+1)-th of n bots' working-area
+// offset from a shared reference point, separationChunks*blocksPerChunk
+// blocks along X — a simple 1D line, not a grid: sufficient separation
+// at this project's target scale (a handful of bots) without the added
+// complexity a grid layout would need (see
+// docs/plans/08-parallel-environments-and-scaling.md's own shared-
+// server design for why a grid isn't attempted). index 0 always returns
+// a zero offset, so the first bot's working area is exactly the
+// reference point itself.
+func WorkingAreaOffset(index, separationChunks int) [3]float64 {
+	return [3]float64{float64(index * separationChunks * blocksPerChunk), 0, 0}
+}
+
 // maxUsernameLength is Minecraft's own bot-username limit, enforced
 // server-side and, more usefully, by ../mc-agent/agent.ResolveAuth
 // before ever reaching the server (see

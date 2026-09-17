@@ -61,16 +61,18 @@ func main() {
 // minus that command's config.RegisterXFlags layering, which is
 // mc-agent's own package and not reusable from here.
 type flags struct {
-	checkpointDir       string
-	mcAgentConfigPath   string
-	trainerConfigPath   string
-	epochsPerGeneration int
-	evalEpisodes        int
-	evalEpisodeLen      int
-	checkpointInterval  int
-	maxRounds           int
-	autoResetOrigin     bool
-	parallelEnvs        int
+	checkpointDir                string
+	mcAgentConfigPath            string
+	trainerConfigPath            string
+	epochsPerGeneration          int
+	evalEpisodes                 int
+	evalEpisodeLen               int
+	checkpointInterval           int
+	maxRounds                    int
+	autoResetOrigin              bool
+	parallelEnvs                 int
+	sharedServer                 bool
+	sharedServerSeparationChunks int
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -86,6 +88,8 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.maxRounds, "max-rounds", 0, "stop after this many leapfrog rounds; 0 means run until interrupted")
 	fs.BoolVar(&f.autoResetOrigin, "auto-reset-origin", false, "if RCON is configured and -mc-agent-config didn't already set env.use_reset_origin, teleport back to the bot's actual spawn position every episode (via a captured Config.ResetOrigin) plus a small default Config.Jitter, instead of letting the goto task's target drift from wherever the previous episode ended — see run's own doc comment for why this exists. Opt-in: false preserves every existing config's behavior unchanged.")
 	fs.IntVar(&f.parallelEnvs, "parallel-envs", 1, "number of concurrent live Minecraft environments to train against (see docs/plans/08-parallel-environments-and-scaling.md); each needs its own already-running server — addresses/RCON/bot usernames beyond the first are derived from -mc-agent-config via pkg/parallelenv.DeriveSettings. 1 (the default) preserves single-environment behavior exactly.")
+	fs.BoolVar(&f.sharedServer, "shared-server", false, "run all -parallel-envs bots against ONE already-running server instead of one server each, each confined to its own working area (see -shared-server-separation-chunks). Requires RCON to be configured. The operator is responsible for launching that server with a reduced VIEW_DISTANCE/SIMULATION_DISTANCE (e.g. 4-6) small enough not to overlap adjacent bots' working areas.")
+	fs.IntVar(&f.sharedServerSeparationChunks, "shared-server-separation-chunks", 16, "chunks between adjacent bots' working areas when -shared-server is set; ignored otherwise")
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}
@@ -113,6 +117,9 @@ func parseFlags(args []string) (flags, error) {
 	if f.parallelEnvs <= 0 {
 		return flags{}, fmt.Errorf("rsi-train: -parallel-envs must be positive, got %d", f.parallelEnvs)
 	}
+	if f.sharedServer && f.sharedServerSeparationChunks <= 0 {
+		return flags{}, fmt.Errorf("rsi-train: -shared-server-separation-chunks must be positive, got %d", f.sharedServerSeparationChunks)
+	}
 	return f, nil
 }
 
@@ -138,7 +145,7 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin)
+	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks)
 	if err != nil {
 		return err
 	}
@@ -359,6 +366,86 @@ func applyAutoResetOrigin(cfg *rlenv.Config, a positionProvider, rconAddress str
 	}
 }
 
+// applySharedServerWorkingArea implements -shared-server's per-bot
+// working-area separation (docs/plans/08-parallel-environments-and-scaling.md):
+// gives bot index its own working area, separationChunks chunks from a
+// reference point, along X (see pkg/parallelenv.WorkingAreaOffset). The
+// reference point is cfg.ResetOrigin if already set (by the operator's
+// own config, or by a preceding applyAutoResetOrigin call for this same
+// bot — both compose for free), otherwise a's own live position,
+// captured the same way applyAutoResetOrigin does.
+//
+// Unlike applyAutoResetOrigin, this always sets cfg.ResetOrigin
+// (overwriting one that's already there) and returns an error rather
+// than silently leaving it unset: every bot MUST get its own distinct
+// working area for -shared-server mode to mean anything — reusing a
+// single shared reference point unmodified for every bot would be a
+// spawn collision, not a graceful degradation.
+func applySharedServerWorkingArea(cfg *rlenv.Config, a positionProvider, index, separationChunks int) error {
+	base := [3]float64{}
+	if cfg.ResetOrigin != nil {
+		base = *cfg.ResetOrigin
+	} else {
+		pos, ok := a.GetPositionSimple()
+		if !ok {
+			return fmt.Errorf("shared-server: bot %d position not known yet", index)
+		}
+		base = [3]float64{pos.X, pos.Y, pos.Z}
+	}
+
+	offset := parallelenv.WorkingAreaOffset(index, separationChunks)
+	origin := [3]float64{base[0] + offset[0], base[1] + offset[1], base[2] + offset[2]}
+	cfg.ResetOrigin = &origin
+	log.Printf("shared-server: bot %d working area at (%.1f,%.1f,%.1f)", index, origin[0], origin[1], origin[2])
+	return nil
+}
+
+// sharedServerGamerules is applied once, automatically, whenever
+// -shared-server is set — reduces ambient chunk/entity churn from
+// mechanics this training setup doesn't care about (wandering traders,
+// fire spread, weather, random ticks), confirmed live via this
+// project's own shared-server feasibility spike
+// (testing/spike_shared_server_test.go). Fixed for v1, not
+// configurable — a human isn't present to tune these on every real
+// deployment, so a sensible baked-in default beats requiring a manual
+// RCON step every run.
+//
+// doMobSpawning added after a live multi-hour run: passive-mob entity
+// counts climbed into the dozens per bot's working area within minutes
+// (nothing here previously stopped animal spawning specifically —
+// doPatrolSpawning/doTraderSpawning/doInsomnia don't cover it), enough
+// extra simulated entities to make bounded reachability searches
+// (rlenv's own reachable(), 3s budget) occasionally time out under load
+// rather than converge — a real contributor to a live-observed
+// no-walkable-reachable-cell failure, not just a hypothetical concern.
+var sharedServerGamerules = map[string]string{
+	"doFireTick":       "false",
+	"doTraderSpawning": "false",
+	"doPatrolSpawning": "false",
+	"doInsomnia":       "false",
+	"doWeatherCycle":   "false",
+	"doMobSpawning":    "false",
+	"randomTickSpeed":  "0",
+}
+
+// applySharedServerGamerules dials its own RCON connection (separate
+// from any of the N bots' own — this runs once, before any bot
+// connects) and applies every rule in sharedServerGamerules.
+func applySharedServerGamerules(ctx context.Context, rconAddress, rconPassword string) error {
+	rcon, err := agent.DialRCON(ctx, rconAddress, rconPassword)
+	if err != nil {
+		return fmt.Errorf("dialing RCON for shared-server gamerules: %w", err)
+	}
+	defer func() { _ = rcon.Close() }()
+
+	for rule, value := range sharedServerGamerules {
+		if _, err := rcon.SetGamerule(ctx, rule, value).Exec(ctx); err != nil {
+			return fmt.Errorf("setting gamerule %s=%s: %w", rule, value, err)
+		}
+	}
+	return nil
+}
+
 // loadOrInitTeacher resumes the latest saved generation from
 // checkpointDir (lineage.Latest/Load), or, if none exists yet,
 // initializes a fresh, randomly-weighted generation 0 and immediately
@@ -433,18 +520,37 @@ type connectedEnvironment struct {
 
 // connectEnvironments builds n live bot sessions and their
 // rlenv.Environments from one base mc-agent config (see
-// docs/plans/08-parallel-environments-and-scaling.md). n == 1 behaves
-// exactly like the single-environment path this command had before
-// -parallel-envs existed: parallelenv.DeriveSettings and connectAgent's
-// own instanceSuffix are both no-ops in that case. n > 1 derives n
-// distinct connection addresses/RCON/bot usernames via
-// parallelenv.DeriveSettings, plus a distinct StopFilePath/ReplayOutput
+// docs/plans/08-parallel-environments-and-scaling.md). n == 1 with
+// sharedServer == false behaves exactly like the single-environment
+// path this command had before -parallel-envs existed:
+// parallelenv.DeriveSettings and connectAgent's own instanceSuffix are
+// both no-ops in that case.
+//
+// n > 1 without sharedServer derives n distinct connection
+// addresses/RCON/bot usernames via parallelenv.DeriveSettings (one
+// server per bot). n > 1 with sharedServer instead derives only
+// distinct bot usernames via parallelenv.DeriveSharedServerSettings —
+// every bot connects to the exact same already-running server — and
+// gives each bot its own working area via applySharedServerWorkingArea,
+// after first applying sharedServerGamerules once (RCON is mandatory in
+// that mode). Either mode also gets a distinct StopFilePath/ReplayOutput
 // suffix per instance via connectAgent, avoiding mc-agent's documented
 // same-process default-path collision without any mc-agent change (see
-// connectAgent's own doc comment). On a mid-loop failure, every
-// already-connected agent is closed before the error is returned, so a
-// partial n-way connect never leaks live bot sessions.
-func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin bool) ([]connectedEnvironment, error) {
+// connectAgent's own doc comment).
+//
+// On a mid-loop failure, every already-connected agent is closed before
+// the error is returned, so a partial connect never leaks live bot
+// sessions.
+func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int) ([]connectedEnvironment, error) {
+	if sharedServer {
+		if base.RCON.Address == "" {
+			return nil, fmt.Errorf("rsi-train: -shared-server requires RCON to be configured in -mc-agent-config")
+		}
+		if err := applySharedServerGamerules(ctx, base.RCON.Address, base.RCON.Password); err != nil {
+			return nil, fmt.Errorf("applying shared-server gamerules: %w", err)
+		}
+	}
+
 	connected := make([]connectedEnvironment, 0, n)
 	closeAll := func() {
 		for _, c := range connected {
@@ -455,7 +561,12 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 	}
 
 	for i := 0; i < n; i++ {
-		settings := parallelenv.DeriveSettings(base, i, n)
+		var settings mcconfig.Settings
+		if sharedServer {
+			settings = parallelenv.DeriveSharedServerSettings(base, i, n)
+		} else {
+			settings = parallelenv.DeriveSettings(base, i, n)
+		}
 		suffix := ""
 		if n > 1 {
 			suffix = fmt.Sprintf("-env%d", i)
@@ -477,6 +588,13 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 		envCfg := settings.Env.ToRlenvConfig()
 		if autoResetOrigin {
 			applyAutoResetOrigin(&envCfg, a, settings.RCON.Address)
+		}
+		if sharedServer {
+			if err := applySharedServerWorkingArea(&envCfg, a, i, separationChunks); err != nil {
+				_ = a.Close(context.Background())
+				closeAll()
+				return nil, fmt.Errorf("environment %d/%d: %w", i, n, err)
+			}
 		}
 		env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
 		if err != nil {

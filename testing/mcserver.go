@@ -148,6 +148,28 @@ func WithExtraEnv(env map[string]string) ServerOption {
 	}
 }
 
+// WithViewDistance sets both VIEW_DISTANCE and SIMULATION_DISTANCE
+// (itzg image env vars, written into server.properties before the
+// container's first boot) for a server this call actually launches.
+// Like every ServerOption, this has no effect on a server EnsureServer
+// merely finds already running — there is no way to retroactively
+// change server.properties on one that's already up (see EnsureServer's
+// own doc comment). A dedicated, self-documenting option rather than a
+// raw WithExtraEnv map at each call site, since the shared-server
+// parallel-training design (docs/plans/08-parallel-environments-and-scaling.md)
+// depends on this being set correctly — the whole point of separating
+// bots' working areas by N chunks is defeated if the server's own view
+// distance is left wide enough to span that separation.
+func WithViewDistance(chunks int) ServerOption {
+	return func(cfg *testenv.ServerConfig) {
+		if cfg.ExtraEnv == nil {
+			cfg.ExtraEnv = map[string]string{}
+		}
+		cfg.ExtraEnv["VIEW_DISTANCE"] = strconv.Itoa(chunks)
+		cfg.ExtraEnv["SIMULATION_DISTANCE"] = strconv.Itoa(chunks)
+	}
+}
+
 // WithNamePrefix overrides a launched server's container NamePrefix
 // (default "mc-rsi-trainer-"), applied after this file's own default —
 // so it always wins over whatever opts a caller passed before it. Added

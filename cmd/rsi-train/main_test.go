@@ -31,6 +31,8 @@ func TestParseFlagsRejectsMissingOrInvalidInput(t *testing.T) {
 		{"negative max-rounds", validArgs("-max-rounds", "-1")},
 		{"zero parallel-envs", validArgs("-parallel-envs", "0")},
 		{"negative parallel-envs", validArgs("-parallel-envs", "-1")},
+		{"zero shared-server-separation-chunks with -shared-server", validArgs("-shared-server", "-shared-server-separation-chunks", "0")},
+		{"negative shared-server-separation-chunks with -shared-server", validArgs("-shared-server", "-shared-server-separation-chunks", "-1")},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -38,6 +40,17 @@ func TestParseFlagsRejectsMissingOrInvalidInput(t *testing.T) {
 			assert.Error(t, err)
 		})
 	}
+}
+
+func TestParseFlagsIgnoresSeparationChunksValidationWithoutSharedServer(t *testing.T) {
+	f, err := parseFlags([]string{
+		"-checkpoint-dir", "/tmp/ckpt",
+		"-mc-agent-config", "/tmp/config.json",
+		"-shared-server-separation-chunks", "0",
+	})
+	require.NoError(t, err, "-shared-server-separation-chunks is only validated when -shared-server is set")
+	assert.False(t, f.sharedServer)
+	assert.Equal(t, 0, f.sharedServerSeparationChunks)
 }
 
 func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
@@ -53,6 +66,8 @@ func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
 	assert.Equal(t, 0, f.maxRounds)
 	assert.False(t, f.autoResetOrigin, "-auto-reset-origin must default to false: opt-in, existing configs unaffected")
 	assert.Equal(t, 1, f.parallelEnvs, "-parallel-envs must default to 1: existing single-environment behavior unaffected")
+	assert.False(t, f.sharedServer, "-shared-server must default to false: existing per-server behavior unaffected")
+	assert.Equal(t, 16, f.sharedServerSeparationChunks)
 
 	f, err = parseFlags([]string{
 		"-checkpoint-dir", "/tmp/ckpt",
@@ -65,6 +80,8 @@ func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
 		"-max-rounds", "2",
 		"-auto-reset-origin",
 		"-parallel-envs", "4",
+		"-shared-server",
+		"-shared-server-separation-chunks", "32",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "/tmp/trainer.json", f.trainerConfigPath)
@@ -75,6 +92,8 @@ func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
 	assert.Equal(t, 2, f.maxRounds)
 	assert.True(t, f.autoResetOrigin)
 	assert.Equal(t, 4, f.parallelEnvs)
+	assert.True(t, f.sharedServer)
+	assert.Equal(t, 32, f.sharedServerSeparationChunks)
 }
 
 // fakePositionProvider is the minimal positionProvider fake
@@ -199,6 +218,51 @@ func TestApplyAutoResetOriginNeverOverridesAnOperatorConfiguredResetOriginOrJitt
 	assert.Same(t, &explicitOrigin, cfg.ResetOrigin, "an operator-configured ResetOrigin must be left untouched")
 	assert.Equal(t, explicitJitter, cfg.Jitter)
 	assert.Equal(t, int64(42), cfg.JitterSeed)
+}
+
+func TestApplySharedServerWorkingAreaIndexZeroHasZeroOffset(t *testing.T) {
+	cfg := rlenv.Config{}
+	agent := fakePositionProvider{pos: models.V3{X: 1, Y: 2, Z: 3}, initialized: true}
+
+	err := applySharedServerWorkingArea(&cfg, agent, 0, 16)
+
+	require.NoError(t, err)
+	require.NotNil(t, cfg.ResetOrigin)
+	assert.Equal(t, [3]float64{1, 2, 3}, *cfg.ResetOrigin, "index 0's working area must equal the captured reference position exactly")
+}
+
+func TestApplySharedServerWorkingAreaOffsetsSubsequentIndices(t *testing.T) {
+	cfg := rlenv.Config{}
+	agent := fakePositionProvider{pos: models.V3{X: 1, Y: 2, Z: 3}, initialized: true}
+
+	err := applySharedServerWorkingArea(&cfg, agent, 2, 16)
+
+	require.NoError(t, err)
+	require.NotNil(t, cfg.ResetOrigin)
+	assert.Equal(t, [3]float64{1 + 2*16*16, 2, 3}, *cfg.ResetOrigin)
+}
+
+func TestApplySharedServerWorkingAreaUsesAlreadySetResetOriginAsBase(t *testing.T) {
+	explicitOrigin := [3]float64{100, 5, -50}
+	cfg := rlenv.Config{ResetOrigin: &explicitOrigin}
+	agent := fakePositionProvider{pos: models.V3{X: 1, Y: 2, Z: 3}, initialized: true}
+
+	err := applySharedServerWorkingArea(&cfg, agent, 1, 16)
+
+	require.NoError(t, err)
+	require.NotNil(t, cfg.ResetOrigin)
+	assert.Equal(t, [3]float64{100 + 16*16, 5, -50}, *cfg.ResetOrigin,
+		"an already-set ResetOrigin (operator config, or a preceding applyAutoResetOrigin call) must be used as the offset base, not the agent's own live position")
+}
+
+func TestApplySharedServerWorkingAreaErrorsWhenPositionNotYetKnownAndNoResetOriginSet(t *testing.T) {
+	cfg := rlenv.Config{}
+	agent := fakePositionProvider{initialized: false}
+
+	err := applySharedServerWorkingArea(&cfg, agent, 1, 16)
+
+	assert.Error(t, err, "unlike applyAutoResetOrigin, an unknown position must be a hard error here — a bot with no working area assigned would collide with bot 0")
+	assert.Nil(t, cfg.ResetOrigin)
 }
 
 // TestLoadOrInitTeacherCreatesAndPersistsGenerationZero verifies the

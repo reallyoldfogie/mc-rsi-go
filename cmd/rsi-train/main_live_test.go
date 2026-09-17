@@ -425,6 +425,113 @@ func TestRunCompletesOneRoundAgainstFourFlatLiveServersLive(t *testing.T) {
 	t.Logf("latest generation after the run: %d (provenance=%s)", rec.Generation, rec.Provenance)
 }
 
+// TestRunCompletesOneRoundAgainstSharedServerLive is
+// docs/plans/08-parallel-environments-and-scaling.md's live confirmation
+// of the shared-server parallel-training design: N bots against ONE
+// server, each confined to its own working area
+// (pkg/parallelenv.WorkingAreaOffset), instead of N separate servers.
+// The isolation itself (does a low view distance plus enough separation
+// actually keep bots from ever perceiving each other) was already
+// rigorously confirmed live by testing/spike_shared_server_test.go
+// (grepped both bots' full logs for any cross-reference — zero hits in
+// either direction). This test's narrower job is proving the real
+// -shared-server/-shared-server-separation-chunks CLI flags and
+// connectEnvironments wiring work end to end through the actual run()
+// entrypoint, not just via direct rlenv.Environment calls the way the
+// spike exercised it.
+//
+// Sets settings.RCON.Password explicitly before launch: -shared-server
+// requires RCON, and unlike the N-servers test
+// (TestRunCompletesOneRoundAgainstFourFlatLiveServersLive) there's no
+// double-derivation concern here to design around — every bot uses the
+// exact same connection details in shared-server mode, so whatever
+// EnsureServer mutates into settings can be written to the config file
+// as-is.
+func TestRunCompletesOneRoundAgainstSharedServerLive(t *testing.T) {
+	if os.Getenv("MC_RSI_TRAINER_LIVE_CONFIG") == "" {
+		t.Skip("MC_RSI_TRAINER_LIVE_CONFIG not set; skipping live cmd/rsi-train smoke test")
+	}
+	if os.Getenv("MC_RSI_TRAINER_LIVE_SHARED_SERVER") == "" {
+		t.Skip("MC_RSI_TRAINER_LIVE_SHARED_SERVER not set; skipping the shared-server parallel-environment test")
+	}
+
+	settings := mcconfig.Default()
+	settings.Connection = mcconfig.ConnectionSettings{
+		Address: "127.0.0.1:34650", // distinct base port from every other live test in this file, so all can run independently without colliding.
+		Offline: true,
+		Version: "1.21.5",
+		Name:    "RSIShared", // 9 chars; DeriveUsername's "-N" suffix stays well within Minecraft's 16-character cap.
+	}
+	settings.RCON = mcconfig.RCONSettings{
+		Password: "rsi-trainer-shared-server-test-pw", // explicit and non-empty -- -shared-server requires RCON.
+	}
+	settings.Env = mcconfig.EnvSettings{
+		TargetOffset:       [3]float64{5, 0, 0},
+		ArrivalThreshold:   1.5,
+		StepTimeoutSeconds: 10,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	server, err := rsitesting.EnsureServer(ctx, &settings,
+		rsitesting.WithExtraEnv(map[string]string{"LEVEL_TYPE": "FLAT"}),
+		rsitesting.WithViewDistance(4),
+	)
+	require.NoError(t, err)
+	defer func() {
+		_ = server.Close(context.Background())
+	}()
+
+	dir := t.TempDir()
+	mcConfigPath := filepath.Join(dir, "mc-agent-config.json")
+	writeJSON(t, mcConfigPath, settings)
+
+	// Deliberately tiny -- see this test's own doc comment: proving the
+	// shared-server wiring works end to end, not producing a
+	// meaningfully trained policy.
+	trainerConfigPath := filepath.Join(dir, "trainer-config.json")
+	writeJSON(t, trainerConfigPath, crlconfig.Settings{
+		RolloutSize:   4,
+		EpisodeLen:    15,
+		Gamma:         0.99,
+		LearningRate:  0.05,
+		GridSize:      1, // unused against a live rlenv session; see leapfrog.Config.Trainer's own doc comment.
+		HiddenSize:    8,
+		Seed:          42,
+		Workers:       1,
+		ClipEpsilon:   0.2,
+		EntropyCoef:   0.01,
+		ValueCoef:     0.5,
+		GAELambda:     0.95,
+		PPOEpochs:     1,
+		MinibatchSize: 4,
+	})
+
+	checkpointDir := t.TempDir()
+
+	start := time.Now()
+	err = run([]string{
+		"-checkpoint-dir", checkpointDir,
+		"-mc-agent-config", mcConfigPath,
+		"-trainer-config", trainerConfigPath,
+		"-epochs-per-generation", "1",
+		"-eval-episodes", "1",
+		"-eval-episode-len", "15",
+		"-max-rounds", "1",
+		"-parallel-envs", "2",
+		"-shared-server",
+		"-shared-server-separation-chunks", "16",
+	})
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	t.Logf("one small 2-bot shared-server leapfrog round completed in %s", elapsed)
+
+	rec, err := lineage.Latest(checkpointDir)
+	require.NoError(t, err, "run() must leave at least a generation-0 checkpoint behind")
+	t.Logf("latest generation after the run: %d (provenance=%s)", rec.Generation, rec.Provenance)
+}
+
 func writeJSON(t *testing.T, path string, v any) {
 	t.Helper()
 	data, err := json.MarshalIndent(v, "", "  ")
