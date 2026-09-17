@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,6 +32,7 @@ import (
 	"github.com/reallyoldfogie/cRL-go/pkg/checkpoint"
 	crlconfig "github.com/reallyoldfogie/cRL-go/pkg/config"
 	"github.com/reallyoldfogie/cRL-go/pkg/ppo"
+	"github.com/reallyoldfogie/cRL-go/pkg/rl"
 
 	"github.com/reallyoldfogie/mc-agent/actions"
 	"github.com/reallyoldfogie/mc-agent/agent"
@@ -43,6 +45,7 @@ import (
 
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/lineage"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/parallelenv"
 )
 
 func main() {
@@ -67,6 +70,7 @@ type flags struct {
 	checkpointInterval  int
 	maxRounds           int
 	autoResetOrigin     bool
+	parallelEnvs        int
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -81,6 +85,7 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.checkpointInterval, "checkpoint-interval", 10, "save an interim (non-generation) checkpoint every N Student-training epochs; 0 disables")
 	fs.IntVar(&f.maxRounds, "max-rounds", 0, "stop after this many leapfrog rounds; 0 means run until interrupted")
 	fs.BoolVar(&f.autoResetOrigin, "auto-reset-origin", false, "if RCON is configured and -mc-agent-config didn't already set env.use_reset_origin, teleport back to the bot's actual spawn position every episode (via a captured Config.ResetOrigin) plus a small default Config.Jitter, instead of letting the goto task's target drift from wherever the previous episode ended — see run's own doc comment for why this exists. Opt-in: false preserves every existing config's behavior unchanged.")
+	fs.IntVar(&f.parallelEnvs, "parallel-envs", 1, "number of concurrent live Minecraft environments to train against (see docs/plans/08-parallel-environments-and-scaling.md); each needs its own already-running server — addresses/RCON/bot usernames beyond the first are derived from -mc-agent-config via pkg/parallelenv.DeriveSettings. 1 (the default) preserves single-environment behavior exactly.")
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}
@@ -104,6 +109,9 @@ func parseFlags(args []string) (flags, error) {
 	}
 	if f.maxRounds < 0 {
 		return flags{}, fmt.Errorf("rsi-train: -max-rounds must not be negative, got %d", f.maxRounds)
+	}
+	if f.parallelEnvs <= 0 {
+		return flags{}, fmt.Errorf("rsi-train: -parallel-envs must be positive, got %d", f.parallelEnvs)
 	}
 	return f, nil
 }
@@ -130,40 +138,37 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	a, err := connectAgent(ctx, mcSettings)
+	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if err := a.Close(context.Background()); err != nil {
-			log.Printf("close error: %v", err)
+		for _, c := range connected {
+			if err := c.agent.Close(context.Background()); err != nil {
+				log.Printf("close error: %v", err)
+			}
 		}
 	}()
 	// A live bot session can end on its own (e.g. the .agentStop file)
 	// independent of this process's own signal handling — treat that the
-	// same as SIGINT/SIGTERM, mirroring mc-agent's own cmd/rl-train.
-	if done := a.Done(); done != nil {
-		go func() {
-			select {
-			case <-ctx.Done():
-			case <-done:
-				stop()
-			}
-		}()
+	// same as SIGINT/SIGTERM, mirroring mc-agent's own cmd/rl-train. Any
+	// one of the N sessions ending stops the whole run, matching how a
+	// single-environment run already stops on its one session ending.
+	for _, c := range connected {
+		if done := c.agent.Done(); done != nil {
+			go func(done <-chan struct{}) {
+				select {
+				case <-ctx.Done():
+				case <-done:
+					stop()
+				}
+			}(done)
+		}
 	}
 
-	liveAgent, ok := a.(rlenv.LiveAgent)
-	if !ok {
-		return fmt.Errorf("rsi-train: agent does not satisfy rlenv.LiveAgent (missing InventoryCount/Craftable/BlockNameAt/HealthProvider?)")
-	}
-
-	envCfg := mcSettings.Env.ToRlenvConfig()
-	if f.autoResetOrigin {
-		applyAutoResetOrigin(&envCfg, a, mcSettings.RCON.Address)
-	}
-	env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
-	if err != nil {
-		return fmt.Errorf("constructing environment: %w", err)
+	envs := make([]rl.Environment, len(connected))
+	for i, c := range connected {
+		envs[i] = c.env
 	}
 
 	// Self-versioning by construction, matching mc-agent's own
@@ -171,10 +176,12 @@ func run(args []string) error {
 	// docs/plans/06's goal-conditioning block, 14 -> 17) changes this
 	// string automatically, so actorcritic.Load's existing EnvironmentID
 	// check rejects a stale checkpoint with no separate version field or
-	// flag needed here.
-	environmentID := fmt.Sprintf("mc-agent-rlenv:actions=%d:obs=%d", env.ActionSpace(), env.ObservationSize())
+	// flag needed here. Every environment shares the same rlenv.Config
+	// (parallelenv.DeriveSettings only changes connection/RCON/username,
+	// never Env), so envs[0]'s shape speaks for all of them.
+	environmentID := fmt.Sprintf("mc-agent-rlenv:actions=%d:obs=%d", envs[0].ActionSpace(), envs[0].ObservationSize())
 
-	teacherParams, rec, err := loadOrInitTeacher(f.checkpointDir, environmentID, env.ObservationSize(), trainerSettings.HiddenSize, env.ActionSpace())
+	teacherParams, rec, err := loadOrInitTeacher(f.checkpointDir, environmentID, envs[0].ObservationSize(), trainerSettings.HiddenSize, envs[0].ActionSpace())
 	if err != nil {
 		return err
 	}
@@ -205,7 +212,7 @@ func run(args []string) error {
 		}
 
 		start := time.Now()
-		result, err := leapfrog.Round(ctx, env, teacherParams, cfg, rng)
+		result, err := leapfrog.Round(ctx, envs, teacherParams, cfg, rng)
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("round %d interrupted: %v", round, err)
@@ -416,7 +423,86 @@ func saveInterimCheckpoint(dir string, params *actorcritic.Params, environmentID
 // if a real training run turns out to need packet-level debugging. If
 // mc-agent's own connectAgent shape changes meaningfully, re-sync this
 // copy against it.
-func connectAgent(ctx context.Context, settings mcconfig.Settings) (models.Agent, error) {
+// connectedEnvironment pairs one live rl.Environment with the
+// models.Agent backing it, so run's shutdown path can Close every agent
+// it opened regardless of how many -parallel-envs were requested.
+type connectedEnvironment struct {
+	agent models.Agent
+	env   rl.Environment
+}
+
+// connectEnvironments builds n live bot sessions and their
+// rlenv.Environments from one base mc-agent config (see
+// docs/plans/08-parallel-environments-and-scaling.md). n == 1 behaves
+// exactly like the single-environment path this command had before
+// -parallel-envs existed: parallelenv.DeriveSettings and connectAgent's
+// own instanceSuffix are both no-ops in that case. n > 1 derives n
+// distinct connection addresses/RCON/bot usernames via
+// parallelenv.DeriveSettings, plus a distinct StopFilePath/ReplayOutput
+// suffix per instance via connectAgent, avoiding mc-agent's documented
+// same-process default-path collision without any mc-agent change (see
+// connectAgent's own doc comment). On a mid-loop failure, every
+// already-connected agent is closed before the error is returned, so a
+// partial n-way connect never leaks live bot sessions.
+func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin bool) ([]connectedEnvironment, error) {
+	connected := make([]connectedEnvironment, 0, n)
+	closeAll := func() {
+		for _, c := range connected {
+			if err := c.agent.Close(context.Background()); err != nil {
+				log.Printf("close error: %v", err)
+			}
+		}
+	}
+
+	for i := 0; i < n; i++ {
+		settings := parallelenv.DeriveSettings(base, i, n)
+		suffix := ""
+		if n > 1 {
+			suffix = fmt.Sprintf("-env%d", i)
+		}
+
+		a, err := connectAgent(ctx, settings, suffix)
+		if err != nil {
+			closeAll()
+			return nil, fmt.Errorf("connecting environment %d/%d: %w", i, n, err)
+		}
+
+		liveAgent, ok := a.(rlenv.LiveAgent)
+		if !ok {
+			_ = a.Close(context.Background())
+			closeAll()
+			return nil, fmt.Errorf("environment %d/%d: agent does not satisfy rlenv.LiveAgent (missing InventoryCount/Craftable/BlockNameAt/HealthProvider?)", i, n)
+		}
+
+		envCfg := settings.Env.ToRlenvConfig()
+		if autoResetOrigin {
+			applyAutoResetOrigin(&envCfg, a, settings.RCON.Address)
+		}
+		env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
+		if err != nil {
+			_ = a.Close(context.Background())
+			closeAll()
+			return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
+		}
+
+		connected = append(connected, connectedEnvironment{agent: a, env: env})
+	}
+	return connected, nil
+}
+
+// connectAgent connects one live bot session from settings. instanceSuffix
+// is appended to this session's StopFilePath (default ".agentStop") and,
+// if the operator explicitly pinned a fixed ReplayOutput path in
+// settings (reused as config across every -parallel-envs instance —
+// see connectEnvironments), to that path too, before its extension —
+// both otherwise-shared defaults that would collide across multiple
+// agent instances in this same process (see
+// docs/plans/08-parallel-environments-and-scaling.md's own research
+// into mc-agent's concurrency surface). instanceSuffix == "" (used by
+// every existing single-environment caller, i.e. -parallel-envs=1)
+// leaves both paths byte-for-byte unchanged from before this parameter
+// existed.
+func connectAgent(ctx context.Context, settings mcconfig.Settings, instanceSuffix string) (models.Agent, error) {
 	conn := settings.Connection
 
 	auth, err := agent.ResolveAuth(conn.Offline, conn.Name, conn.UUID, conn.Token, settings.Auth)
@@ -458,6 +544,16 @@ func connectAgent(ctx context.Context, settings mcconfig.Settings) (models.Agent
 			return nil, fmt.Errorf("find cache directory for replay output: %w", err)
 		}
 		replay.Output = filepath.Join(cacheDir, "replays", version, auth.Name+"_"+time.Now().Format("20060102_150405")+".mcpr")
+	} else if replay.Enable && instanceSuffix != "" {
+		// The operator explicitly pinned a fixed Output path, reused as
+		// config across every -parallel-envs instance (see
+		// connectEnvironments) — insert instanceSuffix before the
+		// extension so N instances never write the same file. The
+		// auto-derived branch above already includes auth.Name (which
+		// DeriveUsername already makes distinct per instance), so it
+		// needs no extra suffixing here.
+		ext := filepath.Ext(replay.Output)
+		replay.Output = strings.TrimSuffix(replay.Output, ext) + instanceSuffix + ext
 	}
 	if replay.Enable {
 		log.Printf("replay recording enabled: %s", replay.Output)
@@ -470,7 +566,7 @@ func connectAgent(ctx context.Context, settings mcconfig.Settings) (models.Agent
 		Auth:             auth,
 		MCDataGenPath:    conn.MCDataGenPath,
 		MCProtocolGoPath: conn.MCProtocolGoPath,
-		StopFilePath:     ".agentStop",
+		StopFilePath:     ".agentStop" + instanceSuffix,
 		LogLevel:         logLevel,
 		RCON:             rcon,
 		EnableReplay:     replay.Enable,

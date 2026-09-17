@@ -9,6 +9,7 @@ import (
 	"github.com/reallyoldfogie/cRL-go/pkg/config"
 	"github.com/reallyoldfogie/cRL-go/pkg/gridworldenv"
 	"github.com/reallyoldfogie/cRL-go/pkg/ppo"
+	"github.com/reallyoldfogie/cRL-go/pkg/rl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -69,7 +70,13 @@ func TestConfigValidateRejectsNonPositiveFields(t *testing.T) {
 
 func TestRoundRejectsNilTeacherParams(t *testing.T) {
 	env, _ := newTestGridEnv(t)
-	_, err := Round(context.Background(), env, nil, testConfig(env), rand.New(rand.NewPCG(1, 2)))
+	_, err := Round(context.Background(), []rl.Environment{env}, nil, testConfig(env), rand.New(rand.NewPCG(1, 2)))
+	assert.Error(t, err)
+}
+
+func TestRoundRejectsEmptyEnvs(t *testing.T) {
+	env, teacherParams := newTestGridEnv(t)
+	_, err := Round(context.Background(), nil, teacherParams, testConfig(env), rand.New(rand.NewPCG(1, 2)))
 	assert.Error(t, err)
 }
 
@@ -86,7 +93,7 @@ func TestRoundEndToEndAgainstGridworld(t *testing.T) {
 	cfg := testConfig(env)
 	rng := rand.New(rand.NewPCG(7, 11))
 
-	result, err := Round(context.Background(), env, teacherParams, cfg, rng)
+	result, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rng)
 	require.NoError(t, err)
 
 	assert.False(t, isNaN32(result.TeacherReward))
@@ -119,10 +126,36 @@ func TestRoundCallsOnEpochOncePerStudentTrainingEpoch(t *testing.T) {
 		seenEpochs = append(seenEpochs, stats.Epoch)
 	}
 
-	_, err := Round(context.Background(), env, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
+	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
 	require.NoError(t, err)
 
 	require.Equal(t, []int{0, 1, 2}, seenEpochs)
+}
+
+// TestRoundEndToEndAgainstMultipleGridworlds is TestRoundEndToEndAgainstGridworld's
+// len(envs) > 1 counterpart: proves Round's pooled-training branch
+// (ppo.NewWithPersistentEnvPool, via trainStudent) is actually wired
+// together end to end in this package, not just unit-tested in
+// isolation inside cRL-go itself.
+func TestRoundEndToEndAgainstMultipleGridworlds(t *testing.T) {
+	envs, teacherParams := newTestGridEnvPool(t, 2)
+	cfg := testConfig(envs[0].(*gridworldenv.Adapter))
+	rng := rand.New(rand.NewPCG(7, 11))
+
+	result, err := Round(context.Background(), envs, teacherParams, cfg, rng)
+	require.NoError(t, err)
+
+	assert.False(t, isNaN32(result.TeacherReward))
+	assert.False(t, isNaN32(result.StudentReward))
+
+	if result.StudentWon {
+		require.NotNil(t, result.StudentParams, "a winning Student must return its params")
+		assert.Equal(t, teacherParams.InputSize(), result.StudentParams.InputSize())
+		assert.Equal(t, teacherParams.HiddenSize(), result.StudentParams.HiddenSize())
+		assert.Equal(t, teacherParams.OutputSize(), result.StudentParams.OutputSize())
+	} else {
+		assert.Nil(t, result.StudentParams)
+	}
 }
 
 // newTestGridEnv builds a small, deterministic gridworldenv instance
@@ -140,6 +173,29 @@ func newTestGridEnv(t *testing.T) (*gridworldenv.Adapter, *actorcritic.Params) {
 	rng := rand.New(rand.NewPCG(1, 2))
 	teacherParams := actorcritic.NewParams(rng, env.ObservationSize(), 8, env.ActionSpace())
 	return env, teacherParams
+}
+
+// newTestGridEnvPool builds n independent gridworldenv.Adapter instances
+// (mirroring newTestGridEnv, but n separate envs rather than one)
+// sharing a single teacherParams, for exercising Round/trainStudent's
+// len(envs) > 1 (ppo.NewWithPersistentEnvPool) branch.
+func newTestGridEnvPool(t *testing.T, n int) ([]rl.Environment, *actorcritic.Params) {
+	t.Helper()
+
+	const gridSize = 4 // 2x2 grid: smallest valid perfect-square size.
+	envs := make([]rl.Environment, n)
+	var observationSize, actionSpace int
+	for i := range n {
+		rawEnv, err := gridworldenv.New(gridSize)
+		require.NoError(t, err)
+		env := gridworldenv.NewAdapter(rawEnv)
+		envs[i] = env
+		observationSize, actionSpace = env.ObservationSize(), env.ActionSpace()
+	}
+
+	rng := rand.New(rand.NewPCG(1, 2))
+	teacherParams := actorcritic.NewParams(rng, observationSize, 8, actionSpace)
+	return envs, teacherParams
 }
 
 // testConfig returns a Config sized for a fast unit test: one training

@@ -4,8 +4,8 @@ go 1.27.0
 
 require (
 	github.com/moby/moby/client v0.2.1
-	github.com/reallyoldfogie/cRL-go v0.11.1
-	github.com/reallyoldfogie/mc-agent v0.0.2
+	github.com/reallyoldfogie/cRL-go v0.12.0
+	github.com/reallyoldfogie/mc-agent v0.0.3
 	github.com/reallyoldfogie/mc-bot-go v0.2.4
 	github.com/reallyoldfogie/mc-client-test-go v0.1.1
 	github.com/stretchr/testify v1.12.1
@@ -54,3 +54,7 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// replace github.com/reallyoldfogie/mc-agent => ../mc-agent
+
+// replace github.com/reallyoldfogie/cRL-go => ../cRL-go

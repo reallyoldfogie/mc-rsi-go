@@ -29,6 +29,8 @@ func TestParseFlagsRejectsMissingOrInvalidInput(t *testing.T) {
 		{"zero eval-episode-len", validArgs("-eval-episode-len", "0")},
 		{"negative checkpoint-interval", validArgs("-checkpoint-interval", "-1")},
 		{"negative max-rounds", validArgs("-max-rounds", "-1")},
+		{"zero parallel-envs", validArgs("-parallel-envs", "0")},
+		{"negative parallel-envs", validArgs("-parallel-envs", "-1")},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -50,6 +52,7 @@ func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
 	assert.Equal(t, 10, f.checkpointInterval)
 	assert.Equal(t, 0, f.maxRounds)
 	assert.False(t, f.autoResetOrigin, "-auto-reset-origin must default to false: opt-in, existing configs unaffected")
+	assert.Equal(t, 1, f.parallelEnvs, "-parallel-envs must default to 1: existing single-environment behavior unaffected")
 
 	f, err = parseFlags([]string{
 		"-checkpoint-dir", "/tmp/ckpt",
@@ -61,6 +64,7 @@ func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
 		"-checkpoint-interval", "0",
 		"-max-rounds", "2",
 		"-auto-reset-origin",
+		"-parallel-envs", "4",
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "/tmp/trainer.json", f.trainerConfigPath)
@@ -70,6 +74,7 @@ func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
 	assert.Equal(t, 0, f.checkpointInterval)
 	assert.Equal(t, 2, f.maxRounds)
 	assert.True(t, f.autoResetOrigin)
+	assert.Equal(t, 4, f.parallelEnvs)
 }
 
 // fakePositionProvider is the minimal positionProvider fake

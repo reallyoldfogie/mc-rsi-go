@@ -2,14 +2,21 @@
 // evaluation loop described in
 // docs/plans/03-single-task-leapfrog-evaluation-loop.md: clone a Teacher
 // into a Student, keep training the Student, then compare both against
-// the same rl.Environment and report whether the Student won.
+// a live rl.Environment and report whether the Student won.
 //
-// Deliberately narrow for v1 (see that document's "Why sequential, not
-// concurrent"): Round drives exactly one rl.Environment instance,
-// evaluating Teacher and Student one after another against fresh
-// episodes of it rather than via two concurrent bot sessions, so it
-// doesn't need mc-agent's two outstanding concurrency bugs
-// (docs/plans/05-mc-agent-concurrency-fixes.md) fixed first.
+// Round accepts one or more rl.Environment instances (see
+// docs/plans/08-parallel-environments-and-scaling.md). A single
+// environment (the original v1 design — see that document's "Why
+// sequential, not concurrent" for the mc-agent concurrency bugs, since
+// fixed via docs/plans/05-mc-agent-concurrency-fixes.md, that originally
+// motivated this) still trains and evaluates entirely sequentially,
+// unchanged from before this package supported more than one. Multiple
+// environments train the Student concurrently across all of them (one
+// real bot session driving each, via ppo.NewWithPersistentEnvPool) for
+// throughput, while evaluation stays sequential against envs[0] only —
+// see trainStudent's own doc comment for why concurrency is bounded to
+// len(envs) rather than some other worker count, and Round's for why
+// evaluation isn't parallelized too.
 //
 // Round does not persist anything: pkg/lineage.Save, called by the
 // caller (docs/plans/04), owns turning a winning Result into a saved
@@ -116,12 +123,18 @@ type Result struct {
 	StudentParams *actorcritic.Params
 }
 
-// Round runs one leapfrog round against env: clones teacherParams into a
-// Student (actorcritic.Params.Snapshot — teacherParams itself is never
-// mutated), continues training the clone for cfg.EpochsPerGeneration PPO
-// epochs against env, then evaluates both Teacher and Student — Teacher
-// first, Student second, both against fresh env.Reset episodes of the
-// same env instance — over cfg.EvalEpisodes episodes each.
+// Round runs one leapfrog round against envs: clones teacherParams into
+// a Student (actorcritic.Params.Snapshot — teacherParams itself is
+// never mutated), continues training the clone for
+// cfg.EpochsPerGeneration PPO epochs against envs (concurrently across
+// all of them if len(envs) > 1 — see trainStudent), then evaluates both
+// Teacher and Student — Teacher first, Student second, both against
+// fresh envs[0].Reset episodes — over cfg.EvalEpisodes episodes each.
+// Evaluation deliberately stays sequential against envs[0] only even
+// when len(envs) > 1: cfg.EvalEpisodes is small relative to training
+// rollout volume (see docs/plans/08-parallel-environments-and-scaling.md's
+// own numbers), so parallelizing it isn't worth the added complexity
+// this round.
 //
 // Evaluation picks each step's highest-probability action (via
 // Actor.ActWithInfo) rather than sampling stochastically, matching
@@ -129,7 +142,10 @@ type Result struct {
 // during comparison — only Student *training* (via ppo.Trainer's own
 // rollout collection) explores; evaluation should measure each side's
 // best judgment, not exploration noise.
-func Round(ctx context.Context, env rl.Environment, teacherParams *actorcritic.Params, cfg Config, rng *rand.Rand) (Result, error) {
+func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcritic.Params, cfg Config, rng *rand.Rand) (Result, error) {
+	if len(envs) == 0 {
+		return Result{}, fmt.Errorf("leapfrog: at least one environment is required")
+	}
 	if teacherParams == nil {
 		return Result{}, fmt.Errorf("leapfrog: teacher params must not be nil")
 	}
@@ -137,17 +153,17 @@ func Round(ctx context.Context, env rl.Environment, teacherParams *actorcritic.P
 		return Result{}, err
 	}
 
-	studentParams, err := trainStudent(ctx, env, teacherParams, cfg)
+	studentParams, err := trainStudent(ctx, envs, teacherParams, cfg)
 	if err != nil {
 		return Result{}, fmt.Errorf("leapfrog: training student: %w", err)
 	}
 
-	teacherReward, err := evaluate(ctx, env, teacherParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
+	teacherReward, err := evaluate(ctx, envs[0], teacherParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
 	if err != nil {
 		return Result{}, fmt.Errorf("leapfrog: evaluating teacher: %w", err)
 	}
 
-	studentReward, err := evaluate(ctx, env, studentParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
+	studentReward, err := evaluate(ctx, envs[0], studentParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
 	if err != nil {
 		return Result{}, fmt.Errorf("leapfrog: evaluating student: %w", err)
 	}
@@ -156,19 +172,32 @@ func Round(ctx context.Context, env rl.Environment, teacherParams *actorcritic.P
 }
 
 // trainStudent clones teacherParams and trains the clone for
-// cfg.EpochsPerGeneration PPO epochs against env, reused as a persistent
-// environment (ppo.NewWithPersistentEnv) rather than rebuilt per
-// episode, matching rlenv.Environment's own "long-lived, Reset between
-// episodes" contract (a live bot session is far too expensive to
-// reconnect per episode).
-func trainStudent(ctx context.Context, env rl.Environment, teacherParams *actorcritic.Params, cfg Config) (*actorcritic.Params, error) {
+// cfg.EpochsPerGeneration PPO epochs against envs. A single environment
+// (len(envs) == 1) is driven exactly as before this package supported
+// more than one — ppo.NewWithPersistentEnv, sequential rollout
+// collection — so single-environment callers see zero behavioral
+// change. Multiple environments (len(envs) > 1) are driven concurrently
+// via ppo.NewWithPersistentEnvPool, one real bot session per goroutine
+// for the pool's entire lifetime (see that constructor's own doc
+// comment for why concurrency is bounded to len(envs) rather than
+// cfg.Trainer.Workers). Either way, every env is reused as a persistent
+// environment (Reset between episodes, never rebuilt), matching
+// rlenv.Environment's own "long-lived" contract — a live bot session is
+// far too expensive to reconnect per episode.
+func trainStudent(ctx context.Context, envs []rl.Environment, teacherParams *actorcritic.Params, cfg Config) (*actorcritic.Params, error) {
 	studentParams := teacherParams.Snapshot()
 
-	persistentFactory := func(*rand.Rand) (rl.Environment, error) {
-		return env, nil
+	var trainer *ppo.Trainer
+	var err error
+	if len(envs) == 1 {
+		env := envs[0]
+		persistentFactory := func(*rand.Rand) (rl.Environment, error) {
+			return env, nil
+		}
+		trainer, err = ppo.NewWithPersistentEnv(cfg.Trainer, persistentFactory, studentParams)
+	} else {
+		trainer, err = ppo.NewWithPersistentEnvPool(cfg.Trainer, envs, studentParams)
 	}
-
-	trainer, err := ppo.NewWithPersistentEnv(cfg.Trainer, persistentFactory, studentParams)
 	if err != nil {
 		return nil, fmt.Errorf("constructing trainer: %w", err)
 	}

@@ -13,6 +13,8 @@ import (
 	mcconfig "github.com/reallyoldfogie/mc-agent/config"
 	rofutils "github.com/reallyoldfogie/mc-bot-go/utils"
 	"github.com/reallyoldfogie/mc-client-test-go/testenv"
+
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/parallelenv"
 )
 
 // This file is this repo's own, much smaller counterpart to mc-agent's
@@ -144,6 +146,68 @@ func WithExtraEnv(env map[string]string) ServerOption {
 			cfg.ExtraEnv[k] = v
 		}
 	}
+}
+
+// WithNamePrefix overrides a launched server's container NamePrefix
+// (default "mc-rsi-trainer-"), applied after this file's own default —
+// so it always wins over whatever opts a caller passed before it. Added
+// for EnsureServers, which uses this to give N concurrently launched
+// containers distinct, human-readable names for easy `docker ps`
+// identification during a multi-server live test, independent of
+// whether their RCON passwords (which already factor into the container
+// name via a short id — see testenv's own naming) happen to differ.
+func WithNamePrefix(prefix string) ServerOption {
+	return func(cfg *testenv.ServerConfig) {
+		cfg.NamePrefix = prefix
+	}
+}
+
+// EnsureServers is EnsureServer's N-way counterpart for
+// docs/plans/08-parallel-environments-and-scaling.md's parallel-environment
+// work: derives n independent settings copies from base via
+// parallelenv.DeriveSettings and calls EnsureServer once per copy
+// (sequentially — simpler partial-failure cleanup than concurrent
+// launch/teardown, and a few tens of seconds of extra startup latency
+// for a handful of servers is an acceptable tradeoff; a future
+// optimization if that latency becomes annoying, not attempted here),
+// each with a distinct WithNamePrefix applied last so it always wins
+// even if a caller's own opts don't differentiate them.
+//
+// Unlike EnsureServer, base itself is never mutated — there is no
+// single "the" settings to mutate for N independent servers. Instead
+// every derived, EnsureServer-mutated copy is returned alongside its
+// ManagedServer, in the same order. If any of the n launches fails,
+// every server successfully launched so far is closed before the error
+// is returned, so a partial launch never leaks containers.
+//
+// Test-support only, like EnsureServer itself — production code
+// (cmd/rsi-train/main.go) never imports this package; a real multi-
+// environment run instead assumes n already-running external servers
+// reachable at addresses derived the same way, via
+// pkg/parallelenv.DeriveSettings directly (see connectEnvironments in
+// cmd/rsi-train/main.go).
+func EnsureServers(ctx context.Context, base mcconfig.Settings, n int, opts ...ServerOption) ([]*ManagedServer, []mcconfig.Settings, error) {
+	if n <= 0 {
+		return nil, nil, fmt.Errorf("mcserver: n must be positive, got %d", n)
+	}
+
+	servers := make([]*ManagedServer, 0, n)
+	settingsOut := make([]mcconfig.Settings, 0, n)
+	for i := 0; i < n; i++ {
+		derived := parallelenv.DeriveSettings(base, i, n)
+		indexOpts := append(append([]ServerOption{}, opts...), WithNamePrefix(fmt.Sprintf("mc-rsi-trainer-env%d-", i)))
+
+		srv, err := EnsureServer(ctx, &derived, indexOpts...)
+		if err != nil {
+			for _, s := range servers {
+				_ = s.Close(context.Background())
+			}
+			return nil, nil, fmt.Errorf("mcserver: launching environment %d/%d: %w", i, n, err)
+		}
+		servers = append(servers, srv)
+		settingsOut = append(settingsOut, derived)
+	}
+	return servers, settingsOut, nil
 }
 
 // launchServer is EnsureServer's "nothing answered, start one" path,

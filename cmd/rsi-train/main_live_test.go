@@ -309,6 +309,122 @@ func TestRunCompletesOneRealisticRoundAgainstFlatLiveServerLive(t *testing.T) {
 	t.Logf("latest generation after the run: %d (provenance=%s)", rec.Generation, rec.Provenance)
 }
 
+// TestRunCompletesOneRoundAgainstFourFlatLiveServersLive is
+// docs/plans/08-parallel-environments-and-scaling.md's first real,
+// live confirmation that -parallel-envs actually drives N concurrent
+// live bot sessions against N separate servers, not just that the code
+// compiles — mirroring TestRunCompletesOneRealisticRoundAgainstFlatLiveServerLive's
+// shape (flat world, isolating step-cost from terrain variance) but
+// deliberately kept tiny (see the trainer config below): this is a fast
+// first confirmation the 4-server wiring works at all, not a
+// meaningful training run — a longer, production-scale 4-env run is
+// worth doing only after this passes cleanly (four concurrent live
+// Minecraft server containers is a real jump in Docker/CPU/RAM usage
+// versus any single-server run this repo has attempted so far). Gated
+// by its own env var (on top of MC_RSI_TRAINER_LIVE_CONFIG), separate
+// from MC_RSI_TRAINER_LIVE_REALISTIC_ROUND, since this is a different
+// kind of "heavier" (more servers, not more steps).
+//
+// Writes the pristine, pre-EnsureServers base settings to
+// -mc-agent-config, not any of testing.EnsureServers' own per-index
+// derived copies: run()'s own connectEnvironments (main.go) re-derives
+// all 4 instances from whatever -mc-agent-config points at via the same
+// pkg/parallelenv.DeriveSettings(_, i, 4) call EnsureServers already
+// used to launch these 4 containers. Starting both derivations from the
+// same base produces byte-identical addresses/RCON/usernames per index;
+// starting from an already-derived config instead would double-apply
+// DeriveSettings (e.g. re-suffixing an already-suffixed RCON password),
+// producing values that don't match any real container. This is also
+// why base.RCON.Password is set explicitly below, rather than left for
+// EnsureServer to generate randomly per container: DeriveSettings only
+// suffixes a non-empty base password identically at both call sites: an
+// empty one would make each container's real password unreproducible
+// from run()'s own re-derivation.
+func TestRunCompletesOneRoundAgainstFourFlatLiveServersLive(t *testing.T) {
+	if os.Getenv("MC_RSI_TRAINER_LIVE_CONFIG") == "" {
+		t.Skip("MC_RSI_TRAINER_LIVE_CONFIG not set; skipping live cmd/rsi-train smoke test")
+	}
+	if os.Getenv("MC_RSI_TRAINER_LIVE_PARALLEL_ENVS") == "" {
+		t.Skip("MC_RSI_TRAINER_LIVE_PARALLEL_ENVS not set; skipping the heavier 4-server parallel-environment test")
+	}
+
+	const n = 4
+	base := mcconfig.Default()
+	base.Connection = mcconfig.ConnectionSettings{
+		Address: "127.0.0.1:34620", // distinct base port from every other live test in this file, so all can run independently without colliding.
+		Offline: true,
+		Version: "1.21.5",
+		Name:    "RSIParallel", // 11 chars; DeriveUsername's "-N" suffix (N is 0-3 here) stays well within Minecraft's 16-character cap.
+	}
+	base.RCON = mcconfig.RCONSettings{
+		Password: "rsi-trainer-parallel-test-pw", // explicit and non-empty — see this test's own doc comment for why.
+	}
+	base.Env = mcconfig.EnvSettings{
+		TargetOffset:       [3]float64{5, 0, 0},
+		ArrivalThreshold:   1.5,
+		StepTimeoutSeconds: 10,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	servers, _, err := rsitesting.EnsureServers(ctx, base, n, rsitesting.WithExtraEnv(map[string]string{
+		"LEVEL_TYPE": "FLAT",
+	}))
+	require.NoError(t, err)
+	defer func() {
+		for _, s := range servers {
+			_ = s.Close(context.Background())
+		}
+	}()
+
+	dir := t.TempDir()
+	mcConfigPath := filepath.Join(dir, "mc-agent-config.json")
+	writeJSON(t, mcConfigPath, base)
+
+	// Deliberately tiny — see this test's own doc comment: proving the
+	// 4-server wiring works end to end, not producing a meaningfully
+	// trained policy.
+	trainerConfigPath := filepath.Join(dir, "trainer-config.json")
+	writeJSON(t, trainerConfigPath, crlconfig.Settings{
+		RolloutSize:   4,
+		EpisodeLen:    15,
+		Gamma:         0.99,
+		LearningRate:  0.05,
+		GridSize:      1, // unused against a live rlenv session; see leapfrog.Config.Trainer's own doc comment.
+		HiddenSize:    8,
+		Seed:          42,
+		Workers:       1,
+		ClipEpsilon:   0.2,
+		EntropyCoef:   0.01,
+		ValueCoef:     0.5,
+		GAELambda:     0.95,
+		PPOEpochs:     1,
+		MinibatchSize: 4,
+	})
+
+	checkpointDir := t.TempDir()
+
+	start := time.Now()
+	err = run([]string{
+		"-checkpoint-dir", checkpointDir,
+		"-mc-agent-config", mcConfigPath,
+		"-trainer-config", trainerConfigPath,
+		"-epochs-per-generation", "1",
+		"-eval-episodes", "1",
+		"-eval-episode-len", "15",
+		"-max-rounds", "1",
+		"-parallel-envs", "4",
+	})
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	t.Logf("one small 4-parallel-environment leapfrog round completed in %s", elapsed)
+
+	rec, err := lineage.Latest(checkpointDir)
+	require.NoError(t, err, "run() must leave at least a generation-0 checkpoint behind")
+	t.Logf("latest generation after the run: %d (provenance=%s)", rec.Generation, rec.Provenance)
+}
+
 func writeJSON(t *testing.T, path string, v any) {
 	t.Helper()
 	data, err := json.MarshalIndent(v, "", "  ")

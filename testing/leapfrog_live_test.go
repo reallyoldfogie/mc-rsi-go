@@ -29,6 +29,7 @@ import (
 
 	"github.com/reallyoldfogie/cRL-go/pkg/actorcritic"
 	crlconfig "github.com/reallyoldfogie/cRL-go/pkg/config"
+	"github.com/reallyoldfogie/cRL-go/pkg/rl"
 
 	"github.com/reallyoldfogie/mc-agent/actions"
 	"github.com/reallyoldfogie/mc-agent/agent"
@@ -122,7 +123,7 @@ func TestRoundAgainstLiveRlenv(t *testing.T) {
 		EvalEpisodeLen:      50,
 	}
 
-	result, err := leapfrog.Round(ctx, env, teacherParams, cfg, rng)
+	result, err := leapfrog.Round(ctx, []rl.Environment{env}, teacherParams, cfg, rng)
 	require.NoError(t, err)
 	t.Logf("live round result: teacher=%.3f student=%.3f studentWon=%v", result.TeacherReward, result.StudentReward, result.StudentWon)
 }
