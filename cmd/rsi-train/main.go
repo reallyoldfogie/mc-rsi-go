@@ -20,6 +20,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	oldrand "math/rand"
 	"math/rand/v2"
 	"os"
 	"os/signal"
@@ -43,6 +44,8 @@ import (
 	"github.com/reallyoldfogie/mc-agent/utils"
 	rofutils "github.com/reallyoldfogie/mc-bot-go/utils"
 
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/curriculum"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/curriculum/rlenvadapter"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/lineage"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/parallelenv"
@@ -73,6 +76,8 @@ type flags struct {
 	parallelEnvs                 int
 	sharedServer                 bool
 	sharedServerSeparationChunks int
+	curriculumConfigPath         string
+	metricsAddr                  string
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -90,6 +95,8 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.parallelEnvs, "parallel-envs", 1, "number of concurrent live Minecraft environments to train against (see docs/plans/08-parallel-environments-and-scaling.md); each needs its own already-running server — addresses/RCON/bot usernames beyond the first are derived from -mc-agent-config via pkg/parallelenv.DeriveSettings. 1 (the default) preserves single-environment behavior exactly.")
 	fs.BoolVar(&f.sharedServer, "shared-server", false, "run all -parallel-envs bots against ONE already-running server instead of one server each, each confined to its own working area (see -shared-server-separation-chunks). Requires RCON to be configured. The operator is responsible for launching that server with a reduced VIEW_DISTANCE/SIMULATION_DISTANCE (e.g. 4-6) small enough not to overlap adjacent bots' working areas.")
 	fs.IntVar(&f.sharedServerSeparationChunks, "shared-server-separation-chunks", 16, "chunks between adjacent bots' working areas when -shared-server is set; ignored otherwise")
+	fs.StringVar(&f.curriculumConfigPath, "curriculum-config", "", "optional path to a pkg/curriculum pool JSON file (target_offsets/mine_target_blocks/mine_search_radius/craft_target_items) — if set, each environment's Config.TaskSelector picks a fresh task+goal every episode (pkg/curriculum.UniformRandom via pkg/curriculum/rlenvadapter) instead of -mc-agent-config's single static env.target_offset/mine/craft settings for the whole run. Unset preserves that static-Config behavior exactly.")
+	fs.StringVar(&f.metricsAddr, "metrics-addr", ":9400", "address to serve Prometheus metrics on (see monitoring/README.md); empty disables the metrics server entirely")
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}
@@ -142,10 +149,26 @@ func run(args []string) error {
 		return fmt.Errorf("loading mc-agent config: %w", err)
 	}
 
+	var curriculumGen *curriculum.UniformRandom
+	if f.curriculumConfigPath != "" {
+		pool, err := loadCurriculumPool(f.curriculumConfigPath)
+		if err != nil {
+			return err
+		}
+		curriculumGen, err = curriculum.NewUniformRandom(pool)
+		if err != nil {
+			return fmt.Errorf("building curriculum generator from %s: %w", f.curriculumConfigPath, err)
+		}
+	}
+
+	if f.metricsAddr != "" {
+		startMetricsServer(f.metricsAddr)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks)
+	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen)
 	if err != nil {
 		return err
 	}
@@ -193,6 +216,7 @@ func run(args []string) error {
 		return err
 	}
 	log.Printf("starting from generation %d (provenance=%s)", rec.Generation, rec.Provenance)
+	metricGeneration.Set(float64(rec.Generation))
 
 	interimDir := filepath.Join(f.checkpointDir, "interim")
 	cfg := leapfrog.Config{
@@ -202,6 +226,10 @@ func run(args []string) error {
 		EvalEpisodeLen:      f.evalEpisodeLen,
 		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.Params) {
 			log.Printf("  epoch %d: average return %.3f, samples %d", stats.Epoch, stats.AverageReturn, stats.SampleCount)
+			metricCurrentEpoch.Set(float64(stats.Epoch))
+			metricEpochAvgReturn.Set(float64(stats.AverageReturn))
+			metricEpochsTotal.Inc()
+			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
 			if f.checkpointInterval > 0 && (stats.Epoch+1)%f.checkpointInterval == 0 {
 				if err := saveInterimCheckpoint(interimDir, params, environmentID, stats.Epoch); err != nil {
 					log.Printf("  saving interim checkpoint: %v", err)
@@ -218,6 +246,9 @@ func run(args []string) error {
 			break
 		}
 
+		metricCurrentRound.Set(float64(round))
+		metricCurrentEpoch.Set(-1)
+
 		start := time.Now()
 		result, err := leapfrog.Round(ctx, envs, teacherParams, cfg, rng)
 		if err != nil {
@@ -228,6 +259,9 @@ func run(args []string) error {
 			return fmt.Errorf("round %d: %w", round, err)
 		}
 		elapsed := time.Since(start).Round(time.Second)
+		metricRoundDurationSeconds.Observe(elapsed.Seconds())
+		metricTeacherReward.Set(float64(result.TeacherReward))
+		metricStudentReward.Set(float64(result.StudentReward))
 
 		if result.StudentWon {
 			rec = lineage.Record{
@@ -242,6 +276,10 @@ func run(args []string) error {
 				return fmt.Errorf("round %d: saving generation %d: %w", round, rec.Generation, err)
 			}
 			teacherParams = result.StudentParams
+			metricRoundsTotal.WithLabelValues("won").Inc()
+			metricGeneration.Set(float64(rec.Generation))
+		} else {
+			metricRoundsTotal.WithLabelValues("lost").Inc()
 		}
 
 		log.Printf("round %d (%s): teacher=%.3f student=%.3f studentWon=%v generation=%d",
@@ -541,7 +579,7 @@ type connectedEnvironment struct {
 // On a mid-loop failure, every already-connected agent is closed before
 // the error is returned, so a partial connect never leaks live bot
 // sessions.
-func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int) ([]connectedEnvironment, error) {
+func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom) ([]connectedEnvironment, error) {
 	if sharedServer {
 		if base.RCON.Address == "" {
 			return nil, fmt.Errorf("rsi-train: -shared-server requires RCON to be configured in -mc-agent-config")
@@ -594,6 +632,29 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 				_ = a.Close(context.Background())
 				closeAll()
 				return nil, fmt.Errorf("environment %d/%d: %w", i, n, err)
+			}
+		}
+		if curriculumGen != nil {
+			// Each environment gets its own rng, not a shared one: N
+			// environments' Reset calls run concurrently (see
+			// leapfrog.Round's rollout collection), and math/rand/v2's
+			// Rand is not safe for concurrent use. curriculumGen itself
+			// (a *curriculum.UniformRandom) holds no mutable state beyond
+			// its read-only Pool, so sharing it across every env's own
+			// rlenvadapter.TaskSelector closure is safe — only the rng
+			// each closure supplies needs to be distinct.
+			// time.Now().UnixNano()+i mirrors applyAutoResetOrigin's own
+			// defaultAutoJitter seeding for the same reason: nanosecond
+			// resolution across this loop's own real, if brief, elapsed
+			// time already all-but-guarantees distinct seeds, and +i
+			// removes any remaining doubt.
+			seed := uint64(time.Now().UnixNano()) + uint64(i)
+			taskRNG := rand.New(rand.NewPCG(seed, uint64(i)))
+			base := rlenvadapter.TaskSelector(curriculumGen, taskRNG)
+			envCfg.TaskSelector = func(episode int, rng *oldrand.Rand) rlenv.TaskOverride {
+				override := base(episode, rng)
+				recordTaskSelection(override)
+				return override
 			}
 		}
 		env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)

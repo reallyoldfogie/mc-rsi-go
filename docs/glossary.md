@@ -75,6 +75,49 @@ grouped by theme; within a group, roughly in the order you'd need them.
   happened during a play session, reused by this project (rather than building its own replay
   tooling) so a training episode can be watched back later.
 
+## Metrics (Prometheus / Grafana)
+
+`cmd/rsi-train` exposes these as Prometheus metrics on `-metrics-addr` (default `:9400`) — see
+[`../monitoring/README.md`](../monitoring/README.md) for the Grafana dashboard that graphs them.
+Every name below is exactly the Prometheus metric name, so it doubles as a reference when writing
+your own queries.
+
+- **`rsi_generation`** — the current Teacher's generation number. Same thing as **Generation**,
+  above, just exposed as a live gauge instead of only appearing in `pkg/lineage`'s saved records.
+- **`rsi_current_round`** / **`rsi_current_epoch`** — the round and Student-training epoch
+  currently in progress. `rsi_current_epoch` reads `-1` between rounds, before that round's first
+  epoch has completed.
+- **`rsi_rounds_total{outcome="won"|"lost"}`** — a running count of completed rounds, split by
+  whether the Student won (was promoted) or the Teacher held. `won / (won + lost)` is the win rate.
+- **`rsi_round_duration_seconds`** — a histogram of how long each completed round took,
+  wall-clock. `rsi_round_duration_seconds_sum / rsi_round_duration_seconds_count` gives the mean.
+- **`rsi_teacher_reward`** / **`rsi_student_reward`** — each side's mean evaluation reward from the
+  most recently completed round (see **Reward**, above — these aren't normalized across task
+  types, so compare Teacher vs. Student within one round rather than across rounds with a
+  different task mix).
+- **`rsi_epoch_avg_return`** — the average rollout return of the most recently completed
+  Student-training epoch. This is the core "is it learning" signal — see **Epoch**, above.
+- **`rsi_epochs_total`** — a running count of every Student-training epoch completed, across every
+  round.
+- **`rsi_epoch_samples_total`** — a running count of rollout steps consumed by Student training.
+  `rate(rsi_epoch_samples_total[5m])` is the actual training throughput (samples/sec) — the
+  "training rate" a Grafana panel graphs directly, rather than inferring it from log timestamps.
+- **`rsi_task_episodes_total{task="goto"|"mine"|"craft"}`** — how many episodes the curriculum has
+  posed of each task type so far. Only present when `rsi-train` was started with
+  `-curriculum-config` (see **Curriculum / task generator**, above) — without one, there's no
+  per-episode task-selection hook for this command to count from at all.
+- **`up{job="rsi-train"}`** — not one of this project's own metrics; Prometheus sets this
+  automatically for every scrape target. `1` means the last scrape of `rsi-train`'s `/metrics`
+  endpoint succeeded (the process is alive and reachable); `0` means it didn't (crashed, still
+  starting up, or `-metrics-addr` is unreachable).
+
+**A known gap:** `mc-agent`'s Mine/Craft actions log occasional confirmation-timeout errors (a
+fixed 2-second window that a busy shared server can miss under load) straight to the training log,
+not to any of the metrics above — `rlenv.Environment.Step` doesn't currently surface that signal in
+a way `cmd/rsi-train` could turn into a counter. Watch the log (`grep -c "Mine error\|Craft error"`)
+for that specific rate today; exposing it as a real metric would need a small `mc-agent` change
+first.
+
 ## Where these terms come from
 
 Most of the RL-specific terms above are standard across the field, not unique to this project. The

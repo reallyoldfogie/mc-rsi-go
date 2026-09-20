@@ -1,0 +1,183 @@
+{
+  "title": "RSI Curriculum Training",
+  "uid": "rsi-curriculum-training",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-24h", "to": "now" },
+  "tags": ["mc-rsi-trainer"],
+  "panels": [
+    {
+      "type": "row",
+      "title": "Current state",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Process",
+      "description": "Whether Prometheus's last scrape of rsi-train's /metrics endpoint succeeded. 1 = reachable, 0 = the process is down or the metrics server can't be reached.",
+      "id": 1,
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "up{job=\"rsi-train\"}", "refId": "A" }],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "LIVE", "color": "green" } } },
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 1, "color": "green" }] }
+        }
+      },
+      "options": { "textMode": "value", "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Generation",
+      "description": "Current Teacher generation number. Increases by one every time a Student beats its Teacher and gets promoted (pkg/lineage).",
+      "id": 2,
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rsi_generation", "refId": "A" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] } } },
+      "options": { "textMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Current round / epoch",
+      "description": "The round and Student-training epoch currently in progress. Epoch shows -1 between rounds, before the new round's first epoch completes.",
+      "id": 3,
+      "gridPos": { "h": 4, "w": 6, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "rsi_current_round", "refId": "A", "legendFormat": "round" },
+        { "expr": "rsi_current_epoch", "refId": "B", "legendFormat": "epoch" }
+      ],
+      "options": { "textMode": "value_and_name", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "horizontal" }
+    },
+    {
+      "type": "stat",
+      "title": "Rounds won",
+      "description": "Total completed rounds where the Student beat the Teacher (rsi_rounds_total{outcome=\"won\"}).",
+      "id": 4,
+      "gridPos": { "h": 4, "w": 3, "x": 14, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rsi_rounds_total{outcome=\"won\"}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "green", "mode": "fixed" } } },
+      "options": { "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Rounds lost",
+      "description": "Total completed rounds where the Teacher held (rsi_rounds_total{outcome=\"lost\"}). Not wasted work — the Student's updates are simply discarded and the next round tries again from the same Teacher.",
+      "id": 5,
+      "gridPos": { "h": 4, "w": 3, "x": 17, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rsi_rounds_total{outcome=\"lost\"}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "color": { "fixedColor": "orange", "mode": "fixed" } } },
+      "options": { "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Win rate",
+      "description": "Share of completed rounds the Student has won: rsi_rounds_total{outcome=\"won\"} / total completed rounds.",
+      "id": 6,
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "100 * sum(rsi_rounds_total{outcome=\"won\"}) / sum(rsi_rounds_total)", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 30, "color": "orange" }, { "value": 50, "color": "green" }] } } },
+      "options": { "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "type": "row",
+      "title": "Training rate",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Average return per epoch",
+      "description": "rsi_epoch_avg_return — the mean total reward per rollout episode in the batch that produced each Student-training epoch. This is the core \"is it learning\" signal: within a round it should trend up (or at least not collapse) as epochs progress; compare its level across rounds only loosely, since the curriculum's task mix varies episode to episode.",
+      "id": 10,
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rsi_epoch_avg_return", "refId": "A", "legendFormat": "avg return" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "spanNulls": true } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Training throughput (samples/sec)",
+      "description": "rate(rsi_epoch_samples_total[5m]) — how many rollout steps (samples) Student training is consuming per second. A sustained drop usually means the live Minecraft session has slowed down (server load, network), not that PPO itself changed.",
+      "id": 11,
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rate(rsi_epoch_samples_total[5m])", "refId": "A", "legendFormat": "samples/sec" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+
+    {
+      "type": "row",
+      "title": "Rounds",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "id": 102,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Teacher vs. Student reward per round",
+      "description": "rsi_teacher_reward / rsi_student_reward — each side's mean evaluation reward from the most recently completed round. A Student point above its Teacher point at the same round means it won and was promoted (see Generation above).",
+      "id": 20,
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "rsi_teacher_reward", "refId": "A", "legendFormat": "teacher" },
+        { "expr": "rsi_student_reward", "refId": "B", "legendFormat": "student" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "pointSize": 6, "showPoints": "always" } }, "overrides": [{ "matcher": { "id": "byName", "options": "teacher" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }, { "matcher": { "id": "byName", "options": "student" }, "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] }] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "stat",
+      "title": "Average round duration",
+      "description": "rsi_round_duration_seconds_sum / rsi_round_duration_seconds_count — mean wall-clock time per completed round (all epochs of Student training plus both sides' evaluation episodes).",
+      "id": 21,
+      "gridPos": { "h": 9, "w": 6, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rsi_round_duration_seconds_sum / rsi_round_duration_seconds_count", "refId": "A" }],
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "options": { "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "bargauge",
+      "title": "Task mix",
+      "description": "rsi_task_episodes_total, by task — how the curriculum's random per-episode task selection has actually split across Goto / Mine / Craft so far. Only present when rsi-train was started with -curriculum-config.",
+      "id": 22,
+      "gridPos": { "h": 9, "w": 6, "x": 18, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rsi_task_episodes_total", "legendFormat": "{{task}}", "refId": "A" }],
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  }
+}

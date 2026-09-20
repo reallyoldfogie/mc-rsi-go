@@ -1,0 +1,12 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: rsi-train
+    # host.docker.internal is this compose file's extra_hosts entry
+    # (docker-compose.yml) pointing back at the Docker host, since
+    # rsi-train runs there directly, not inside this compose project.
+    # Change the port here to match whatever -metrics-addr rsi-train was
+    # started with (default :9400).
+    static_configs:
+      - targets: ["host.docker.internal:9400"]

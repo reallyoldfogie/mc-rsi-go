@@ -65,6 +65,13 @@ Also new: **[`testing/mcserver.go`](testing/mcserver.go)**'s `EnsureServer` (`do
 for a live Minecraft server at a config's address and launches one via Docker if none is found —
 every live test above uses it, so none of them need a manually pre-started server anymore.
 
+Also new: `cmd/rsi-train` exposes live Prometheus metrics (generation, round outcomes, training
+throughput, curriculum task mix — `-metrics-addr`, default `:9400`), and **[`monitoring/`](monitoring)**
+holds a Prometheus + Grafana stack (`docker compose up -d`) with a dashboard already provisioned
+against them — see [`monitoring/README.md`](monitoring/README.md) and
+[`docs/glossary.md`](docs/glossary.md)'s "Metrics" section for what each one means. A training run
+no longer needs a shell watching its log to know how it's doing.
+
 See [`docs/plans/00-rsi-trainer-roadmap.md`](docs/plans/00-rsi-trainer-roadmap.md) for the full
 rationale and current status, and `docs/plans/02` through `10` for the numbered sequence that takes
 this repo from here to a fully working leapfrog trainer.

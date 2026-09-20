@@ -123,6 +123,9 @@ a fixed number of leapfrog rounds instead — useful for a first, short test run
 for every flag (how many PPO epochs the Student trains per round, how many episodes each side is
 evaluated over, how often interim checkpoints are saved, and so on).
 
+It also serves live Prometheus metrics by default (`-metrics-addr`, default `:9400`) — see step 5,
+below, for a Grafana dashboard that graphs them instead of reading the log.
+
 ### Reading the log output
 
 Each Student-training epoch logs a progress line (`epoch N: average return ..., samples ...`), and
@@ -143,6 +146,23 @@ means the Teacher held.
   `"output"` points if you set it explicitly. Play these back with
   [ReplayMod](https://www.replaymod.com/) in a matching Minecraft client — this repo doesn't do
   anything with them itself beyond recording them.
+
+## 5. Monitoring a training run
+
+`rsi-train` exposes live Prometheus metrics on `-metrics-addr` (default `:9400`) for the whole
+duration of a run — generation, round outcomes, training throughput, task mix, and more (see
+[`docs/glossary.md`](glossary.md)'s "Metrics" section for exactly what each one means). Bring up a
+local Prometheus + Grafana stack once:
+
+```
+cd monitoring
+docker compose up -d
+```
+
+then open `http://localhost:3000` — a "RSI Curriculum Training" dashboard is already there, no
+setup needed. It keeps working for every future run against the same `-metrics-addr`; you don't
+need to redo this per run. See [`monitoring/README.md`](../monitoring/README.md) for the full
+picture (multiple concurrent runs, stopping/restarting the stack, editing the dashboard).
 
 ## TODO: Setting up a Minecraft server for training
 

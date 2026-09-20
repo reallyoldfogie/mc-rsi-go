@@ -1,0 +1,48 @@
+# Prometheus + Grafana stack for watching an rsi-train run without
+# needing a shell attached to it — see monitoring/README.md. rsi-train
+# itself runs as a normal host process (started with cmd/rsi-train, not
+# containerized here), exposing Prometheus metrics on -metrics-addr
+# (default :9400); this stack only scrapes and visualizes it.
+name: mc-rsi-trainer-monitoring
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    # rsi-train runs on the Docker host, not in this compose project, so
+    # Prometheus needs to reach out of its own network namespace to find
+    # it. host-gateway works the same way on Docker Desktop and on plain
+    # Docker Engine (Linux/WSL2) — see prometheus.yml's own comment on
+    # the scrape target this resolves.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    environment:
+      # Anonymous admin access, deliberately: this stack is meant to run
+      # on localhost for one operator watching their own training run,
+      # not as a shared/exposed service. Tighten this (real
+      # GF_SECURITY_ADMIN_PASSWORD, disable anonymous auth) before
+      # exposing port 3000 beyond localhost.
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
