@@ -19,6 +19,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	oldrand "math/rand"
 	"math/rand/v2"
@@ -26,6 +27,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -168,15 +170,13 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen)
+	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.checkpointDir)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		for _, c := range connected {
-			if err := c.agent.Close(context.Background()); err != nil {
-				log.Printf("close error: %v", err)
-			}
+			closeConnectedAgent(c.agent)
 		}
 	}()
 	// A live bot session can end on its own (e.g. the .agentStop file)
@@ -197,8 +197,12 @@ func run(args []string) error {
 	}
 
 	envs := make([]rl.Environment, len(connected))
+	episodeTask := "curriculum"
+	if curriculumGen == nil {
+		episodeTask = taskName(mcSettings.Env)
+	}
 	for i, c := range connected {
-		envs[i] = c.env
+		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode}
 	}
 
 	// Self-versioning by construction, matching mc-agent's own
@@ -217,6 +221,10 @@ func run(args []string) error {
 	}
 	log.Printf("starting from generation %d (provenance=%s)", rec.Generation, rec.Provenance)
 	metricGeneration.Set(float64(rec.Generation))
+	metricCurrentRound.Set(0)
+	metricCurrentEpoch.Set(-1)
+	progress := rec.Metadata
+	latestParams := teacherParams
 
 	interimDir := filepath.Join(f.checkpointDir, "interim")
 	cfg := leapfrog.Config{
@@ -225,13 +233,20 @@ func run(args []string) error {
 		EvalEpisodes:        f.evalEpisodes,
 		EvalEpisodeLen:      f.evalEpisodeLen,
 		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.Params) {
+			latestParams = params
+			progress.Epoch = stats.Epoch
+			progress.TotalUpdates += stats.UpdateCount
+			if stats.AverageReturn > progress.BestReturn {
+				progress.BestReturn = stats.AverageReturn
+			}
 			log.Printf("  epoch %d: average return %.3f, samples %d", stats.Epoch, stats.AverageReturn, stats.SampleCount)
 			metricCurrentEpoch.Set(float64(stats.Epoch))
 			metricEpochAvgReturn.Set(float64(stats.AverageReturn))
 			metricEpochsTotal.Inc()
 			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
+			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
 			if f.checkpointInterval > 0 && (stats.Epoch+1)%f.checkpointInterval == 0 {
-				if err := saveInterimCheckpoint(interimDir, params, environmentID, stats.Epoch); err != nil {
+				if err := saveInterimCheckpoint(interimDir, params, environmentID, stats.Epoch, progress); err != nil {
 					log.Printf("  saving interim checkpoint: %v", err)
 				}
 			}
@@ -271,11 +286,13 @@ func run(args []string) error {
 				SeededFromGeneration: -1,
 				CreatedAt:            time.Now(),
 				EnvironmentID:        environmentID,
+				Metadata:             progress,
 			}
 			if err := lineage.Save(f.checkpointDir, result.StudentParams, rec); err != nil {
 				return fmt.Errorf("round %d: saving generation %d: %w", round, rec.Generation, err)
 			}
 			teacherParams = result.StudentParams
+			latestParams = teacherParams
 			metricRoundsTotal.WithLabelValues("won").Inc()
 			metricGeneration.Set(float64(rec.Generation))
 		} else {
@@ -285,6 +302,10 @@ func run(args []string) error {
 		log.Printf("round %d (%s): teacher=%.3f student=%.3f studentWon=%v generation=%d",
 			round, elapsed, result.TeacherReward, result.StudentReward, result.StudentWon, rec.Generation)
 	}
+	if err := saveFinalCheckpoint(interimDir, latestParams, environmentID, progress); err != nil {
+		return fmt.Errorf("saving final recovery checkpoint: %w", err)
+	}
+	log.Printf("saved final recovery checkpoint: %s", filepath.Join(interimDir, "final.json"))
 
 	return nil
 }
@@ -531,10 +552,61 @@ func loadOrInitTeacher(checkpointDir, environmentID string, observationSize, hid
 // saved *generation* (loadOrInitTeacher), not from this interim epoch —
 // see docs/plans/04's own note that a full mid-round resume capability is
 // a further refinement, not required here.
-func saveInterimCheckpoint(dir string, params *actorcritic.Params, environmentID string, epoch int) error {
+func saveInterimCheckpoint(dir string, params *actorcritic.Params, environmentID string, epoch int, metadata checkpoint.Metadata) error {
 	return checkpoint.Save(dir, "interim", epoch, func(path string) error {
-		return actorcritic.SaveFile(path, params, environmentID, checkpoint.Metadata{Epoch: epoch})
+		return saveParamsAtomically(path, params, environmentID, metadata)
 	})
+}
+
+func saveFinalCheckpoint(dir string, params *actorcritic.Params, environmentID string, metadata checkpoint.Metadata) error {
+	if params == nil {
+		return fmt.Errorf("params are nil")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return saveParamsAtomically(filepath.Join(dir, "final.json"), params, environmentID, metadata)
+}
+
+func saveParamsAtomically(path string, params *actorcritic.Params, environmentID string, metadata checkpoint.Metadata) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	defer os.Remove(tmpPath)
+	if err := actorcritic.SaveFile(tmpPath, params, environmentID, metadata); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func taskName(settings mcconfig.EnvSettings) string {
+	switch {
+	case settings.MineTargetBlock != "":
+		return "mine"
+	case settings.CraftTargetItem != "":
+		return "craft"
+	default:
+		return "goto"
+	}
+}
+
+func taskNameForOverride(override rlenv.TaskOverride) string {
+	switch {
+	case !override.GoToTargetDisabled:
+		return "goto"
+	case override.MineTargetBlock != "":
+		return "mine"
+	case override.CraftTargetItem != "":
+		return "craft"
+	default:
+		return "unknown"
+	}
 }
 
 // connectAgent establishes one live bot session from settings — auth
@@ -552,8 +624,9 @@ func saveInterimCheckpoint(dir string, params *actorcritic.Params, environmentID
 // models.Agent backing it, so run's shutdown path can Close every agent
 // it opened regardless of how many -parallel-envs were requested.
 type connectedEnvironment struct {
-	agent models.Agent
-	env   rl.Environment
+	agent          models.Agent
+	env            rl.Environment
+	taskForEpisode func() string
 }
 
 // connectEnvironments builds n live bot sessions and their
@@ -579,7 +652,7 @@ type connectedEnvironment struct {
 // On a mid-loop failure, every already-connected agent is closed before
 // the error is returned, so a partial connect never leaks live bot
 // sessions.
-func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom) ([]connectedEnvironment, error) {
+func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string) ([]connectedEnvironment, error) {
 	if sharedServer {
 		if base.RCON.Address == "" {
 			return nil, fmt.Errorf("rsi-train: -shared-server requires RCON to be configured in -mc-agent-config")
@@ -592,9 +665,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 	connected := make([]connectedEnvironment, 0, n)
 	closeAll := func() {
 		for _, c := range connected {
-			if err := c.agent.Close(context.Background()); err != nil {
-				log.Printf("close error: %v", err)
-			}
+			closeConnectedAgent(c.agent)
 		}
 	}
 
@@ -610,15 +681,20 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 			suffix = fmt.Sprintf("-env%d", i)
 		}
 
-		a, err := connectAgent(ctx, settings, suffix)
+		a, err := connectAgent(ctx, settings, suffix, trainingDataDir)
 		if err != nil {
 			closeAll()
 			return nil, fmt.Errorf("connecting environment %d/%d: %w", i, n, err)
 		}
+		if err := opAgent(ctx, a, settings.Connection.Name); err != nil {
+			closeConnectedAgent(a)
+			closeAll()
+			return nil, fmt.Errorf("granting operator status to environment %d/%d: %w", i, n, err)
+		}
 
 		liveAgent, ok := a.(rlenv.LiveAgent)
 		if !ok {
-			_ = a.Close(context.Background())
+			closeConnectedAgent(a)
 			closeAll()
 			return nil, fmt.Errorf("environment %d/%d: agent does not satisfy rlenv.LiveAgent (missing InventoryCount/Craftable/BlockNameAt/HealthProvider?)", i, n)
 		}
@@ -629,12 +705,14 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 		}
 		if sharedServer {
 			if err := applySharedServerWorkingArea(&envCfg, a, i, separationChunks); err != nil {
-				_ = a.Close(context.Background())
+				closeConnectedAgent(a)
 				closeAll()
 				return nil, fmt.Errorf("environment %d/%d: %w", i, n, err)
 			}
 		}
 		if curriculumGen != nil {
+			var taskMu sync.RWMutex
+			selectedTask := taskName(envCfg)
 			// Each environment gets its own rng, not a shared one: N
 			// environments' Reset calls run concurrently (see
 			// leapfrog.Round's rollout collection), and math/rand/v2's
@@ -653,20 +731,73 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 			base := rlenvadapter.TaskSelector(curriculumGen, taskRNG)
 			envCfg.TaskSelector = func(episode int, rng *oldrand.Rand) rlenv.TaskOverride {
 				override := base(episode, rng)
+				taskMu.Lock()
+				selectedTask = taskNameForOverride(override)
+				taskMu.Unlock()
 				recordTaskSelection(override)
 				return override
 			}
+			// rlenv calls TaskSelector during the wrapped environment's Reset;
+			// the metrics wrapper reads this after Reset returns. The mutex also
+			// keeps this safe if a caller ever overlaps operations on one env.
+			taskForEpisode := func() string {
+				taskMu.RLock()
+				defer taskMu.RUnlock()
+				return selectedTask
+			}
+			env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
+			if err != nil {
+				closeConnectedAgent(a)
+				closeAll()
+				return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
+			}
+			connected = append(connected, connectedEnvironment{agent: a, env: env, taskForEpisode: taskForEpisode})
+			continue
 		}
 		env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
 		if err != nil {
-			_ = a.Close(context.Background())
+			closeConnectedAgent(a)
 			closeAll()
 			return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
 		}
 
-		connected = append(connected, connectedEnvironment{agent: a, env: env})
+		connected = append(connected, connectedEnvironment{agent: a, env: env, taskForEpisode: func() string { return taskName(envCfg) }})
 	}
 	return connected, nil
+}
+
+// closeConnectedAgent closes both the live agent and the optional raw packet
+// log writer installed by connectAgent. The latter is deliberately owned by
+// the trainer so packet logs are flushed before the run exits.
+func closeConnectedAgent(a models.Agent) {
+	if a == nil {
+		return
+	}
+	if err := a.Close(context.Background()); err != nil {
+		log.Printf("close error: %v", err)
+	}
+	if closer, ok := a.GetPacketLogWriter().(io.Closer); ok {
+		if err := closer.Close(); err != nil {
+			log.Printf("packet log close error: %v", err)
+		}
+	}
+}
+
+// opAgent grants operator status before the environment can perform episode
+// seeding through the player's own command connection. RCON Exec returns the
+// server's response separately from transport errors; log that response for
+// diagnostics while treating only transport failures as fatal.
+func opAgent(ctx context.Context, a models.Agent, name string) error {
+	rcon := a.Config().RCON
+	if rcon == nil {
+		return fmt.Errorf("RCON is not configured for %s", name)
+	}
+	response, err := rcon.Exec(ctx, fmt.Sprintf("op %s", name))
+	if err != nil {
+		return fmt.Errorf("op %s via RCON: %w", name, err)
+	}
+	log.Printf("RCON operator grant response for %s: %s", name, response)
+	return nil
 }
 
 // connectAgent connects one live bot session from settings. instanceSuffix
@@ -681,7 +812,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 // every existing single-environment caller, i.e. -parallel-envs=1)
 // leaves both paths byte-for-byte unchanged from before this parameter
 // existed.
-func connectAgent(ctx context.Context, settings mcconfig.Settings, instanceSuffix string) (models.Agent, error) {
+func connectAgent(ctx context.Context, settings mcconfig.Settings, instanceSuffix, trainingDataDir string) (models.Agent, error) {
 	conn := settings.Connection
 
 	auth, err := agent.ResolveAuth(conn.Offline, conn.Name, conn.UUID, conn.Token, settings.Auth)
@@ -709,6 +840,27 @@ func connectAgent(ctx context.Context, settings mcconfig.Settings, instanceSuffi
 	}
 	if rcon != nil {
 		log.Printf("connected to RCON at %s", settings.RCON.Address)
+	}
+
+	var packetLog io.WriteCloser
+	keepPacketLog := false
+	defer func() {
+		if !keepPacketLog && packetLog != nil {
+			_ = packetLog.Close()
+		}
+	}()
+	if trainingDataDir != "" {
+		packetDir := filepath.Join(trainingDataDir, "packet-logs")
+		if err := os.MkdirAll(packetDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create packet log directory: %w", err)
+		}
+		packetPath := filepath.Join(packetDir, "agent_"+settings.Connection.Name+"_"+time.Now().Format("20060102_150405.000")+".jsonl")
+		file, err := os.OpenFile(packetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o640)
+		if err != nil {
+			return nil, fmt.Errorf("create packet log %s: %w", packetPath, err)
+		}
+		packetLog = file
+		log.Printf("packet logging enabled for %s: %s", settings.Connection.Name, packetPath)
 	}
 
 	logLevel, err := utils.ParseLevel(settings.Logging.Level)
@@ -747,6 +899,7 @@ func connectAgent(ctx context.Context, settings mcconfig.Settings, instanceSuffi
 		MCProtocolGoPath: conn.MCProtocolGoPath,
 		StopFilePath:     ".agentStop" + instanceSuffix,
 		LogLevel:         logLevel,
+		LogWriter:        packetLog,
 		RCON:             rcon,
 		EnableReplay:     replay.Enable,
 		ReplayOutput:     replay.Output,
@@ -758,10 +911,13 @@ func connectAgent(ctx context.Context, settings mcconfig.Settings, instanceSuffi
 		return nil, fmt.Errorf("creating agent: %w", err)
 	}
 	if err := a.Init(ctx); err != nil {
+		_ = a.Close(context.Background())
 		return nil, fmt.Errorf("init: %w", err)
 	}
 	if err := a.Start(ctx); err != nil {
+		_ = a.Close(context.Background())
 		return nil, fmt.Errorf("start: %w", err)
 	}
+	keepPacketLog = true
 	return a, nil
 }

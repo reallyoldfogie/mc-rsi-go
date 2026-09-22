@@ -148,18 +148,15 @@ func paramsPath(dir string, generation int) string {
 // and contents to decide whether a generation exists at all, so a
 // process killed while writing it must only ever be observable as either
 // fully present (rename completed) or fully absent (killed before
-// rename), never partially written. The underlying
-// actorcritic.SaveFile's own params-file write is not itself atomic
-// (writes in place, upstream in cRL-go) — a crash mid-params-write can
-// still leave a truncated params file on disk, but since that leaves no
-// corresponding record file, Latest/Load never observes or tries to load
-// it; it's inert, not corruption a caller can trip over.
+// rename), never partially written. The params file uses the same
+// temp-file-plus-rename pattern, so a crash can only leave an orphaned
+// params file; no record points at it and Latest/Load ignores it.
 func Save(dir string, params *actorcritic.Params, rec Record) error {
 	if err := rec.Validate(); err != nil {
 		return err
 	}
 
-	if err := actorcritic.SaveFile(paramsPath(dir, rec.Generation), params, rec.EnvironmentID, rec.Metadata); err != nil {
+	if err := saveParamsAtomically(paramsPath(dir, rec.Generation), params, rec.EnvironmentID, rec.Metadata); err != nil {
 		return fmt.Errorf("lineage: saving generation %d: %w", rec.Generation, err)
 	}
 
@@ -167,6 +164,23 @@ func Save(dir string, params *actorcritic.Params, rec Record) error {
 		return fmt.Errorf("lineage: saving generation %d record: %w", rec.Generation, err)
 	}
 	return nil
+}
+
+func saveParamsAtomically(path string, params *actorcritic.Params, environmentID string, metadata checkpoint.Metadata) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	defer os.Remove(tmpPath)
+	if err := actorcritic.SaveFile(tmpPath, params, environmentID, metadata); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 // writeRecordAtomically writes rec as JSON to path via a temp file in the

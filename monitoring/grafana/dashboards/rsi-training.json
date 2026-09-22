@@ -167,6 +167,117 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "rsi_task_episodes_total", "legendFormat": "{{task}}", "refId": "A" }],
       "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "type": "row",
+      "title": "Episode health and activity",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "id": 103,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Episode outcomes/sec",
+      "description": "sum(rate(rsi_episodes_total[5m])) by outcome — completed episode success, failure, and truncation rates. A truncation means a new reset began before the prior episode reported Done.",
+      "id": 30,
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "sum(rate(rsi_episodes_total{outcome=\"success\"}[5m]))", "refId": "A", "legendFormat": "success" },
+        { "expr": "sum(rate(rsi_episodes_total{outcome=\"failure\"}[5m]))", "refId": "B", "legendFormat": "failure" },
+        { "expr": "sum(rate(rsi_episodes_total{outcome=\"truncated\"}[5m]))", "refId": "C", "legendFormat": "truncated" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Episode starts and steps/sec",
+      "description": "rates of rsi_episodes_started_total and rsi_episode_steps_total — live environment activity. In curriculum runs, task labels identify the selected goto, mine, or craft episode.",
+      "id": 31,
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 26 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "sum(rate(rsi_episodes_started_total[5m]))", "refId": "A", "legendFormat": "episodes started/sec" },
+        { "expr": "sum(rate(rsi_episode_steps_total[5m]))", "refId": "B", "legendFormat": "environment steps/sec" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+
+    {
+      "type": "row",
+      "title": "Training health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
+      "id": 104,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Gradient updates/sec",
+      "description": "rate(rsi_gradient_updates_total[5m]) — optimizer update throughput during Student training.",
+      "id": 32,
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rate(rsi_gradient_updates_total[5m])", "refId": "A", "legendFormat": "updates/sec" }],
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "type": "stat",
+      "title": "Reset failures",
+      "description": "sum(increase(rsi_reset_failures_total[$__range])) — environment reset failures during the selected dashboard range.",
+      "id": 33,
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "sum(increase(rsi_reset_failures_total[$__range]))", "refId": "A" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "orange" }, { "value": 10, "color": "red" }] } } },
+      "options": { "textMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+    {
+      "type": "stat",
+      "title": "Step errors",
+      "description": "sum(increase(rsi_step_errors_total[$__range])) — environment step failures during the selected dashboard range.",
+      "id": 34,
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "sum(increase(rsi_step_errors_total[$__range]))", "refId": "A" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "orange" }, { "value": 10, "color": "red" }] } } },
+      "options": { "textMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+    },
+
+    {
+      "type": "row",
+      "title": "Completion rates",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+      "id": 105,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Cumulative completion rate",
+      "description": "Cumulative successful episode completions divided by cumulative completed episodes (success + failure). Truncated episodes are excluded because they did not reach a task outcome. Success is the reward-based completion proxy used by rsi-train.",
+      "id": 35,
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 45 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "100 * sum(rsi_episodes_total{outcome=\"success\"}) / sum(rsi_episodes_total{outcome=~\"success|failure\"})", "refId": "A", "legendFormat": "all tasks" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Completion rate by task",
+      "description": "Cumulative successful episode completions divided by cumulative completed episodes for each selected task type. The task label is assigned when the curriculum poses the episode.",
+      "id": 36,
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 45 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "100 * sum by (task) (rsi_episodes_total{outcome=\"success\"}) / sum by (task) (rsi_episodes_total{outcome=~\"success|failure\"})", "refId": "A", "legendFormat": "{{task}}" }],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
     }
   ],
   "templating": {

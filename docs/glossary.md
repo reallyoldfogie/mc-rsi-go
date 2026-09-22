@@ -102,6 +102,20 @@ your own queries.
 - **`rsi_epoch_samples_total`** — a running count of rollout steps consumed by Student training.
   `rate(rsi_epoch_samples_total[5m])` is the actual training throughput (samples/sec) — the
   "training rate" a Grafana panel graphs directly, rather than inferring it from log timestamps.
+- **`rsi_gradient_updates_total`** — a running count of gradient-update steps applied during
+  Student training. This complements samples/sec by showing how much optimizer work has actually
+  completed.
+- **`rsi_episodes_started_total{task}`** / **`rsi_episode_steps_total{task}`** — counts of
+  successfully reset episodes and environment steps, respectively. In curriculum runs, the task
+  label is the task selected for that episode (`goto`, `mine`, or `craft`).
+- **`rsi_episodes_total{task,outcome}`** — completed episodes split into `success`, `failure`, or
+  `truncated` (a new reset began before the prior episode reported `Done`), with the same
+  per-episode task label. Success means the final step's reward reached the current
+  episode-success threshold of 5; it is a reward-based completion proxy, not a separate
+  task-specific success predicate.
+- **`rsi_reset_failures_total{task}`** / **`rsi_step_errors_total{task}`** — environment reset and
+  step errors surfaced by the live environment wrapper. These are useful for spotting server or
+  network health problems that may otherwise look like poor training.
 - **`rsi_task_episodes_total{task="goto"|"mine"|"craft"}`** — how many episodes the curriculum has
   posed of each task type so far. Only present when `rsi-train` was started with
   `-curriculum-config` (see **Curriculum / task generator**, above) — without one, there's no
@@ -112,11 +126,10 @@ your own queries.
   starting up, or `-metrics-addr` is unreachable).
 
 **A known gap:** `mc-agent`'s Mine/Craft actions log occasional confirmation-timeout errors (a
-fixed 2-second window that a busy shared server can miss under load) straight to the training log,
-not to any of the metrics above — `rlenv.Environment.Step` doesn't currently surface that signal in
-a way `cmd/rsi-train` could turn into a counter. Watch the log (`grep -c "Mine error\|Craft error"`)
-for that specific rate today; exposing it as a real metric would need a small `mc-agent` change
-first.
+fixed 2-second window that a busy shared server can miss under load) straight to the training log;
+the new step-error counter only sees errors returned by `rlenv.Environment.Step`, not every logged
+action warning. Watch the log (`grep -c "Mine error\|Craft error"`) for that specific rate today;
+exposing it as a real metric would need a small `mc-agent` change first.
 
 ## Where these terms come from
 

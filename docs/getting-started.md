@@ -140,7 +140,9 @@ means the Teacher held.
   generation (the trained policy, and its lineage record — parent generation, when it was created,
   and so on). See `pkg/lineage`.
 - `<checkpoint-dir>/interim/` — periodic mid-round checkpoints (not full generations), a recovery
-  aid if the process is killed partway through a long Student-training phase.
+  aid if the process is killed partway through a long Student-training phase. Interim files retain
+  epoch, best-return, and total-gradient-update metadata; `final.json` records the latest
+  completed parameters and metadata when the run exits cleanly.
 - Replay files (`.mcpr`), if your `-mc-agent-config` sets `"replay": {"enable": true}` — written
   under your mc-agent cache directory's `replays/<version>/` folder by default, or wherever
   `"output"` points if you set it explicitly. Play these back with

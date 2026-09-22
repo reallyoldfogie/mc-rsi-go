@@ -23,3 +23,6 @@
 # runtime artifacts, not source, and can be large (one JSON file per
 # generation via pkg/lineage).
 /runs/
+
+/bin
+*.log

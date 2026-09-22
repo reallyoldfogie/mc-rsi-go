@@ -13,12 +13,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/reallyoldfogie/cRL-go/pkg/rl"
 
 	"github.com/reallyoldfogie/mc-agent/rlenv"
 )
@@ -75,6 +77,36 @@ var (
 		Help: "Total rollout steps (samples) consumed by Student training across every epoch so far — rate() of this is the training throughput.",
 	})
 
+	metricGradientUpdatesTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rsi_gradient_updates_total",
+		Help: "Total gradient-update steps applied during Student training.",
+	})
+
+	metricEpisodesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rsi_episodes_total",
+		Help: "Completed training episodes, by task and outcome.",
+	}, []string{"task", "outcome"}) // outcome: success | failure | truncated
+
+	metricEpisodesStartedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rsi_episodes_started_total",
+		Help: "Training episodes successfully started, by task.",
+	}, []string{"task"})
+
+	metricEpisodeStepsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rsi_episode_steps_total",
+		Help: "Environment steps taken during training episodes, by task.",
+	}, []string{"task"})
+
+	metricResetFailuresTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rsi_reset_failures_total",
+		Help: "Environment reset failures, by task.",
+	}, []string{"task"})
+
+	metricStepErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rsi_step_errors_total",
+		Help: "Environment step failures, by task.",
+	}, []string{"task"})
+
 	// metricTaskEpisodesTotal is only ever incremented when -curriculum-config
 	// is set (see recordTaskSelection) — without a curriculum, rsi-train has
 	// no hook into per-episode task selection at all (Reset is called deep
@@ -100,6 +132,74 @@ func startMetricsServer(addr string) {
 			log.Printf("metrics: server error: %v", err)
 		}
 	}()
+}
+
+const episodeSuccessRewardThreshold float32 = 5
+
+// instrumentedEnvironment records episode-level health and throughput while
+// preserving optional action-mask support from the wrapped environment.
+type instrumentedEnvironment struct {
+	env            rl.Environment
+	task           string
+	taskForEpisode func() string
+	started        bool
+}
+
+func (e *instrumentedEnvironment) currentTask() string {
+	if e.taskForEpisode != nil {
+		if task := e.taskForEpisode(); task != "" {
+			return task
+		}
+	}
+	return e.task
+}
+
+func (e *instrumentedEnvironment) ObservationSize() int { return e.env.ObservationSize() }
+func (e *instrumentedEnvironment) ActionSpace() int     { return e.env.ActionSpace() }
+
+func (e *instrumentedEnvironment) ActionMask() []bool {
+	if masker, ok := e.env.(rl.ActionMasker); ok {
+		return masker.ActionMask()
+	}
+	return nil
+}
+
+func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, error) {
+	task := e.currentTask()
+	if e.started {
+		metricEpisodesTotal.WithLabelValues(task, "truncated").Inc()
+	}
+	obs, err := e.env.Reset(ctx)
+	if err != nil {
+		metricResetFailuresTotal.WithLabelValues(task).Inc()
+		e.started = false
+		return obs, err
+	}
+	// TaskSelector runs inside the wrapped environment's Reset. Read the
+	// selected task again after Reset for the new episode's counters.
+	task = e.currentTask()
+	e.started = true
+	metricEpisodesStartedTotal.WithLabelValues(task).Inc()
+	return obs, nil
+}
+
+func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (rl.StepResult, error) {
+	task := e.currentTask()
+	result, err := e.env.Step(ctx, action)
+	if err != nil {
+		metricStepErrorsTotal.WithLabelValues(task).Inc()
+		return result, err
+	}
+	metricEpisodeStepsTotal.WithLabelValues(task).Inc()
+	if result.Done {
+		outcome := "failure"
+		if result.Reward >= episodeSuccessRewardThreshold {
+			outcome = "success"
+		}
+		metricEpisodesTotal.WithLabelValues(task, outcome).Inc()
+		e.started = false
+	}
+	return result, nil
 }
 
 // recordTaskSelection increments metricTaskEpisodesTotal for whichever
