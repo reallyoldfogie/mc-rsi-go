@@ -712,7 +712,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 		}
 		if curriculumGen != nil {
 			var taskMu sync.RWMutex
-			selectedTask := taskName(envCfg)
+			selectedTask := taskName(settings.Env)
 			// Each environment gets its own rng, not a shared one: N
 			// environments' Reset calls run concurrently (see
 			// leapfrog.Round's rollout collection), and math/rand/v2's
@@ -761,7 +761,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 			return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
 		}
 
-		connected = append(connected, connectedEnvironment{agent: a, env: env, taskForEpisode: func() string { return taskName(envCfg) }})
+		connected = append(connected, connectedEnvironment{agent: a, env: env, taskForEpisode: func() string { return taskName(settings.Env) }})
 	}
 	return connected, nil
 }

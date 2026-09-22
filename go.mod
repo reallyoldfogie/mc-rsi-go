@@ -62,6 +62,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/reallyoldfogie/mc-agent => ../mc-agent
+// replace github.com/reallyoldfogie/mc-agent => ../mc-agent
 
 // replace github.com/reallyoldfogie/cRL-go => ../cRL-go
