@@ -132,6 +132,38 @@ func TestRoundCallsOnEpochOncePerStudentTrainingEpoch(t *testing.T) {
 	require.Equal(t, []int{0, 1, 2}, seenEpochs)
 }
 
+// TestRoundResumesStudentFromConfigInsteadOfCloningTeacher verifies
+// Config.ResumeStudent/ResumeStudentStartEpoch (added for cmd/rsi-train's
+// interim-checkpoint resume feature): when set, trainStudent must start
+// from the given params — not teacherParams.Snapshot() — and OnEpoch's
+// reported epoch numbers must continue from ResumeStudentStartEpoch
+// rather than restarting at 0, while EpochsPerGeneration still controls
+// how many *more* epochs are run (not the total including whatever the
+// resumed checkpoint already completed).
+func TestRoundResumesStudentFromConfigInsteadOfCloningTeacher(t *testing.T) {
+	env, teacherParams := newTestGridEnv(t)
+	resumeParams := teacherParams.Snapshot()
+	cfg := testConfig(env)
+	cfg.EpochsPerGeneration = 2
+	cfg.ResumeStudent = resumeParams
+	cfg.ResumeStudentStartEpoch = 19
+
+	var seenEpochs []int
+	var sawResumedParamsFirst bool
+	cfg.OnEpoch = func(stats ppo.EpochStats, params *actorcritic.Params) {
+		seenEpochs = append(seenEpochs, stats.Epoch)
+		if len(seenEpochs) == 1 {
+			sawResumedParamsFirst = params == resumeParams
+		}
+	}
+
+	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
+	require.NoError(t, err)
+
+	assert.Equal(t, []int{19, 20}, seenEpochs, "epoch numbers must continue from ResumeStudentStartEpoch, and EpochsPerGeneration must mean epochs remaining, not epochs total")
+	assert.True(t, sawResumedParamsFirst, "the very first epoch must train the resumed params object itself, not a fresh clone of teacherParams")
+}
+
 // TestRoundEndToEndAgainstMultipleGridworlds is TestRoundEndToEndAgainstGridworld's
 // len(envs) > 1 counterpart: proves Round's pooled-training branch
 // (ppo.NewWithPersistentEnvPool, via trainStudent) is actually wired
@@ -156,6 +188,27 @@ func TestRoundEndToEndAgainstMultipleGridworlds(t *testing.T) {
 	} else {
 		assert.Nil(t, result.StudentParams)
 	}
+}
+
+// TestRoundCallsOnBeforeEvaluationOncePerSideInOrder verifies
+// Config.OnBeforeEvaluation (added so a caller with per-episode random
+// task selection, e.g. cmd/rsi-train's curriculum wiring, can pin
+// Teacher's and Student's eval episodes to an identical task sequence)
+// fires exactly twice per Round, EvalTeacher immediately before
+// EvalStudent, and not at all during Student training.
+func TestRoundCallsOnBeforeEvaluationOncePerSideInOrder(t *testing.T) {
+	env, teacherParams := newTestGridEnv(t)
+	cfg := testConfig(env)
+
+	var seenSides []EvalSide
+	cfg.OnBeforeEvaluation = func(side EvalSide) {
+		seenSides = append(seenSides, side)
+	}
+
+	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
+	require.NoError(t, err)
+
+	assert.Equal(t, []EvalSide{EvalTeacher, EvalStudent}, seenSides)
 }
 
 // newTestGridEnv builds a small, deterministic gridworldenv instance

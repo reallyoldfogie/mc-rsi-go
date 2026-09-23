@@ -17,6 +17,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -225,6 +226,22 @@ func run(args []string) error {
 	metricCurrentEpoch.Set(-1)
 	progress := rec.Metadata
 	latestParams := teacherParams
+	// madeEpochProgress becomes true the first time OnEpoch actually
+	// fires. Guards the final-checkpoint save below against overwriting
+	// a *better* existing checkpoint with a no-op: if this process
+	// resumed from an interim checkpoint (loadResumableStudent below)
+	// and then got interrupted again before completing even one more
+	// epoch, latestParams never advances past its initial value
+	// (teacherParams — the pristine generation, not even the resumed
+	// checkpoint's own weights, since ResumeStudent/ResumeStudentStartEpoch
+	// only take effect inside leapfrog.Round's own trainStudent, not
+	// here), so saving it as "final" would destroy the genuinely
+	// further-along checkpoint this process just resumed from. Found
+	// live: exactly this sequence (resume, interrupt within the first
+	// minute, save) overwrote a real epoch-17 checkpoint with the
+	// original teacher's own weights mislabeled with the resumed
+	// checkpoint's progress counters.
+	madeEpochProgress := false
 
 	interimDir := filepath.Join(f.checkpointDir, "interim")
 	cfg := leapfrog.Config{
@@ -232,7 +249,9 @@ func run(args []string) error {
 		EpochsPerGeneration: f.epochsPerGeneration,
 		EvalEpisodes:        f.evalEpisodes,
 		EvalEpisodeLen:      f.evalEpisodeLen,
+		OnBeforeEvaluation:  pairedEvalTaskReseeder(connected[0].reseedEvalTasks),
 		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.Params) {
+			madeEpochProgress = true
 			latestParams = params
 			progress.Epoch = stats.Epoch
 			progress.TotalUpdates += stats.UpdateCount
@@ -246,11 +265,19 @@ func run(args []string) error {
 			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
 			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
 			if f.checkpointInterval > 0 && (stats.Epoch+1)%f.checkpointInterval == 0 {
-				if err := saveInterimCheckpoint(interimDir, params, environmentID, stats.Epoch, progress); err != nil {
+				if err := saveInterimCheckpoint(interimDir, params, environmentID, stats.Epoch, progress, rec.Generation); err != nil {
 					log.Printf("  saving interim checkpoint: %v", err)
 				}
 			}
 		},
+	}
+
+	if resumedParams, resumedEpoch, resumedMetadata := loadResumableStudent(interimDir, environmentID, rec.Generation); resumedParams != nil {
+		cfg.ResumeStudent = resumedParams
+		cfg.ResumeStudentStartEpoch = resumedEpoch + 1
+		progress = resumedMetadata
+		log.Printf("resuming round 1's student training from interim checkpoint: epoch %d, generation %d, best return %.3f, total updates %d",
+			resumedEpoch, rec.Generation, resumedMetadata.BestReturn, resumedMetadata.TotalUpdates)
 	}
 
 	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
@@ -266,6 +293,15 @@ func run(args []string) error {
 
 		start := time.Now()
 		result, err := leapfrog.Round(ctx, envs, teacherParams, cfg, rng)
+		// cfg.ResumeStudent only ever applies to the very first round a
+		// resumed process runs — every later round's Student is always a
+		// fresh clone of *that* round's own teacherParams (which only
+		// this loop, not leapfrog.Round, updates), so it must not carry
+		// over. cfg is passed by value into Round, so clearing it here
+		// (the caller's own copy) is required — Round has no way to do
+		// this itself.
+		cfg.ResumeStudent = nil
+		cfg.ResumeStudentStartEpoch = 0
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("round %d interrupted: %v", round, err)
@@ -302,10 +338,13 @@ func run(args []string) error {
 		log.Printf("round %d (%s): teacher=%.3f student=%.3f studentWon=%v generation=%d",
 			round, elapsed, result.TeacherReward, result.StudentReward, result.StudentWon, rec.Generation)
 	}
-	if err := saveFinalCheckpoint(interimDir, latestParams, environmentID, progress); err != nil {
+	if !madeEpochProgress {
+		log.Printf("no epoch completed this process's lifetime; leaving any existing recovery checkpoint in %s untouched", interimDir)
+	} else if err := saveFinalCheckpoint(interimDir, latestParams, environmentID, progress, rec.Generation); err != nil {
 		return fmt.Errorf("saving final recovery checkpoint: %w", err)
+	} else {
+		log.Printf("saved final recovery checkpoint: %s", filepath.Join(interimDir, "final.json"))
 	}
-	log.Printf("saved final recovery checkpoint: %s", filepath.Join(interimDir, "final.json"))
 
 	return nil
 }
@@ -346,9 +385,10 @@ type spawnQualityChecker interface {
 
 // isGoodSpawnPosition reports whether pos is a reasonable place to reset
 // to repeatedly: standable (models.IsWalkablePosition — solid ground,
-// passable feet/head, the same check rlenv's own walkability gate uses)
-// and not submerged in water. Standability alone doesn't catch the
-// submerged case: water counts as "passable" (mc-agent's
+// passable feet/head, the same check rlenv's own walkability gate uses),
+// not submerged in water, and not boxed in (hasWalkableWayOut — see its
+// own doc comment). Standability alone doesn't catch the submerged case:
+// water counts as "passable" (mc-agent's
 // models.BlockShapeManager treats it that way — a bot can occupy a water
 // cell), so a bot standing on solid ground under a couple of blocks of
 // water reads as perfectly walkable by that check alone, while actually
@@ -366,7 +406,67 @@ func isGoodSpawnPosition(world models.World, shapeMgr models.BlockShapeManager, 
 	}
 	feetID, _ := world.GetBlockAt(pos.X, pos.Y, pos.Z)
 	headID, _ := world.GetBlockAt(pos.X, pos.Y+1, pos.Z)
-	return !shapeMgr.IsWater(feetID) && !shapeMgr.IsWater(headID)
+	if shapeMgr.IsWater(feetID) || shapeMgr.IsWater(headID) {
+		return false
+	}
+	return hasWalkableWayOut(world, shapeMgr, pos)
+}
+
+// spawnPathOutCheckRadius/spawnPathOutYTolerance/spawnPathOutMinOpenDirections
+// bound hasWalkableWayOut's cheap, real-pathfinder-free heuristic against a
+// spawn that's technically standable (and dry — isGoodSpawnPosition's own
+// two earlier checks) but effectively boxed in: a narrow ledge, a
+// one-block-wide pillar, the inside corner of an overhang. Found live: an
+// -auto-reset-origin-captured spawn passed both of those checks yet still
+// left its bot generating "Stuck recovery: no path found from current
+// position" (mc-agent's agent.go, its physics executor's own recovery
+// callback) roughly 1,700x the established baseline rate across one run,
+// because -auto-reset-origin then pinned every single episode's origin to
+// that one spot for the rest of the run — isGoodSpawnPosition existed
+// specifically to screen out a bad one-time capture like this before
+// committing an entire run to reusing it, but only checked the spawn point
+// itself, never whether there was actually anywhere to go from it.
+//
+// spawnPathOutCheckRadius (3 blocks) and spawnPathOutMinOpenDirections (at
+// least 2 of the 4 cardinal directions) are deliberately modest: this is a
+// screen against a spawn point that's obviously enclosed, not a real
+// reachability proof — rlenv's own per-episode walkability/reachability
+// gate (Config.TargetOffset's own doc comment) already does the real work
+// once an actual task target is known; this only runs once, at connect
+// time, before any target exists. spawnPathOutYTolerance (1 block) lets
+// each direction's search treat a single step up or down as still "open",
+// since real terrain isn't flat and IsWalkablePosition itself has no such
+// tolerance (interact_position.go checks pos.Y exactly).
+const (
+	spawnPathOutCheckRadius       = 3
+	spawnPathOutYTolerance        = 1
+	spawnPathOutMinOpenDirections = 2
+)
+
+// hasWalkableWayOut reports whether at least spawnPathOutMinOpenDirections
+// of the 4 cardinal directions from pos have a walkable cell within
+// spawnPathOutCheckRadius blocks — see that constant's own doc comment for
+// why and how modest this check is.
+func hasWalkableWayOut(world models.World, shapeMgr models.BlockShapeManager, pos models.V3) bool {
+	directions := [4][2]float64{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}
+	openDirections := 0
+	for _, d := range directions {
+		for step := 1.0; step <= spawnPathOutCheckRadius; step++ {
+			open := false
+			for dy := -spawnPathOutYTolerance; dy <= spawnPathOutYTolerance; dy++ {
+				candidate := models.V3{X: pos.X + d[0]*step, Y: pos.Y + float64(dy), Z: pos.Z + d[1]*step}
+				if models.IsWalkablePosition(world, shapeMgr, candidate) {
+					open = true
+					break
+				}
+			}
+			if open {
+				openDirections++
+				break
+			}
+		}
+	}
+	return openDirections >= spawnPathOutMinOpenDirections
 }
 
 // applyAutoResetOrigin implements -auto-reset-origin: if cfg doesn't
@@ -505,6 +605,32 @@ func applySharedServerGamerules(ctx context.Context, rconAddress, rconPassword s
 	return nil
 }
 
+// pairedEvalTaskReseeder returns a leapfrog.Config.OnBeforeEvaluation
+// callback that pins Teacher's and Student's evaluation episodes to the
+// identical sequence of curriculum-sampled tasks each round: on
+// EvalTeacher it draws a fresh seed pair from its own internal rng and
+// reseeds reseed with it; on EvalStudent it reseeds again with that same
+// pair, so both sides' env.Reset calls draw from an identical rng stream
+// starting from the same state — without this, Round's win condition
+// (strictly greater mean eval reward, no margin) conflates "which random
+// tasks each side happened to draw" with actual skill difference. reseed
+// == nil (curriculum task selection off) makes this return nil too, so
+// cfg.OnBeforeEvaluation stays nil and Round behaves exactly as it did
+// before this existed.
+func pairedEvalTaskReseeder(reseed func(seed1, seed2 uint64)) func(leapfrog.EvalSide) {
+	if reseed == nil {
+		return nil
+	}
+	seedRNG := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0xE5A1))
+	var seed1, seed2 uint64
+	return func(side leapfrog.EvalSide) {
+		if side == leapfrog.EvalTeacher {
+			seed1, seed2 = seedRNG.Uint64(), seedRNG.Uint64()
+		}
+		reseed(seed1, seed2)
+	}
+}
+
 // loadOrInitTeacher resumes the latest saved generation from
 // checkpointDir (lineage.Latest/Load), or, if none exists yet,
 // initializes a fresh, randomly-weighted generation 0 and immediately
@@ -552,20 +678,152 @@ func loadOrInitTeacher(checkpointDir, environmentID string, observationSize, hid
 // saved *generation* (loadOrInitTeacher), not from this interim epoch —
 // see docs/plans/04's own note that a full mid-round resume capability is
 // a further refinement, not required here.
-func saveInterimCheckpoint(dir string, params *actorcritic.Params, environmentID string, epoch int, metadata checkpoint.Metadata) error {
+func saveInterimCheckpoint(dir string, params *actorcritic.Params, environmentID string, epoch int, metadata checkpoint.Metadata, parentGeneration int) error {
+	if err := saveResumeState(dir, parentGeneration); err != nil {
+		return fmt.Errorf("saving resume state: %w", err)
+	}
 	return checkpoint.Save(dir, "interim", epoch, func(path string) error {
 		return saveParamsAtomically(path, params, environmentID, metadata)
 	})
 }
 
-func saveFinalCheckpoint(dir string, params *actorcritic.Params, environmentID string, metadata checkpoint.Metadata) error {
+func saveFinalCheckpoint(dir string, params *actorcritic.Params, environmentID string, metadata checkpoint.Metadata, parentGeneration int) error {
 	if params == nil {
 		return fmt.Errorf("params are nil")
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	if err := saveResumeState(dir, parentGeneration); err != nil {
+		return fmt.Errorf("saving resume state: %w", err)
+	}
 	return saveParamsAtomically(filepath.Join(dir, "final.json"), params, environmentID, metadata)
+}
+
+// resumeStateFileName holds a small sidecar JSON — not one of cRL-go's
+// own checkpoint.Metadata-tagged files — recording which teacher
+// generation the interim-epoch-*.json/final.json checkpoints
+// alongside it in the same directory were trained against. Owned
+// entirely by this command (no cRL-go/mc-agent change needed): a
+// resumable interim checkpoint is only meaningful together with the
+// exact teacher it was cloned from, and loadResumableStudent uses this
+// to refuse resuming a checkpoint left over from a since-superseded
+// round (e.g. a stale interim save from a round whose Student went on
+// to win and become a new generation in a later process — resuming
+// that Student's mid-round weights as if they were still training
+// against the old teacher would be training toward a already-obsolete
+// comparison).
+const resumeStateFileName = "resume-state.json"
+
+type resumeState struct {
+	ParentGeneration int `json:"parent_generation"`
+}
+
+func saveResumeState(dir string, parentGeneration int) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	data, err := json.Marshal(resumeState{ParentGeneration: parentGeneration})
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, resumeStateFileName)
+	tmp, err := os.CreateTemp(dir, resumeStateFileName+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func loadResumeState(dir string) (resumeState, error) {
+	data, err := os.ReadFile(filepath.Join(dir, resumeStateFileName))
+	if err != nil {
+		return resumeState{}, err
+	}
+	var state resumeState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return resumeState{}, err
+	}
+	return state, nil
+}
+
+// loadResumableStudent looks for a resumable interim/final checkpoint
+// in interimDir left over from an earlier, interrupted attempt at the
+// same round this process is about to start — i.e. one whose recorded
+// resumeState.ParentGeneration matches parentGeneration (see that
+// type's own doc comment for why this check is required, not
+// optional). Returns (nil, -1, checkpoint.Metadata{}) — a silent
+// "nothing usable to resume, start this round fresh from a clone of
+// the teacher" — for every case that isn't a confirmed match: no
+// resume-state sidecar yet (a brand new checkpoint directory, or one
+// from before this feature existed), a parent-generation mismatch, no
+// interim/final checkpoint files at all, or an environmentID mismatch
+// (a changed observation/action shape).
+//
+// Picks whichever of saveInterimCheckpoint's periodic
+// interim-epoch-*.json files or saveFinalCheckpoint's fixed-name
+// final.json has the newest file modification time — deliberately NOT
+// the highest recorded Metadata.Epoch (checkpoint.Resume/Latest's own
+// convention, and this function's own first version): epoch numbers
+// reset to 0 on every fresh (non-resumed) round, so across many
+// restarts of a process that's spent a long time on one still-unwon
+// generation (this run's own history: generation 7 for over a day
+// across ten+ separate launches), a *much older* attempt's
+// higher-epoch leftover file can still be sitting in the same
+// directory, satisfy the exact same parent-generation check, and look
+// numerically "more advanced" than the file that actually matters -
+// the most recently saved one. Found live: this resumed a real
+// training run from a 24-hour-old, pre-every-tonight's-fix
+// interim-epoch-000000049.json (parent generation 7, same as every
+// other launch that day) instead of the previous night's much more
+// relevant, much lower-numbered final.json. File mtime has no such
+// ambiguity - it's always "when was this actually written," regardless
+// of what epoch number happens to be embedded in the filename or
+// Metadata.
+func loadResumableStudent(interimDir, environmentID string, parentGeneration int) (*actorcritic.Params, int, checkpoint.Metadata) {
+	state, err := loadResumeState(interimDir)
+	if err != nil || state.ParentGeneration != parentGeneration {
+		return nil, -1, checkpoint.Metadata{}
+	}
+
+	entries, err := os.ReadDir(interimDir)
+	if err != nil {
+		return nil, -1, checkpoint.Metadata{}
+	}
+
+	var newestName string
+	var newestModTime time.Time
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || (name != "final.json" && !strings.HasPrefix(name, "interim-epoch-")) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if newestName == "" || info.ModTime().After(newestModTime) {
+			newestName, newestModTime = name, info.ModTime()
+		}
+	}
+	if newestName == "" {
+		return nil, -1, checkpoint.Metadata{}
+	}
+
+	params, metadata, err := actorcritic.LoadFile(filepath.Join(interimDir, newestName), environmentID)
+	if err != nil {
+		return nil, -1, checkpoint.Metadata{}
+	}
+	return params, metadata.Epoch, metadata
 }
 
 func saveParamsAtomically(path string, params *actorcritic.Params, environmentID string, metadata checkpoint.Metadata) error {
@@ -627,6 +885,17 @@ type connectedEnvironment struct {
 	agent          models.Agent
 	env            rl.Environment
 	taskForEpisode func() string
+	// reseedEvalTasks, when curriculum task selection is active, reseeds
+	// this environment's curriculum task rng in place (via
+	// *rand.PCG.Seed, not swapping in a new source — the TaskSelector
+	// closure captured a fixed *rand.Rand pointer, so reseeding the PCG
+	// it wraps is what actually changes what the *next* Reset draws).
+	// nil when curriculum task selection is off. Only connected[0]'s is
+	// ever used, matching leapfrog.Round's own "evaluation only ever
+	// touches envs[0]" — see run's leapfrog.Config.OnBeforeEvaluation
+	// wiring for why this exists: pinning Teacher's and Student's eval
+	// episodes to the identical task sequence each round.
+	reseedEvalTasks func(seed1, seed2 uint64)
 }
 
 // connectEnvironments builds n live bot sessions and their
@@ -727,7 +996,8 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 			// time already all-but-guarantees distinct seeds, and +i
 			// removes any remaining doubt.
 			seed := uint64(time.Now().UnixNano()) + uint64(i)
-			taskRNG := rand.New(rand.NewPCG(seed, uint64(i)))
+			taskPCG := rand.NewPCG(seed, uint64(i))
+			taskRNG := rand.New(taskPCG)
 			base := rlenvadapter.TaskSelector(curriculumGen, taskRNG)
 			envCfg.TaskSelector = func(episode int, rng *oldrand.Rand) rlenv.TaskOverride {
 				override := base(episode, rng)
@@ -751,7 +1021,12 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 				closeAll()
 				return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
 			}
-			connected = append(connected, connectedEnvironment{agent: a, env: env, taskForEpisode: taskForEpisode})
+			connected = append(connected, connectedEnvironment{
+				agent:           a,
+				env:             env,
+				taskForEpisode:  taskForEpisode,
+				reseedEvalTasks: taskPCG.Seed,
+			})
 			continue
 		}
 		env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)

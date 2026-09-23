@@ -190,6 +190,32 @@ func TestApplyAutoResetOriginRejectsASubmergedSpawn(t *testing.T) {
 	assert.Nil(t, cfg.ResetOrigin, "a spawn submerged in water — solid ground below, but water at feet/head — must be rejected")
 }
 
+// TestApplyAutoResetOriginRejectsABoxedInSpawn covers hasWalkableWayOut:
+// a spawn standable in the exact sense IsWalkablePosition/water checks
+// require, but with ground only under that one footprint and nothing but
+// void (no ground loaded anywhere) beyond it in every direction — a
+// "one-block pillar in the sky" — must still be rejected, since a bot
+// pinned to reusing it every episode has nowhere to walk. This is the
+// live-found gap isGoodSpawnPosition's earlier two checks alone missed
+// (see hasWalkableWayOut's own doc comment).
+func TestApplyAutoResetOriginRejectsABoxedInSpawn(t *testing.T) {
+	registry := mctesting.NewSimpleBlockRegistry()
+	// Ground only directly under the spawn footprint itself (1,-1,2) -
+	// nothing else placed anywhere, so every cardinal direction is void
+	// within hasWalkableWayOut's own check radius.
+	world := mctesting.NewWorldBuilder(registry).SetBlockDirect(1, -1, 2, spawnGroundStateID).Build()
+	agent := fakeSpawnQualityAgent{
+		fakePositionProvider: fakePositionProvider{pos: models.V3{X: 1, Y: 0, Z: 2}, initialized: true},
+		world:                world,
+		shapeMgr:             mctesting.NewMockShapeManager(),
+	}
+
+	cfg := rlenv.Config{}
+	applyAutoResetOrigin(&cfg, agent, "127.0.0.1:25575")
+
+	assert.Nil(t, cfg.ResetOrigin, "a spawn standable only on its own single footprint, boxed in by void on every side, must be rejected")
+}
+
 func TestApplyAutoResetOriginRejectsAnUnwalkableSpawn(t *testing.T) {
 	registry := mctesting.NewSimpleBlockRegistry()
 	// No ground placed anywhere: air below, so IsWalkablePosition itself

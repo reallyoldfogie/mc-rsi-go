@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 
@@ -164,16 +165,45 @@ func (e *instrumentedEnvironment) ActionMask() []bool {
 	return nil
 }
 
+// resetRetries bounds how many extra times instrumentedEnvironment.Reset
+// retries after the wrapped environment's own Reset fails, before giving
+// up and propagating the error. Distinct from rlenv.Environment.Reset's
+// own internal retry (which retries the *same* already-selected episode
+// task - useful for transient RCON/network hiccups): this retries with a
+// *fresh* task draw instead, since rlenv calls Config.TaskSelector again
+// on every new Reset attempt, and some failures are about that specific
+// task rather than a transient glitch - retrying the identical task would
+// just fail the same way again. Found live: a single bad terrain draw
+// ("no walkable+reachable cell found near goto target ... within 4
+// blocks") crashed the entire training process outright, taking down
+// every -parallel-envs bot's progress with it - not because anything was
+// actually broken, just because one of many possible random tasks
+// happened to be unreachable this time.
+const resetRetries = 5
+
 func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, error) {
 	task := e.currentTask()
 	if e.started {
 		metricEpisodesTotal.WithLabelValues(task, "truncated").Inc()
 	}
-	obs, err := e.env.Reset(ctx)
-	if err != nil {
+	var obs rl.Observation
+	var err error
+	for attempt := 0; attempt <= resetRetries; attempt++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return obs, ctxErr
+		}
+		obs, err = e.env.Reset(ctx)
+		if err == nil {
+			break
+		}
 		metricResetFailuresTotal.WithLabelValues(task).Inc()
+		if attempt < resetRetries {
+			log.Printf("instrumentedEnvironment: Reset attempt %d/%d failed (%v), retrying with a fresh task draw", attempt+1, resetRetries+1, err)
+		}
+	}
+	if err != nil {
 		e.started = false
-		return obs, err
+		return obs, fmt.Errorf("resetting environment after %d attempts: %w", resetRetries+1, err)
 	}
 	// TaskSelector runs inside the wrapped environment's Reset. Read the
 	// selected task again after Reset for the new episode's counters.

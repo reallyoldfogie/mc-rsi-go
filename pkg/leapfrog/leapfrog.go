@@ -86,7 +86,60 @@ type Config struct {
 	// end. nil (the default) costs nothing extra — Round behaves exactly
 	// as it did before this field existed.
 	OnEpoch func(stats ppo.EpochStats, params *actorcritic.Params)
+
+	// OnBeforeEvaluation, if set, is called exactly twice per Round:
+	// once with EvalTeacher immediately before Teacher's evaluation
+	// episodes begin, once with EvalStudent immediately before
+	// Student's. Added so a caller whose env.Reset draws a per-episode
+	// task at random (e.g. cmd/rsi-train's curriculum wiring) can pin
+	// both sides to the identical sequence of sampled tasks for this
+	// round's comparison — without it, Round's win condition (strictly
+	// greater mean reward over EvalEpisodes, no margin) conflates "which
+	// random tasks each side happened to draw" with actual skill
+	// difference, especially once both sides' rewards are close. nil
+	// (the default) costs nothing extra — Round behaves exactly as it
+	// did before this field existed, drawing eval tasks from wherever
+	// the shared per-env task rng naturally continues.
+	OnBeforeEvaluation func(side EvalSide)
+
+	// ResumeStudent, if set, is used as the Student's starting params
+	// for this Round call instead of teacherParams.Snapshot() — a
+	// caller resuming a mid-round interim checkpoint from an earlier,
+	// interrupted attempt against this exact teacher (cmd/rsi-train's
+	// own resumeState sidecar validates that precondition before ever
+	// setting this). ResumeStudentStartEpoch is the first epoch number
+	// OnEpoch/the trainer see (instead of 0) — cfg.EpochsPerGeneration
+	// still controls how many *more* epochs this call trains for, not
+	// the total including whatever epochs the resumed checkpoint
+	// already completed, so callers don't need "epochs remaining"
+	// arithmetic. Both fields are the zero value (nil, 0) by default,
+	// which is exactly today's unchanged from-a-teacher-clone behavior.
+	//
+	// A checkpoint only ever saves Params (weights), never Adam's own
+	// per-parameter moment estimates — trainStudent always constructs a
+	// fresh optimizer regardless of ResumeStudent, so this is a warm
+	// start from good weights, not a byte-for-byte continuation of the
+	// original optimizer state. That's the standard, well-understood
+	// tradeoff of a weights-only checkpoint format, not a bug.
+	//
+	// Round does not clear these fields itself once used: cfg is passed
+	// by value, so a caller that builds one Config and reuses it across
+	// several Round calls (cmd/rsi-train's own round loop) must clear
+	// them after the first call, or every later round would incorrectly
+	// resume the same stale checkpoint instead of cloning from that
+	// round's own (possibly different, if an earlier round won) teacher.
+	ResumeStudent           *actorcritic.Params
+	ResumeStudentStartEpoch int
 }
+
+// EvalSide identifies which side of a leapfrog comparison
+// Config.OnBeforeEvaluation is about to run evaluation episodes for.
+type EvalSide int
+
+const (
+	EvalTeacher EvalSide = iota
+	EvalStudent
+)
 
 // Validate reports whether cfg's own fields are usable. It does not
 // validate cfg.Trainer — Round surfaces that separately, via
@@ -158,11 +211,17 @@ func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcriti
 		return Result{}, fmt.Errorf("leapfrog: training student: %w", err)
 	}
 
+	if cfg.OnBeforeEvaluation != nil {
+		cfg.OnBeforeEvaluation(EvalTeacher)
+	}
 	teacherReward, err := evaluate(ctx, envs[0], teacherParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
 	if err != nil {
 		return Result{}, fmt.Errorf("leapfrog: evaluating teacher: %w", err)
 	}
 
+	if cfg.OnBeforeEvaluation != nil {
+		cfg.OnBeforeEvaluation(EvalStudent)
+	}
 	studentReward, err := evaluate(ctx, envs[0], studentParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
 	if err != nil {
 		return Result{}, fmt.Errorf("leapfrog: evaluating student: %w", err)
@@ -186,6 +245,11 @@ func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcriti
 // far too expensive to reconnect per episode.
 func trainStudent(ctx context.Context, envs []rl.Environment, teacherParams *actorcritic.Params, cfg Config) (*actorcritic.Params, error) {
 	studentParams := teacherParams.Snapshot()
+	startEpoch := 0
+	if cfg.ResumeStudent != nil {
+		studentParams = cfg.ResumeStudent
+		startEpoch = cfg.ResumeStudentStartEpoch
+	}
 
 	var trainer *ppo.Trainer
 	var err error
@@ -202,7 +266,8 @@ func trainStudent(ctx context.Context, envs []rl.Environment, teacherParams *act
 		return nil, fmt.Errorf("constructing trainer: %w", err)
 	}
 
-	for epoch := range cfg.EpochsPerGeneration {
+	for i := range cfg.EpochsPerGeneration {
+		epoch := startEpoch + i
 		stats, err := trainer.RunEpoch(ctx, epoch)
 		if err != nil {
 			return nil, fmt.Errorf("epoch %d: %w", epoch, err)
