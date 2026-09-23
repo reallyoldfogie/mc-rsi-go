@@ -55,6 +55,38 @@ func TestInstrumentedEnvironmentRecordsSuccessfulEpisode(t *testing.T) {
 	require.Contains(t, body, `rsi_episode_steps_total{task="`+task+`"}`)
 }
 
+// TestInstrumentedEnvironmentRecordsStepDuration covers the per-step
+// timing histogram added to make a class of investigation (correlating
+// slow steps with retry loops or blocking sleeps deep in mc-agent, e.g.
+// the OpenContainer sleep bug) discoverable from Grafana instead of
+// requiring manual log-timestamp correlation. Recorded on both a
+// successful and a failing step, since a step that fails slowly is
+// exactly the case this metric exists to surface.
+func TestInstrumentedEnvironmentRecordsStepDuration(t *testing.T) {
+	task := "metrics-test-step-duration"
+	env := &instrumentedEnvironment{
+		env:  &metricsTestEnvironment{stepResult: rl.StepResult{Reward: 1}},
+		task: task,
+	}
+	_, err := env.Reset(context.Background())
+	require.NoError(t, err)
+	_, err = env.Step(context.Background(), 0)
+	require.NoError(t, err)
+
+	body := gatherMetrics(t)
+	require.Contains(t, body, `rsi_step_duration_seconds_count{task="`+task+`"} 1`)
+}
+
+func TestInstrumentedEnvironmentRecordsStepDurationOnError(t *testing.T) {
+	task := "metrics-test-step-duration-error"
+	env := &instrumentedEnvironment{env: &stepErrorEnvironment{}, task: task}
+	_, err := env.Step(context.Background(), 0)
+	require.Error(t, err)
+
+	body := gatherMetrics(t)
+	require.Contains(t, body, `rsi_step_duration_seconds_count{task="`+task+`"} 1`)
+}
+
 func TestInstrumentedEnvironmentUsesTaskSelectedDuringReset(t *testing.T) {
 	selectedTask := "goto"
 	env := &instrumentedEnvironment{
@@ -222,6 +254,12 @@ type resetErrorEnvironment struct{ metricsTestEnvironment }
 
 func (*resetErrorEnvironment) Reset(context.Context) (rl.Observation, error) {
 	return rl.Observation{}, io.ErrUnexpectedEOF
+}
+
+type stepErrorEnvironment struct{ metricsTestEnvironment }
+
+func (*stepErrorEnvironment) Step(context.Context, rl.Action) (rl.StepResult, error) {
+	return rl.StepResult{}, io.ErrUnexpectedEOF
 }
 
 // flakyResetEnvironment fails Reset exactly *failuresRemaining times

@@ -206,11 +206,26 @@
       "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
     },
+    {
+      "type": "timeseries",
+      "title": "Step duration by task (p50/p95/p99)",
+      "description": "histogram_quantile over rsi_step_duration_seconds by task — per-environment-step wall-clock time (network round-trip plus in-game action wait, e.g. a mine/craft tick). Meant to surface slow steps (a stuck retry loop, a blocking sleep) directly, rather than requiring manual log-timestamp correlation.",
+      "id": 37,
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 35 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))", "refId": "A", "legendFormat": "p50 {{task}}" },
+        { "expr": "histogram_quantile(0.95, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))", "refId": "B", "legendFormat": "p95 {{task}}" },
+        { "expr": "histogram_quantile(0.99, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))", "refId": "C", "legendFormat": "p99 {{task}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "pointSize": 4, "showPoints": "never" } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
 
     {
       "type": "row",
       "title": "Training health",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
       "id": 104,
       "collapsed": false,
       "panels": []
@@ -220,7 +235,7 @@
       "title": "Gradient updates/sec",
       "description": "rate(rsi_gradient_updates_total[5m]) — optimizer update throughput during Student training.",
       "id": 32,
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 36 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 45 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "rate(rsi_gradient_updates_total[5m])", "refId": "A", "legendFormat": "updates/sec" }],
       "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
@@ -231,7 +246,7 @@
       "title": "Reset failures",
       "description": "sum(increase(rsi_reset_failures_total[$__range])) — environment reset failures during the selected dashboard range.",
       "id": 33,
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 36 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 45 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "sum(increase(rsi_reset_failures_total[$__range]))", "refId": "A" }],
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "orange" }, { "value": 10, "color": "red" }] } } },
@@ -242,7 +257,7 @@
       "title": "Step errors",
       "description": "sum(increase(rsi_step_errors_total[$__range])) — environment step failures during the selected dashboard range.",
       "id": 34,
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 36 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 45 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "sum(increase(rsi_step_errors_total[$__range]))", "refId": "A" }],
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "orange" }, { "value": 10, "color": "red" }] } } },
@@ -252,7 +267,7 @@
     {
       "type": "row",
       "title": "Completion rates",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 53 },
       "id": 105,
       "collapsed": false,
       "panels": []
@@ -262,7 +277,7 @@
       "title": "Cumulative completion rate",
       "description": "Cumulative successful episode completions divided by cumulative completed episodes (success + failure). Truncated episodes are excluded because they did not reach a task outcome. Success is the reward-based completion proxy used by rsi-train.",
       "id": 35,
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 45 },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 54 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "100 * sum(rsi_episodes_total{outcome=\"success\"}) / sum(rsi_episodes_total{outcome=~\"success|failure\"})", "refId": "A", "legendFormat": "all tasks" }],
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
@@ -273,7 +288,7 @@
       "title": "Completion rate by task",
       "description": "Cumulative successful episode completions divided by cumulative completed episodes for each selected task type. The task label is assigned when the curriculum poses the episode.",
       "id": 36,
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 45 },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 54 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "100 * sum by (task) (rsi_episodes_total{outcome=\"success\"}) / sum by (task) (rsi_episodes_total{outcome=~\"success|failure\"})", "refId": "A", "legendFormat": "{{task}}" }],
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },

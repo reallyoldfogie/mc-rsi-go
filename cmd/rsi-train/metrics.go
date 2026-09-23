@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -106,6 +107,19 @@ var (
 	metricStepErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "rsi_step_errors_total",
 		Help: "Environment step failures, by task.",
+	}, []string{"task"})
+
+	// Buckets are scaled for a single environment step (network round-trip
+	// plus in-game action time, e.g. a mine/craft tick wait), not a whole
+	// round like metricRoundDurationSeconds - deliberately distinct from
+	// its buckets. Observed regardless of error (see Step): a step that
+	// fails slowly, like a stuck retry loop waiting on a missing
+	// ingredient or an unresponsive container, is exactly what this metric
+	// exists to surface.
+	metricStepDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "rsi_step_duration_seconds",
+		Help:    "Wall-clock duration of each environment step, by task.",
+		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30},
 	}, []string{"task"})
 
 	// metricTaskEpisodesTotal is only ever incremented when -curriculum-config
@@ -215,7 +229,9 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 
 func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (rl.StepResult, error) {
 	task := e.currentTask()
+	start := time.Now()
 	result, err := e.env.Step(ctx, action)
+	metricStepDurationSeconds.WithLabelValues(task).Observe(time.Since(start).Seconds())
 	if err != nil {
 		metricStepErrorsTotal.WithLabelValues(task).Inc()
 		return result, err
