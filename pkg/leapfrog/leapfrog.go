@@ -108,12 +108,15 @@ type Config struct {
 	// interrupted attempt against this exact teacher (cmd/rsi-train's
 	// own resumeState sidecar validates that precondition before ever
 	// setting this). ResumeStudentStartEpoch is the first epoch number
-	// OnEpoch/the trainer see (instead of 0) — cfg.EpochsPerGeneration
-	// still controls how many *more* epochs this call trains for, not
-	// the total including whatever epochs the resumed checkpoint
-	// already completed, so callers don't need "epochs remaining"
-	// arithmetic. Both fields are the zero value (nil, 0) by default,
-	// which is exactly today's unchanged from-a-teacher-clone behavior.
+	// OnEpoch/the trainer see (instead of 0), and cfg.EpochsPerGeneration
+	// stays the round's *total* epoch budget, counted from epoch 0: a
+	// resume at epoch 30 with a budget of 50 trains epochs 30-49, and a
+	// resume at or past the budget trains nothing and goes straight to
+	// evaluation. (It used to mean "epochs still to run", which silently
+	// re-armed a full budget on every restart - a run restarted often
+	// never reached its evaluation, found live at epoch 101 of a 50-epoch
+	// round.) Both fields are the zero value (nil, 0) by default, which is
+	// exactly today's unchanged from-a-teacher-clone behavior.
 	//
 	// A checkpoint only ever saves Params (weights), never Adam's own
 	// per-parameter moment estimates — trainStudent always constructs a
@@ -266,8 +269,7 @@ func trainStudent(ctx context.Context, envs []rl.Environment, teacherParams *act
 		return nil, fmt.Errorf("constructing trainer: %w", err)
 	}
 
-	for i := range cfg.EpochsPerGeneration {
-		epoch := startEpoch + i
+	for epoch := startEpoch; epoch < cfg.EpochsPerGeneration; epoch++ {
 		stats, err := trainer.RunEpoch(ctx, epoch)
 		if err != nil {
 			return nil, fmt.Errorf("epoch %d: %w", epoch, err)

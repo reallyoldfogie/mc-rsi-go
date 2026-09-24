@@ -137,14 +137,13 @@ func TestRoundCallsOnEpochOncePerStudentTrainingEpoch(t *testing.T) {
 // interim-checkpoint resume feature): when set, trainStudent must start
 // from the given params — not teacherParams.Snapshot() — and OnEpoch's
 // reported epoch numbers must continue from ResumeStudentStartEpoch
-// rather than restarting at 0, while EpochsPerGeneration still controls
-// how many *more* epochs are run (not the total including whatever the
-// resumed checkpoint already completed).
+// rather than restarting at 0, with EpochsPerGeneration the round's total
+// budget (so resuming at epoch 19 of 21 runs epochs 19 and 20).
 func TestRoundResumesStudentFromConfigInsteadOfCloningTeacher(t *testing.T) {
 	env, teacherParams := newTestGridEnv(t)
 	resumeParams := teacherParams.Snapshot()
 	cfg := testConfig(env)
-	cfg.EpochsPerGeneration = 2
+	cfg.EpochsPerGeneration = 21
 	cfg.ResumeStudent = resumeParams
 	cfg.ResumeStudentStartEpoch = 19
 
@@ -160,8 +159,34 @@ func TestRoundResumesStudentFromConfigInsteadOfCloningTeacher(t *testing.T) {
 	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
 	require.NoError(t, err)
 
-	assert.Equal(t, []int{19, 20}, seenEpochs, "epoch numbers must continue from ResumeStudentStartEpoch, and EpochsPerGeneration must mean epochs remaining, not epochs total")
+	assert.Equal(t, []int{19, 20}, seenEpochs, "epoch numbers must continue from ResumeStudentStartEpoch and stop at the EpochsPerGeneration total")
 	assert.True(t, sawResumedParamsFirst, "the very first epoch must train the resumed params object itself, not a fresh clone of teacherParams")
+}
+
+// TestRoundResumedPastTheEpochBudgetSkipsTrainingAndStillEvaluates: a
+// resume at or beyond EpochsPerGeneration must not re-arm a fresh budget
+// (the live bug: every restart added another full round of epochs); it
+// trains nothing and goes straight to the round's evaluation.
+func TestRoundResumedPastTheEpochBudgetSkipsTrainingAndStillEvaluates(t *testing.T) {
+	env, teacherParams := newTestGridEnv(t)
+	cfg := testConfig(env)
+	cfg.EpochsPerGeneration = 50
+	cfg.ResumeStudent = teacherParams.Snapshot()
+	cfg.ResumeStudentStartEpoch = 101
+
+	var seenEpochs []int
+	cfg.OnEpoch = func(stats ppo.EpochStats, _ *actorcritic.Params) {
+		seenEpochs = append(seenEpochs, stats.Epoch)
+	}
+
+	var evaluatedSides []EvalSide
+	cfg.OnBeforeEvaluation = func(side EvalSide) { evaluatedSides = append(evaluatedSides, side) }
+
+	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
+	require.NoError(t, err)
+
+	assert.Empty(t, seenEpochs, "no epochs may run once the resumed epoch is past the budget")
+	assert.Len(t, evaluatedSides, 2, "the round must still evaluate both the Teacher and the resumed Student")
 }
 
 // TestRoundEndToEndAgainstMultipleGridworlds is TestRoundEndToEndAgainstGridworld's
