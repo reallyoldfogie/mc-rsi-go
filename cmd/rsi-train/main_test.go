@@ -233,6 +233,43 @@ func TestApplyAutoResetOriginRejectsAnUnwalkableSpawn(t *testing.T) {
 	assert.Nil(t, cfg.ResetOrigin, "a spawn with no ground support must be rejected")
 }
 
+// TestApplyAutoResetOriginLiftsABuriedSpawnOutOfTheGround covers the
+// live-found post-resume dip: a bot's saved position was inside the floor
+// (y=-63 under a surface at y=-60), the spawn check rejected it, and the
+// shared-server fallback then teleported the bot back into the ground on
+// every reset. It must be lifted to the first good position above it.
+func TestApplyAutoResetOriginLiftsABuriedSpawnOutOfTheGround(t *testing.T) {
+	registry := mctesting.NewSimpleBlockRegistry()
+	wb := mctesting.NewWorldBuilder(registry)
+	for _, y := range []float64{-3, -2, -1} { // three layers of solid floor, surface at y=0
+		wb = wb.FlatGroundDirect(-5, -5, 5, 5, y, spawnGroundStateID)
+	}
+	agent := fakeSpawnQualityAgent{
+		fakePositionProvider: fakePositionProvider{pos: models.V3{X: 1, Y: -2, Z: 2}, initialized: true},
+		world:                wb.Build(),
+		shapeMgr:             mctesting.NewMockShapeManager(),
+	}
+
+	cfg := rlenv.Config{}
+	applyAutoResetOrigin(&cfg, agent, "127.0.0.1:25575")
+
+	require.NotNil(t, cfg.ResetOrigin, "a buried spawn must be lifted, not abandoned")
+	assert.Equal(t, [3]float64{1, 0, 2}, *cfg.ResetOrigin, "lifted to the first standable cell above the floor")
+}
+
+func TestLiftOutOfGroundDoesNotRescueASubmergedSpawn(t *testing.T) {
+	registry := mctesting.NewSimpleBlockRegistry()
+	waterStateID := registry.GetStateID("minecraft:water", nil)
+	world := mctesting.NewWorldBuilder(registry).
+		FlatGroundDirect(-5, -5, 5, 5, -1, spawnGroundStateID).
+		SetBlockDirect(1, 0, 2, waterStateID).
+		SetBlockDirect(1, 1, 2, waterStateID).
+		Build()
+
+	_, ok := liftOutOfGround(world, mctesting.NewMockShapeManager(), models.V3{X: 1, Y: 0, Z: 2})
+	assert.False(t, ok, "a water-filled column is not a place to lift a bot into")
+}
+
 func TestApplyAutoResetOriginNeverOverridesAnOperatorConfiguredResetOriginOrJitter(t *testing.T) {
 	explicitOrigin := [3]float64{9, 9, 9}
 	explicitJitter := [3]float64{5, 5, 5}

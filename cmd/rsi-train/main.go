@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	oldrand "math/rand"
 	"math/rand/v2"
 	"os"
@@ -412,6 +413,32 @@ func isGoodSpawnPosition(world models.World, shapeMgr models.BlockShapeManager, 
 	return hasWalkableWayOut(world, shapeMgr, pos)
 }
 
+// maxSpawnLift bounds liftOutOfGround's upward search.
+const maxSpawnLift = 8
+
+// liftOutOfGround finds the first good spawn position directly above pos
+// (same column, up to maxSpawnLift blocks) for a bot whose captured
+// position is inside solid blocks - e.g. y=-63 in a superflat world whose
+// surface is at y=-60. Found live: a bot's last-saved position from the
+// previous run was buried like this, applyAutoResetOrigin correctly
+// refused it, but applySharedServerWorkingArea then fell back to that same
+// buried position, so every reset teleported the bot into the ground where
+// it suffocated and died; each death respawned it thousands of blocks from
+// its target, scoring a huge negative distance reward that wrecked the
+// first epoch after every restart. Vertical only, on purpose: a spawn
+// rejected for being submerged or boxed in must stay rejected, not be
+// quietly moved next door.
+func liftOutOfGround(world models.World, shapeMgr models.BlockShapeManager, pos models.V3) (models.V3, bool) {
+	base := math.Floor(pos.Y)
+	for dy := 1; dy <= maxSpawnLift; dy++ {
+		candidate := models.V3{X: pos.X, Y: base + float64(dy), Z: pos.Z}
+		if isGoodSpawnPosition(world, shapeMgr, candidate) {
+			return candidate, true
+		}
+	}
+	return models.V3{}, false
+}
+
 // spawnPathOutCheckRadius/spawnPathOutYTolerance/spawnPathOutMinOpenDirections
 // bound hasWalkableWayOut's cheap, real-pathfinder-free heuristic against a
 // spawn that's technically standable (and dry — isGoodSpawnPosition's own
@@ -512,8 +539,13 @@ func applyAutoResetOrigin(cfg *rlenv.Config, a positionProvider, rconAddress str
 	if checker, ok := a.(spawnQualityChecker); ok {
 		world, shapeMgr := checker.GetWorld(), checker.BlockShapeManager()
 		if world != nil && shapeMgr != nil && !isGoodSpawnPosition(world, shapeMgr, pos) {
-			log.Printf("-auto-reset-origin: spawn position (%.1f,%.1f,%.1f) looks unsuitable (unwalkable or submerged); leaving Config.ResetOrigin unset", pos.X, pos.Y, pos.Z)
-			return
+			lifted, ok := liftOutOfGround(world, shapeMgr, pos)
+			if !ok {
+				log.Printf("-auto-reset-origin: spawn position (%.1f,%.1f,%.1f) looks unsuitable (unwalkable or submerged); leaving Config.ResetOrigin unset", pos.X, pos.Y, pos.Z)
+				return
+			}
+			log.Printf("-auto-reset-origin: spawn position (%.1f,%.1f,%.1f) is buried in the ground; using (%.1f,%.1f,%.1f) instead", pos.X, pos.Y, pos.Z, lifted.X, lifted.Y, lifted.Z)
+			pos = lifted
 		}
 	}
 	origin := [3]float64{pos.X, pos.Y, pos.Z}
