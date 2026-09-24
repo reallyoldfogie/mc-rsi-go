@@ -78,8 +78,8 @@ github.com/prometheus/procfs v0.21.1 h1:GljZCt+zSTS+NZq88cyQ1LjZ+RCHp3uVuabBWA5+
 github.com/prometheus/procfs v0.21.1/go.mod h1:aB55Cww9pdSJVHk0hUf0inxWyyjPogFIjmHKYgMKmtY=
 github.com/reallyoldfogie/cRL-go v0.12.1 h1:CwQaGRN+XXSIyzLFYXwPmEW4fIwvAxRkYc9VG7pAugQ=
 github.com/reallyoldfogie/cRL-go v0.12.1/go.mod h1:qirLO/t/yHDS8MhMbs7qAOJBiEU8vBcuRJyix+X30Tc=
-github.com/reallyoldfogie/mc-agent v0.0.20 h1:ra23QG3VOCuP6G2YPn4fqoLF7Khzo3bgncU5U9onKGA=
-github.com/reallyoldfogie/mc-agent v0.0.20/go.mod h1:/EM9iVGl3gpEEzP+SLuUiUKKAG57d0JqMtmp0/AYeyE=
+github.com/reallyoldfogie/mc-agent v0.0.21 h1:K+UJGT5SudgtdCEAX64gehAvmTYGGFiWQIeNdpzEkUA=
+github.com/reallyoldfogie/mc-agent v0.0.21/go.mod h1:/EM9iVGl3gpEEzP+SLuUiUKKAG57d0JqMtmp0/AYeyE=
 github.com/reallyoldfogie/mc-bot-go v0.2.5 h1:1tjtuFpNz02cdyZl125mLcU9I/zt9EsbMJ0Iq3BxLs4=
 github.com/reallyoldfogie/mc-bot-go v0.2.5/go.mod h1:a1PEyOa8tw4vgLPQHSKKYUkQmyxNV5Btdt9e+UVuDgA=
 github.com/reallyoldfogie/mc-client-test-go v0.1.2 h1:B+X3kJFIzkT2mj9k5McJ8E/mtPSqpEp+EiwZevboRtw=
