@@ -338,6 +338,15 @@ func run(args []string) error {
 
 		log.Printf("round %d (%s): teacher=%.3f student=%.3f studentWon=%v generation=%d",
 			round, elapsed, result.TeacherReward, result.StudentReward, result.StudentWon, rec.Generation)
+
+		// The round is over, so its recovery checkpoints describe a student
+		// that is now either the new teacher (saved above) or discarded. Left
+		// in place, a restart early in the next round would resume - or
+		// re-save as "final" - that finished student under the same parent
+		// generation (a lost round keeps it), wrongly starting the next round
+		// from it, already past its epoch budget.
+		clearInterimCheckpoints(interimDir)
+		madeEpochProgress = false
 	}
 	if !madeEpochProgress {
 		log.Printf("no epoch completed this process's lifetime; leaving any existing recovery checkpoint in %s untouched", interimDir)
@@ -730,6 +739,23 @@ func saveFinalCheckpoint(dir string, params *actorcritic.Params, environmentID s
 		return fmt.Errorf("saving resume state: %w", err)
 	}
 	return saveParamsAtomically(filepath.Join(dir, "final.json"), params, environmentID, metadata)
+}
+
+// clearInterimCheckpoints removes a finished round's recovery files
+// (interim-epoch-*.json, final.json and the resume-state sidecar) from dir.
+// Best effort: a failure only means a stale checkpoint survives, which the
+// caller logs but can't do more about.
+func clearInterimCheckpoints(dir string) {
+	var paths []string
+	if matches, err := filepath.Glob(filepath.Join(dir, "interim-epoch-*.json")); err == nil {
+		paths = append(paths, matches...)
+	}
+	paths = append(paths, filepath.Join(dir, "final.json"), filepath.Join(dir, resumeStateFileName))
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			log.Printf("clearing finished round's recovery checkpoint %s: %v", path, err)
+		}
+	}
 }
 
 // resumeStateFileName holds a small sidecar JSON — not one of cRL-go's

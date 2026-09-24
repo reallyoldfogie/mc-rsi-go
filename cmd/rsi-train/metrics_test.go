@@ -241,6 +241,29 @@ func TestLoadResumableStudent_NoOpsOnAFreshCheckpointDirectory(t *testing.T) {
 	assert.Equal(t, -1, epoch)
 }
 
+// TestClearInterimCheckpointsPreventsResumingAFinishedRound: after a round
+// ends (a lost round keeps the same parent generation), a restart early in
+// the next round must not find the finished student's checkpoints.
+func TestClearInterimCheckpointsPreventsResumingAFinishedRound(t *testing.T) {
+	dir := t.TempDir()
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1)
+	require.NoError(t, saveInterimCheckpoint(dir, params, "test-env", 99, checkpoint.Metadata{Epoch: 99}, 7))
+	require.NoError(t, saveFinalCheckpoint(dir, params, "test-env", checkpoint.Metadata{Epoch: 101}, 7))
+	resumed, _, _ := loadResumableStudent(dir, "test-env", 7)
+	require.NotNil(t, resumed, "precondition: the finished round's checkpoints are resumable")
+
+	clearInterimCheckpoints(dir)
+
+	resumed, epoch, _ := loadResumableStudent(dir, "test-env", 7)
+	assert.Nil(t, resumed)
+	assert.Equal(t, -1, epoch)
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "every recovery file must be gone")
+
+	clearInterimCheckpoints(dir) // and clearing an already-clear directory is fine
+}
+
 func gatherMetrics(t *testing.T) string {
 	t.Helper()
 	recorder := httptest.NewRecorder()
