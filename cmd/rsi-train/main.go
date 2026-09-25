@@ -77,6 +77,8 @@ type flags struct {
 	checkpointInterval           int
 	maxRounds                    int
 	maxStepTimeouts              int
+	winZScore                    float64
+	minWinMargin                 float64
 	clearAreaRadius              int
 	autoResetOrigin              bool
 	parallelEnvs                 int
@@ -93,10 +95,12 @@ func parseFlags(args []string) (flags, error) {
 	fs.StringVar(&f.mcAgentConfigPath, "mc-agent-config", "", "path to mc-agent's own config.Settings JSON file — connection, RCON, the rlenv task, replay recording (required)")
 	fs.StringVar(&f.trainerConfigPath, "trainer-config", "", "optional path to a cRL-go config.Settings JSON file (PPO hyperparameters); config.Default() applies if unset")
 	fs.IntVar(&f.epochsPerGeneration, "epochs-per-generation", 50, "PPO epochs the Student trains for before facing evaluation against the Teacher")
-	fs.IntVar(&f.evalEpisodes, "eval-episodes", 5, "episodes per side (Teacher, then Student) in each round's evaluation")
+	fs.IntVar(&f.evalEpisodes, "eval-episodes", 5, "episodes per side (Teacher, then Student) in each round's evaluation, on EACH environment: with -parallel-envs N the environments evaluate concurrently, so the sample per side is N times this at the wall-clock cost of one")
 	fs.IntVar(&f.evalEpisodeLen, "eval-episode-len", 200, "max steps per evaluation episode")
 	fs.IntVar(&f.checkpointInterval, "checkpoint-interval", 10, "save an interim (non-generation) checkpoint every N Student-training epochs; 0 disables")
 	fs.IntVar(&f.maxRounds, "max-rounds", 0, "stop after this many leapfrog rounds; 0 means run until interrupted")
+	fs.Float64Var(&f.winZScore, "win-z-score", 1.645, "a Student is promoted only if its mean evaluation advantage over the Teacher exceeds this many standard errors of the paired per-episode difference (1.645 = one-sided 95%). Guards against promoting a coin flip once tasks are saturated (11 of 20 rounds were 'won' with return flat); 0 restores the plain strictly-greater rule")
+	fs.Float64Var(&f.minWinMargin, "min-win-margin", 0, "additionally require the Student's mean evaluation reward to beat the Teacher's by at least this much; 0 disables")
 	fs.IntVar(&f.maxStepTimeouts, "max-step-timeouts", 5, "end an episode once this many dispatched steps in a row hit the step timeout without their action resolving - bounds a wedged bot that would otherwise run its whole step budget while every other environment waits on it at the epoch barrier (found live: ~17 minutes); 0 disables. Ignored for an environment whose -mc-agent-config already sets its own")
 	fs.IntVar(&f.clearAreaRadius, "clear-area-radius", 0, "each Reset, fill with air the box this many blocks either side of the reset origin in X and Z, from the origin's own Y up 4 blocks - wipes seeded blocks and crafting tables that pile up into obstacles over a run. FLAT WORLDS ONLY (it would delete trees and hills); needs -auto-reset-origin and RCON; 0 (the default) disables. Keep (2r+1)^2*5 under 32768")
 	fs.BoolVar(&f.autoResetOrigin, "auto-reset-origin", false, "if RCON is configured and -mc-agent-config didn't already set env.use_reset_origin, teleport back to the bot's actual spawn position every episode (via a captured Config.ResetOrigin) plus a small default Config.Jitter, instead of letting the goto task's target drift from wherever the previous episode ended — see run's own doc comment for why this exists. Opt-in: false preserves every existing config's behavior unchanged.")
@@ -128,6 +132,12 @@ func parseFlags(args []string) (flags, error) {
 	}
 	if f.maxRounds < 0 {
 		return flags{}, fmt.Errorf("rsi-train: -max-rounds must not be negative, got %d", f.maxRounds)
+	}
+	if f.winZScore < 0 {
+		return flags{}, fmt.Errorf("rsi-train: -win-z-score must not be negative, got %v", f.winZScore)
+	}
+	if f.minWinMargin < 0 {
+		return flags{}, fmt.Errorf("rsi-train: -min-win-margin must not be negative, got %v", f.minWinMargin)
 	}
 	if f.maxStepTimeouts < 0 {
 		return flags{}, fmt.Errorf("rsi-train: -max-step-timeouts must not be negative, got %d", f.maxStepTimeouts)
@@ -260,7 +270,9 @@ func run(args []string) error {
 		EpochsPerGeneration: f.epochsPerGeneration,
 		EvalEpisodes:        f.evalEpisodes,
 		EvalEpisodeLen:      f.evalEpisodeLen,
-		OnBeforeEvaluation:  pairedEvalTaskReseeder(connected[0].reseedEvalTasks),
+		WinZScore:           float32(f.winZScore),
+		MinWinMargin:        float32(f.minWinMargin),
+		OnBeforeEvaluation:  pairedEvalTaskReseeder(evalTaskReseeders(connected)),
 		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.Params) {
 			madeEpochProgress = true
 			latestParams = params
@@ -346,8 +358,9 @@ func run(args []string) error {
 			metricRoundsTotal.WithLabelValues("lost").Inc()
 		}
 
-		log.Printf("round %d (%s): teacher=%.3f student=%.3f studentWon=%v generation=%d",
-			round, elapsed, result.TeacherReward, result.StudentReward, result.StudentWon, rec.Generation)
+		log.Printf("round %d (%s): teacher=%.3f student=%.3f studentWon=%v generation=%d (n=%d/side, std teacher=%.2f student=%.2f, paired diff=%+.3f ± %.3f)",
+			round, elapsed, result.TeacherReward, result.StudentReward, result.StudentWon, rec.Generation,
+			result.EvalEpisodes, result.TeacherStd, result.StudentStd, result.MeanDiff, result.DiffStdErr)
 
 		// The round is over, so its recovery checkpoints describe a student
 		// that is now either the new teacher (saved above) or discarded. Left
@@ -683,29 +696,46 @@ func applySharedServerGamerules(ctx context.Context, rconAddress, rconPassword s
 	return nil
 }
 
+// evalTaskReseeders collects every connected environment's reseedEvalTasks
+// (nil entries - curriculum task selection off - are skipped).
+func evalTaskReseeders(connected []connectedEnvironment) []func(seed1, seed2 uint64) {
+	var reseeds []func(seed1, seed2 uint64)
+	for _, c := range connected {
+		if c.reseedEvalTasks != nil {
+			reseeds = append(reseeds, c.reseedEvalTasks)
+		}
+	}
+	return reseeds
+}
+
 // pairedEvalTaskReseeder returns a leapfrog.Config.OnBeforeEvaluation
 // callback that pins Teacher's and Student's evaluation episodes to the
-// identical sequence of curriculum-sampled tasks each round: on
-// EvalTeacher it draws a fresh seed pair from its own internal rng and
-// reseeds reseed with it; on EvalStudent it reseeds again with that same
-// pair, so both sides' env.Reset calls draw from an identical rng stream
-// starting from the same state — without this, Round's win condition
-// (strictly greater mean eval reward, no margin) conflates "which random
-// tasks each side happened to draw" with actual skill difference. reseed
-// == nil (curriculum task selection off) makes this return nil too, so
-// cfg.OnBeforeEvaluation stays nil and Round behaves exactly as it did
-// before this existed.
-func pairedEvalTaskReseeder(reseed func(seed1, seed2 uint64)) func(leapfrog.EvalSide) {
-	if reseed == nil {
+// identical sequence of curriculum-sampled tasks each round, on every
+// environment: on EvalTeacher it draws a fresh seed pair per environment
+// from its own internal rng and reseeds each environment with its pair; on
+// EvalStudent it reseeds again with those same pairs, so each environment's
+// env.Reset calls draw from an identical rng stream starting from the same
+// state for both sides (environments get different pairs from each other,
+// so together they cover different tasks). Without this, Round's win
+// condition conflates "which random tasks each side happened to draw" with
+// actual skill difference. No reseeders (curriculum task selection off)
+// makes this return nil, so cfg.OnBeforeEvaluation stays nil and Round
+// behaves exactly as it did before this existed.
+func pairedEvalTaskReseeder(reseeds []func(seed1, seed2 uint64)) func(leapfrog.EvalSide) {
+	if len(reseeds) == 0 {
 		return nil
 	}
 	seedRNG := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0xE5A1))
-	var seed1, seed2 uint64
+	seeds := make([][2]uint64, len(reseeds))
 	return func(side leapfrog.EvalSide) {
 		if side == leapfrog.EvalTeacher {
-			seed1, seed2 = seedRNG.Uint64(), seedRNG.Uint64()
+			for i := range seeds {
+				seeds[i] = [2]uint64{seedRNG.Uint64(), seedRNG.Uint64()}
+			}
 		}
-		reseed(seed1, seed2)
+		for i, reseed := range reseeds {
+			reseed(seeds[i][0], seeds[i][1])
+		}
 	}
 }
 

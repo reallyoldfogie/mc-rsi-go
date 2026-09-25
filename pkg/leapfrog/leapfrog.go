@@ -27,8 +27,11 @@ package leapfrog
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"math/rand/v2"
+	"sync"
 
 	"github.com/reallyoldfogie/cRL-go/pkg/actorcritic"
 	"github.com/reallyoldfogie/cRL-go/pkg/config"
@@ -66,8 +69,25 @@ type Config struct {
 	EpochsPerGeneration int
 
 	// EvalEpisodes is how many episodes each side (Teacher, then
-	// Student) is evaluated over. Must be positive.
+	// Student) is evaluated over *on each environment*: with several
+	// environments they evaluate concurrently, so the sample per side is
+	// EvalEpisodes * len(envs) at the wall-clock cost of EvalEpisodes. Must
+	// be positive.
 	EvalEpisodes int
+
+	// WinZScore, if > 0, requires the Student's mean advantage over the
+	// Teacher to exceed that many standard errors of the paired
+	// per-episode difference (episode j on environment i is the same task
+	// for both sides when OnBeforeEvaluation pins them), on top of being
+	// strictly positive. A win on a difference within noise is no evidence
+	// of improvement: with tasks the policy has already saturated, the
+	// unguarded rule promoted a coin flip (11 of 20 rounds). 1.645 is a
+	// one-sided 95% test. 0 (the default) keeps the plain strict rule.
+	WinZScore float32
+
+	// MinWinMargin, if > 0, additionally requires the Student's mean
+	// evaluation reward to beat the Teacher's by at least this much.
+	MinWinMargin float32
 
 	// EvalEpisodeLen caps the number of steps in one evaluation
 	// episode, mirroring config.Settings.EpisodeLen's role during
@@ -159,6 +179,12 @@ func (cfg Config) Validate() error {
 	if cfg.EvalEpisodeLen <= 0 {
 		return fmt.Errorf("leapfrog: eval episode length must be positive, got %d", cfg.EvalEpisodeLen)
 	}
+	if cfg.WinZScore < 0 {
+		return fmt.Errorf("leapfrog: win z-score must not be negative, got %v", cfg.WinZScore)
+	}
+	if cfg.MinWinMargin < 0 {
+		return fmt.Errorf("leapfrog: min win margin must not be negative, got %v", cfg.MinWinMargin)
+	}
 	return nil
 }
 
@@ -172,6 +198,17 @@ type Result struct {
 	// across Config.EvalEpisodes evaluation episodes.
 	TeacherReward float32
 	StudentReward float32
+	// EvalEpisodes is how many episodes each side was evaluated over in
+	// total (Config.EvalEpisodes * number of environments); TeacherStd and
+	// StudentStd are each side's sample standard deviation of per-episode
+	// reward; MeanDiff is the mean of the paired per-episode differences
+	// (Student minus Teacher) and DiffStdErr its standard error - MeanDiff
+	// within a couple of DiffStdErr of zero is noise, not a real gap.
+	EvalEpisodes int
+	TeacherStd   float32
+	StudentStd   float32
+	MeanDiff     float32
+	DiffStdErr   float32
 	// StudentParams is the Student's trained params. Only set when
 	// StudentWon is true — a losing Student's params are discarded
 	// rather than handed back, matching pkg/lineage's own convention of
@@ -217,7 +254,7 @@ func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcriti
 	if cfg.OnBeforeEvaluation != nil {
 		cfg.OnBeforeEvaluation(EvalTeacher)
 	}
-	teacherReward, err := evaluate(ctx, envs[0], teacherParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
+	teacherScores, err := evaluateAll(ctx, envs, teacherParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
 	if err != nil {
 		return Result{}, fmt.Errorf("leapfrog: evaluating teacher: %w", err)
 	}
@@ -225,12 +262,12 @@ func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcriti
 	if cfg.OnBeforeEvaluation != nil {
 		cfg.OnBeforeEvaluation(EvalStudent)
 	}
-	studentReward, err := evaluate(ctx, envs[0], studentParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
+	studentScores, err := evaluateAll(ctx, envs, studentParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
 	if err != nil {
 		return Result{}, fmt.Errorf("leapfrog: evaluating student: %w", err)
 	}
 
-	return decideWinner(teacherReward, studentReward, studentParams), nil
+	return summarizeRound(teacherScores, studentScores, studentParams, cfg), nil
 }
 
 // trainStudent clones teacherParams and trains the clone for
@@ -284,22 +321,128 @@ func trainStudent(ctx context.Context, envs []rl.Environment, teacherParams *act
 
 // evaluate runs episodes episodes of at most episodeLen steps each
 // against env using params, greedily (see Round's doc comment), and
-// returns the mean total reward per episode.
-func evaluate(ctx context.Context, env rl.Environment, params *actorcritic.Params, episodes, episodeLen int, rng *rand.Rand) (float32, error) {
+// returns each episode's total reward in order.
+func evaluate(ctx context.Context, env rl.Environment, params *actorcritic.Params, episodes, episodeLen int, rng *rand.Rand) ([]float32, error) {
 	actor, err := actorcritic.NewActor(params)
 	if err != nil {
-		return 0, fmt.Errorf("building actor: %w", err)
+		return nil, fmt.Errorf("building actor: %w", err)
 	}
 
-	var totalReward float32
+	rewards := make([]float32, 0, episodes)
 	for range episodes {
 		reward, err := evaluateEpisode(ctx, env, actor, episodeLen, rng)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
-		totalReward += reward
+		rewards = append(rewards, reward)
 	}
-	return totalReward / float32(episodes), nil
+	return rewards, nil
+}
+
+// evaluateAll runs evaluate on every environment concurrently (each on its
+// own goroutine and its own rng, so nothing is shared but the read-only
+// params) and returns each environment's per-episode rewards, indexed by
+// environment. A single environment runs inline, exactly as before.
+func evaluateAll(ctx context.Context, envs []rl.Environment, params *actorcritic.Params, episodes, episodeLen int, rng *rand.Rand) ([][]float32, error) {
+	rngs := make([]*rand.Rand, len(envs))
+	for i := range envs {
+		rngs[i] = rand.New(rand.NewPCG(rng.Uint64(), uint64(i)))
+	}
+	scores := make([][]float32, len(envs))
+	if len(envs) == 1 {
+		s, err := evaluate(ctx, envs[0], params, episodes, episodeLen, rngs[0])
+		if err != nil {
+			return nil, err
+		}
+		scores[0] = s
+		return scores, nil
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	errs := make([]error, len(envs))
+	var wg sync.WaitGroup
+	for i := range envs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			scores[i], errs[i] = evaluate(ctx, envs[i], params, episodes, episodeLen, rngs[i])
+			if errs[i] != nil {
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Report a real failure over the context.Canceled it caused in the others.
+	var first error
+	for _, err := range errs {
+		if err != nil && (first == nil || errors.Is(first, context.Canceled)) {
+			first = err
+		}
+	}
+	if first != nil {
+		return nil, first
+	}
+	return scores, nil
+}
+
+// summarizeRound turns both sides' per-environment episode rewards into
+// the round's Result: means, spread, the paired difference statistics, and
+// the win decision (decideWinner's strict rule, then Config.MinWinMargin
+// and Config.WinZScore if set). Episode j on environment i is treated as
+// the same task for both sides.
+func summarizeRound(teacher, student [][]float32, studentParams *actorcritic.Params, cfg Config) Result {
+	var t, s, diffs []float64
+	for i := range teacher {
+		for j := range teacher[i] {
+			t = append(t, float64(teacher[i][j]))
+			s = append(s, float64(student[i][j]))
+			diffs = append(diffs, float64(student[i][j])-float64(teacher[i][j]))
+		}
+	}
+	meanT, stdT := meanStd(t)
+	meanS, stdS := meanStd(s)
+	meanD, stdD := meanStd(diffs)
+	var se float64
+	if len(diffs) > 1 {
+		se = stdD / math.Sqrt(float64(len(diffs)))
+	}
+
+	result := decideWinner(float32(meanT), float32(meanS), studentParams)
+	result.EvalEpisodes = len(t)
+	result.TeacherStd, result.StudentStd = float32(stdT), float32(stdS)
+	result.MeanDiff, result.DiffStdErr = float32(meanD), float32(se)
+
+	if result.StudentWon {
+		beatsMargin := cfg.MinWinMargin <= 0 || float32(meanS-meanT) >= cfg.MinWinMargin
+		beatsNoise := cfg.WinZScore <= 0 || meanD > float64(cfg.WinZScore)*se
+		if !beatsMargin || !beatsNoise {
+			result.StudentWon = false
+			result.StudentParams = nil
+		}
+	}
+	return result
+}
+
+// meanStd returns the mean and sample standard deviation of xs (0 for
+// fewer than two values).
+func meanStd(xs []float64) (mean, std float64) {
+	if len(xs) == 0 {
+		return 0, 0
+	}
+	for _, x := range xs {
+		mean += x
+	}
+	mean /= float64(len(xs))
+	if len(xs) < 2 {
+		return mean, 0
+	}
+	var ss float64
+	for _, x := range xs {
+		ss += (x - mean) * (x - mean)
+	}
+	return mean, math.Sqrt(ss / float64(len(xs)-1))
 }
 
 // evaluateEpisode runs one evaluation episode and returns its total

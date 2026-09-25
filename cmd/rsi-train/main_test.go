@@ -6,6 +6,7 @@ import (
 	"github.com/reallyoldfogie/mc-agent/models"
 	"github.com/reallyoldfogie/mc-agent/rlenv"
 	mctesting "github.com/reallyoldfogie/mc-agent/testing"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/lineage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,6 +31,8 @@ func TestParseFlagsRejectsMissingOrInvalidInput(t *testing.T) {
 		{"negative checkpoint-interval", validArgs("-checkpoint-interval", "-1")},
 		{"negative max-rounds", validArgs("-max-rounds", "-1")},
 		{"negative max-step-timeouts", validArgs("-max-step-timeouts", "-1")},
+		{"negative win-z-score", validArgs("-win-z-score", "-1")},
+		{"negative min-win-margin", validArgs("-min-win-margin", "-1")},
 		{"negative clear-area-radius", validArgs("-clear-area-radius", "-1")},
 		{"clear-area-radius over the fill limit", validArgs("-clear-area-radius", "40")},
 		{"zero parallel-envs", validArgs("-parallel-envs", "0")},
@@ -73,6 +76,8 @@ func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
 	assert.Equal(t, 16, f.sharedServerSeparationChunks)
 	assert.Equal(t, 5, f.maxStepTimeouts, "-max-step-timeouts is a harmless safety net, so it defaults on")
 	assert.Equal(t, 0, f.clearAreaRadius, "-clear-area-radius deletes blocks (flat worlds only), so it must default off")
+	assert.InDelta(t, 1.645, f.winZScore, 1e-9, "promotion must require a statistically real advantage by default")
+	assert.Zero(t, f.minWinMargin)
 
 	f, err = parseFlags([]string{
 		"-checkpoint-dir", "/tmp/ckpt",
@@ -400,4 +405,28 @@ func TestApplyEpisodeLimitsFillsUnsetFieldsAndLeavesOperatorValuesAlone(t *testi
 	assert.Zero(t, cfg.MaxConsecutiveStepTimeouts)
 	assert.Zero(t, cfg.ClearAreaRadius)
 	assert.Zero(t, cfg.ClearAreaHeight, "clearing stays fully off when the flag is 0")
+}
+
+func TestPairedEvalTaskReseederPinsEachEnvironmentToTheSameSeedsForBothSidesAndVariesAcrossEnvironments(t *testing.T) {
+	type call struct{ seed1, seed2 uint64 }
+	var envA, envB []call
+	hook := pairedEvalTaskReseeder([]func(uint64, uint64){
+		func(a, b uint64) { envA = append(envA, call{a, b}) },
+		func(a, b uint64) { envB = append(envB, call{a, b}) },
+	})
+	require.NotNil(t, hook)
+
+	hook(leapfrog.EvalTeacher)
+	hook(leapfrog.EvalStudent)
+
+	require.Len(t, envA, 2)
+	require.Len(t, envB, 2)
+	assert.Equal(t, envA[0], envA[1], "Teacher and Student must draw the identical tasks on each environment")
+	assert.Equal(t, envB[0], envB[1])
+	assert.NotEqual(t, envA[0], envB[0], "different environments should cover different tasks")
+
+	hook(leapfrog.EvalTeacher)
+	assert.NotEqual(t, envA[0], envA[2], "each round draws fresh seeds")
+
+	assert.Nil(t, pairedEvalTaskReseeder(nil), "no curriculum means no reseeding hook")
 }

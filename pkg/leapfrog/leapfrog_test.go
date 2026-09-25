@@ -306,3 +306,72 @@ func testConfig(env *gridworldenv.Adapter) Config {
 func isNaN32(f float32) bool {
 	return f != f
 }
+
+// scriptedEnv is an environment whose every episode is one step long and
+// returns a fixed reward, recording how many episodes it served - enough to
+// test evaluation scheduling and statistics without any learning.
+type scriptedEnv struct {
+	rewards []float32 // reward of episode k is rewards[k % len]
+	served  int
+}
+
+func (e *scriptedEnv) Reset(context.Context) (rl.Observation, error) {
+	return rl.Observation{Values: []float32{0}}, nil
+}
+func (e *scriptedEnv) Step(context.Context, rl.Action) (rl.StepResult, error) {
+	r := e.rewards[e.served%len(e.rewards)]
+	e.served++
+	return rl.StepResult{Observation: rl.Observation{Values: []float32{0}}, Reward: r, Done: true}, nil
+}
+func (e *scriptedEnv) ObservationSize() int { return 1 }
+func (e *scriptedEnv) ActionSpace() int     { return 2 }
+
+func TestEvaluateAllRunsEveryEnvironmentAndKeepsPerEnvironmentOrder(t *testing.T) {
+	a := &scriptedEnv{rewards: []float32{1, 2, 3}}
+	b := &scriptedEnv{rewards: []float32{10, 20, 30}}
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 4, 2)
+
+	scores, err := evaluateAll(context.Background(), []rl.Environment{a, b}, params, 3, 5, rand.New(rand.NewPCG(3, 4)))
+	require.NoError(t, err)
+
+	assert.Equal(t, [][]float32{{1, 2, 3}, {10, 20, 30}}, scores, "each environment evaluates EvalEpisodes episodes, in order, concurrently")
+}
+
+// TestSummarizeRoundPairedStatistics: the paired difference, its standard
+// error and the win rules, on hand-computable numbers.
+func TestSummarizeRoundPairedStatistics(t *testing.T) {
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 4, 2)
+	teacher := [][]float32{{10, 10, 10, 10}}
+	student := [][]float32{{11, 11, 11, 11}} // +1 every pair: zero spread, so any z-score is beaten
+
+	result := summarizeRound(teacher, student, params, Config{})
+	assert.True(t, result.StudentWon)
+	assert.InDelta(t, 1.0, result.MeanDiff, 1e-6)
+	assert.InDelta(t, 0.0, result.DiffStdErr, 1e-6)
+	assert.Equal(t, 4, result.EvalEpisodes)
+
+	// A noisy tie: same mean advantage of +1, but per-pair differences swing
+	// wildly, so a 1.645 z-score must reject what the plain rule accepts.
+	noisyTeacher := [][]float32{{10, 10, 10, 10}}
+	noisyStudent := [][]float32{{20, 0, 18, 6}} // mean 11, diffs +10 -10 +8 -4
+	plain := summarizeRound(noisyTeacher, noisyStudent, params, Config{})
+	assert.True(t, plain.StudentWon, "the unguarded rule promotes on any positive mean difference")
+	guarded := summarizeRound(noisyTeacher, noisyStudent, params, Config{WinZScore: 1.645})
+	assert.False(t, guarded.StudentWon, "a +1 mean over a per-pair spread of ~9 is noise, not improvement")
+	assert.Nil(t, guarded.StudentParams, "a rejected Student's params must be dropped")
+
+	// Margin: +1 is not enough when 2 is demanded.
+	assert.False(t, summarizeRound(teacher, student, params, Config{MinWinMargin: 2}).StudentWon)
+	assert.True(t, summarizeRound(teacher, student, params, Config{MinWinMargin: 1}).StudentWon)
+}
+
+func TestConfigValidateRejectsNegativeWinRules(t *testing.T) {
+	base := Config{EpochsPerGeneration: 1, EvalEpisodes: 1, EvalEpisodeLen: 1}
+	bad := base
+	bad.WinZScore = -1
+	assert.Error(t, bad.Validate())
+	bad = base
+	bad.MinWinMargin = -1
+	assert.Error(t, bad.Validate())
+	assert.NoError(t, base.Validate())
+}
