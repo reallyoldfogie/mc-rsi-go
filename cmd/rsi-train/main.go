@@ -76,6 +76,8 @@ type flags struct {
 	evalEpisodeLen               int
 	checkpointInterval           int
 	maxRounds                    int
+	maxStepTimeouts              int
+	clearAreaRadius              int
 	autoResetOrigin              bool
 	parallelEnvs                 int
 	sharedServer                 bool
@@ -95,6 +97,8 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.evalEpisodeLen, "eval-episode-len", 200, "max steps per evaluation episode")
 	fs.IntVar(&f.checkpointInterval, "checkpoint-interval", 10, "save an interim (non-generation) checkpoint every N Student-training epochs; 0 disables")
 	fs.IntVar(&f.maxRounds, "max-rounds", 0, "stop after this many leapfrog rounds; 0 means run until interrupted")
+	fs.IntVar(&f.maxStepTimeouts, "max-step-timeouts", 5, "end an episode once this many dispatched steps in a row hit the step timeout without their action resolving - bounds a wedged bot that would otherwise run its whole step budget while every other environment waits on it at the epoch barrier (found live: ~17 minutes); 0 disables. Ignored for an environment whose -mc-agent-config already sets its own")
+	fs.IntVar(&f.clearAreaRadius, "clear-area-radius", 0, "each Reset, fill with air the box this many blocks either side of the reset origin in X and Z, from the origin's own Y up 4 blocks - wipes seeded blocks and crafting tables that pile up into obstacles over a run. FLAT WORLDS ONLY (it would delete trees and hills); needs -auto-reset-origin and RCON; 0 (the default) disables. Keep (2r+1)^2*5 under 32768")
 	fs.BoolVar(&f.autoResetOrigin, "auto-reset-origin", false, "if RCON is configured and -mc-agent-config didn't already set env.use_reset_origin, teleport back to the bot's actual spawn position every episode (via a captured Config.ResetOrigin) plus a small default Config.Jitter, instead of letting the goto task's target drift from wherever the previous episode ended — see run's own doc comment for why this exists. Opt-in: false preserves every existing config's behavior unchanged.")
 	fs.IntVar(&f.parallelEnvs, "parallel-envs", 1, "number of concurrent live Minecraft environments to train against (see docs/plans/08-parallel-environments-and-scaling.md); each needs its own already-running server — addresses/RCON/bot usernames beyond the first are derived from -mc-agent-config via pkg/parallelenv.DeriveSettings. 1 (the default) preserves single-environment behavior exactly.")
 	fs.BoolVar(&f.sharedServer, "shared-server", false, "run all -parallel-envs bots against ONE already-running server instead of one server each, each confined to its own working area (see -shared-server-separation-chunks). Requires RCON to be configured. The operator is responsible for launching that server with a reduced VIEW_DISTANCE/SIMULATION_DISTANCE (e.g. 4-6) small enough not to overlap adjacent bots' working areas.")
@@ -124,6 +128,12 @@ func parseFlags(args []string) (flags, error) {
 	}
 	if f.maxRounds < 0 {
 		return flags{}, fmt.Errorf("rsi-train: -max-rounds must not be negative, got %d", f.maxRounds)
+	}
+	if f.maxStepTimeouts < 0 {
+		return flags{}, fmt.Errorf("rsi-train: -max-step-timeouts must not be negative, got %d", f.maxStepTimeouts)
+	}
+	if f.clearAreaRadius < 0 || (2*f.clearAreaRadius+1)*(2*f.clearAreaRadius+1)*(clearAreaHeightBlocks+1) > 32768 {
+		return flags{}, fmt.Errorf("rsi-train: -clear-area-radius must be between 0 and %d (vanilla's fill command caps at 32768 blocks), got %d", maxClearAreaRadius, f.clearAreaRadius)
 	}
 	if f.parallelEnvs <= 0 {
 		return flags{}, fmt.Errorf("rsi-train: -parallel-envs must be positive, got %d", f.parallelEnvs)
@@ -172,7 +182,7 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.checkpointDir)
+	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.checkpointDir, episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius})
 	if err != nil {
 		return err
 	}
@@ -420,6 +430,33 @@ func isGoodSpawnPosition(world models.World, shapeMgr models.BlockShapeManager, 
 		return false
 	}
 	return hasWalkableWayOut(world, shapeMgr, pos)
+}
+
+// clearAreaHeightBlocks is how far above the reset origin's Y -clear-area-radius
+// clears (rlenv.Config.ClearAreaHeight's default), and maxClearAreaRadius the
+// largest radius keeping the fill box under vanilla's 32,768-block limit.
+const (
+	clearAreaHeightBlocks = 4
+	maxClearAreaRadius    = 39 // (2*39+1)^2 * 5 = 31,205; radius 40 would be 32,805, over the limit
+)
+
+// episodeLimits are the per-episode safety nets applied to every
+// environment; see the -max-step-timeouts and -clear-area-radius flags.
+type episodeLimits struct {
+	maxStepTimeouts int
+	clearAreaRadius int
+}
+
+// applyEpisodeLimits sets cfg's episode safety nets from limits, leaving any
+// value the operator already set in -mc-agent-config alone.
+func applyEpisodeLimits(cfg *rlenv.Config, limits episodeLimits) {
+	if cfg.MaxConsecutiveStepTimeouts == 0 {
+		cfg.MaxConsecutiveStepTimeouts = limits.maxStepTimeouts
+	}
+	if cfg.ClearAreaRadius == 0 && limits.clearAreaRadius > 0 {
+		cfg.ClearAreaRadius = limits.clearAreaRadius
+		cfg.ClearAreaHeight = clearAreaHeightBlocks
+	}
 }
 
 // maxSpawnLift bounds liftOutOfGround's upward search.
@@ -979,7 +1016,7 @@ type connectedEnvironment struct {
 // On a mid-loop failure, every already-connected agent is closed before
 // the error is returned, so a partial connect never leaks live bot
 // sessions.
-func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string) ([]connectedEnvironment, error) {
+func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, error) {
 	if sharedServer {
 		if base.RCON.Address == "" {
 			return nil, fmt.Errorf("rsi-train: -shared-server requires RCON to be configured in -mc-agent-config")
@@ -1027,6 +1064,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 		}
 
 		envCfg := settings.Env.ToRlenvConfig()
+		applyEpisodeLimits(&envCfg, limits)
 		if autoResetOrigin {
 			applyAutoResetOrigin(&envCfg, a, settings.RCON.Address)
 		}

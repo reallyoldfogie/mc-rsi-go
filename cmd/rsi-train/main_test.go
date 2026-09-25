@@ -29,6 +29,9 @@ func TestParseFlagsRejectsMissingOrInvalidInput(t *testing.T) {
 		{"zero eval-episode-len", validArgs("-eval-episode-len", "0")},
 		{"negative checkpoint-interval", validArgs("-checkpoint-interval", "-1")},
 		{"negative max-rounds", validArgs("-max-rounds", "-1")},
+		{"negative max-step-timeouts", validArgs("-max-step-timeouts", "-1")},
+		{"negative clear-area-radius", validArgs("-clear-area-radius", "-1")},
+		{"clear-area-radius over the fill limit", validArgs("-clear-area-radius", "40")},
 		{"zero parallel-envs", validArgs("-parallel-envs", "0")},
 		{"negative parallel-envs", validArgs("-parallel-envs", "-1")},
 		{"zero shared-server-separation-chunks with -shared-server", validArgs("-shared-server", "-shared-server-separation-chunks", "0")},
@@ -68,6 +71,8 @@ func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
 	assert.Equal(t, 1, f.parallelEnvs, "-parallel-envs must default to 1: existing single-environment behavior unaffected")
 	assert.False(t, f.sharedServer, "-shared-server must default to false: existing per-server behavior unaffected")
 	assert.Equal(t, 16, f.sharedServerSeparationChunks)
+	assert.Equal(t, 5, f.maxStepTimeouts, "-max-step-timeouts is a harmless safety net, so it defaults on")
+	assert.Equal(t, 0, f.clearAreaRadius, "-clear-area-radius deletes blocks (flat worlds only), so it must default off")
 
 	f, err = parseFlags([]string{
 		"-checkpoint-dir", "/tmp/ckpt",
@@ -375,4 +380,24 @@ func TestLoadOrInitTeacherResumesExistingLatestGeneration(t *testing.T) {
 
 	assert.Equal(t, firstRec.CreatedAt.Unix(), secondRec.CreatedAt.Unix())
 	assert.Equal(t, first.W0.Data, second.W0.Data, "second call must resume the exact same persisted weights, not a fresh random init")
+}
+
+func TestApplyEpisodeLimitsFillsUnsetFieldsAndLeavesOperatorValuesAlone(t *testing.T) {
+	cfg := rlenv.Config{}
+	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, clearAreaRadius: 16})
+	assert.Equal(t, 5, cfg.MaxConsecutiveStepTimeouts)
+	assert.Equal(t, 16, cfg.ClearAreaRadius)
+	assert.Equal(t, clearAreaHeightBlocks, cfg.ClearAreaHeight)
+
+	cfg = rlenv.Config{MaxConsecutiveStepTimeouts: 9, ClearAreaRadius: 3, ClearAreaHeight: 6}
+	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, clearAreaRadius: 16})
+	assert.Equal(t, 9, cfg.MaxConsecutiveStepTimeouts, "an operator-configured value must win")
+	assert.Equal(t, 3, cfg.ClearAreaRadius)
+	assert.Equal(t, 6, cfg.ClearAreaHeight)
+
+	cfg = rlenv.Config{}
+	applyEpisodeLimits(&cfg, episodeLimits{})
+	assert.Zero(t, cfg.MaxConsecutiveStepTimeouts)
+	assert.Zero(t, cfg.ClearAreaRadius)
+	assert.Zero(t, cfg.ClearAreaHeight, "clearing stays fully off when the flag is 0")
 }
