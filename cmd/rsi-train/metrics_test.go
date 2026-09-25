@@ -15,6 +15,7 @@ import (
 	"github.com/reallyoldfogie/cRL-go/pkg/actorcritic"
 	"github.com/reallyoldfogie/cRL-go/pkg/checkpoint"
 	"github.com/reallyoldfogie/cRL-go/pkg/rl"
+	"github.com/reallyoldfogie/mc-agent/rlenv"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -86,6 +87,27 @@ func TestInstrumentedEnvironmentRecordsStepDurationOnError(t *testing.T) {
 
 	body := gatherMetrics(t)
 	require.Contains(t, body, `rsi_step_duration_seconds_count{task="`+task+`"} 1`)
+}
+
+func TestInstrumentedEnvironmentCountsChosenActionsByTask(t *testing.T) {
+	task := "metrics-test-actions"
+	env := &instrumentedEnvironment{
+		env:  &metricsTestEnvironment{stepResult: rl.StepResult{Reward: 1}},
+		task: task,
+	}
+	_, err := env.Reset(context.Background())
+	require.NoError(t, err)
+	for _, a := range []rl.Action{rlenv.ActionMine, rlenv.ActionMine, rlenv.ActionGoToTarget, rlenv.ActionWait} {
+		_, err = env.Step(context.Background(), a)
+		require.NoError(t, err)
+	}
+
+	body := gatherMetrics(t)
+	require.Contains(t, body, `rsi_actions_total{action="mine",task="`+task+`"} 2`)
+	require.Contains(t, body, `rsi_actions_total{action="goto",task="`+task+`"} 1`)
+	require.Contains(t, body, `rsi_actions_total{action="wait",task="`+task+`"} 1`)
+	assert.Equal(t, "craft", actionName(rlenv.ActionCraft))
+	assert.Equal(t, "unknown", actionName(rl.Action(99)))
 }
 
 func TestInstrumentedEnvironmentUsesTaskSelectedDuringReset(t *testing.T) {

@@ -322,6 +322,19 @@
       "targets": [{ "expr": "100 * sum by (task) (rsi_episodes_total{outcome=\"success\"}) / sum by (task) (rsi_episodes_total{outcome=~\"success|failure\"})", "refId": "A", "legendFormat": "{{task}}" }],
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Chosen actions by task (share of steps)",
+      "description": "rsi_actions_total — which action the policy picked, as a share of each task's steps over 10 minutes. Read with the step-duration histogram: for mine_far, most steps finish instantly because the policy picked an action that did nothing (Mine before the block is in view, GoToTarget after arriving, Wait). A policy that has learned the sequence spends its steps on goto until the block appears and then mine.",
+      "id": 40,
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 71 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "100 * sum by (task, action) (rate(rsi_actions_total[10m])) / on(task) group_left sum by (task) (rate(rsi_actions_total[10m]))", "refId": "A", "legendFormat": "{{task}} / {{action}}" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0 } } },
+      "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi" } }
     }
   ],
   "templating": {

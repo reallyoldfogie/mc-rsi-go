@@ -147,6 +147,11 @@ var (
 	// fails slowly, like a stuck retry loop waiting on a missing
 	// ingredient or an unresponsive container, is exactly what this metric
 	// exists to surface.
+	metricActionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rsi_actions_total",
+		Help: "Environment steps by the action the policy chose, by task. With rsi_step_duration_seconds this shows where an episode's steps go: most steps of a policy still learning a sequence are instant no-ops (Mine before the block is in view, GoToTarget after arriving, Wait), not slow ones.",
+	}, []string{"task", "action"}) // action: wait | goto | mine | craft
+
 	metricStepDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "rsi_step_duration_seconds",
 		Help:    "Wall-clock duration of each environment step, by task.",
@@ -280,6 +285,7 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 
 func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (rl.StepResult, error) {
 	task := e.currentTask()
+	metricActionsTotal.WithLabelValues(task, actionName(action)).Inc()
 	start := time.Now()
 	result, err := e.env.Step(ctx, action)
 	metricStepDurationSeconds.WithLabelValues(task).Observe(time.Since(start).Seconds())
@@ -297,6 +303,22 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 		e.started = false
 	}
 	return result, nil
+}
+
+// actionName is the metric label for one of rlenv's discrete actions.
+func actionName(action rl.Action) string {
+	switch action {
+	case rlenv.ActionWait:
+		return "wait"
+	case rlenv.ActionGoToTarget:
+		return "goto"
+	case rlenv.ActionMine:
+		return "mine"
+	case rlenv.ActionCraft:
+		return "craft"
+	default:
+		return "unknown"
+	}
 }
 
 // recordTaskSelection increments metricTaskEpisodesTotal for whichever
