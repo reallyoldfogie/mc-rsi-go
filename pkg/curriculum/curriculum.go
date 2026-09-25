@@ -81,6 +81,10 @@ type TaskSpec struct {
 	// CraftTargetItem is meaningful only when Type is TaskCraft or
 	// TaskCraftFar.
 	CraftTargetItem string
+
+	// CraftSearchRadius is meaningful only when Type is TaskCraftFar: how
+	// close a crafting table must be for the craft to be ready.
+	CraftSearchRadius int
 }
 
 // Generator produces one TaskSpec per episode. episode is 0-indexed,
@@ -127,14 +131,17 @@ type Pool struct {
 	MineFarBlocks        []string
 	MineFarSearchRadius  int
 
-	// CraftFarTargetOffsets/CraftFarItems pose "go there, then craft": a
-	// crafting table is placed beside the goto target. The offsets must be
-	// longer than the agent's crafting-table search radius (32 blocks) so
-	// Craft can't simply walk there itself, and the items must be recipes
-	// that need a table (chest, bowl). Empty offsets or items disable the
-	// type.
+	// CraftFarTargetOffsets/CraftFarItems/CraftFarSearchRadius pose "go
+	// there, then craft": a crafting table is placed beside the goto target.
+	// Crafting only becomes ready once a table is within the search radius,
+	// which must be smaller than the offsets' length so the table starts out
+	// of range (the agent's own table search is 32 blocks and it walks there
+	// itself, so without the radius gate a nearby table would need no
+	// travelling). The items must be recipes that need a table (chest,
+	// bowl). Empty offsets or items, or a radius <= 0, disable the type.
 	CraftFarTargetOffsets [][3]float64
 	CraftFarItems         []string
+	CraftFarSearchRadius  int
 }
 
 // availableTypes returns which of TaskGoto/TaskMine/TaskCraft have at
@@ -158,7 +165,7 @@ func (p Pool) availableTypes() []TaskType {
 	if len(p.MineFarTargetOffsets) > 0 && len(p.MineFarBlocks) > 0 {
 		types = append(types, TaskMineFar)
 	}
-	if len(p.CraftFarTargetOffsets) > 0 && len(p.CraftFarItems) > 0 {
+	if len(p.CraftFarTargetOffsets) > 0 && len(p.CraftFarItems) > 0 && p.CraftFarSearchRadius > 0 {
 		types = append(types, TaskCraftFar)
 	}
 	return types
@@ -210,9 +217,10 @@ func (g *UniformRandom) Next(_ int, rng *rand.Rand) TaskSpec {
 		}
 	case TaskCraftFar:
 		return TaskSpec{
-			Type:            TaskCraftFar,
-			TargetOffset:    g.pool.CraftFarTargetOffsets[rng.IntN(len(g.pool.CraftFarTargetOffsets))],
-			CraftTargetItem: g.pool.CraftFarItems[rng.IntN(len(g.pool.CraftFarItems))],
+			Type:              TaskCraftFar,
+			TargetOffset:      g.pool.CraftFarTargetOffsets[rng.IntN(len(g.pool.CraftFarTargetOffsets))],
+			CraftTargetItem:   g.pool.CraftFarItems[rng.IntN(len(g.pool.CraftFarItems))],
+			CraftSearchRadius: g.pool.CraftFarSearchRadius,
 		}
 	default:
 		// Unreachable: availableTypes only ever returns the cases

@@ -125,6 +125,7 @@ func farPool() Pool {
 	p.MineFarSearchRadius = 6
 	p.CraftFarTargetOffsets = [][3]float64{{40, 0, 0}, {0, 0, 44}}
 	p.CraftFarItems = []string{"minecraft:chest", "minecraft:bowl"}
+	p.CraftFarSearchRadius = 6
 	return p
 }
 
@@ -146,6 +147,7 @@ func TestUniformRandomProducesTheFarTypesWithTheirOwnParameters(t *testing.T) {
 		case TaskCraftFar:
 			assert.Contains(t, farPool().CraftFarTargetOffsets, spec.TargetOffset)
 			assert.Contains(t, farPool().CraftFarItems, spec.CraftTargetItem)
+			assert.Equal(t, 6, spec.CraftSearchRadius)
 			assert.Empty(t, spec.MineTargetBlock)
 		}
 	}
@@ -159,6 +161,15 @@ func TestFarTypesNeedBothOffsetsAndTargets(t *testing.T) {
 	p.MineFarTargetOffsets = [][3]float64{{24, 0, 0}} // no blocks
 	p.CraftFarItems = []string{"minecraft:chest"}     // no offsets
 	assert.NotContains(t, p.availableTypes(), TaskMineFar)
+	assert.NotContains(t, p.availableTypes(), TaskCraftFar)
+}
+
+// Without a radius the table gate is off and the agent would simply walk to
+// the table itself, so the type would teach nothing.
+func TestCraftFarNeedsASearchRadius(t *testing.T) {
+	p := farPool()
+	assert.Contains(t, p.availableTypes(), TaskCraftFar)
+	p.CraftFarSearchRadius = 0
 	assert.NotContains(t, p.availableTypes(), TaskCraftFar)
 }
 

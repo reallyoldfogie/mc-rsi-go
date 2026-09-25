@@ -134,13 +134,15 @@ func TestTaskSelectorMineFarSpecIsAGotoThenMineComposite(t *testing.T) {
 
 func TestTaskSelectorCraftFarSpecIsAGotoThenCraftComposite(t *testing.T) {
 	gen := fixedGenerator{spec: curriculum.TaskSpec{
-		Type: curriculum.TaskCraftFar, TargetOffset: [3]float64{40, 0, 0}, CraftTargetItem: "minecraft:chest",
+		Type: curriculum.TaskCraftFar, TargetOffset: [3]float64{24, 0, 0}, CraftTargetItem: "minecraft:chest",
+		CraftSearchRadius: 8,
 	}}
 	override := TaskSelector(gen, rand.New(rand.NewPCG(1, 2)))(0, nil)
 
 	assert.False(t, override.GoToTargetDisabled)
-	assert.Equal(t, [3]float64{40, 0, 0}, override.TargetOffset)
+	assert.Equal(t, [3]float64{24, 0, 0}, override.TargetOffset)
 	assert.Equal(t, "minecraft:chest", override.CraftTargetItem)
+	assert.Equal(t, 8, override.CraftSearchRadius, "the table gate that makes the policy travel")
 	assert.Empty(t, override.MineTargetBlock)
 	assert.True(t, override.SeedAtGoal)
 }

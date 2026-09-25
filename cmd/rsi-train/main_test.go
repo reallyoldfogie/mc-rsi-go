@@ -453,8 +453,9 @@ func TestLoadCurriculumPoolReadsTheFarFields(t *testing.T) {
 		"mine_far_target_offsets": [[24,0,0],[0,0,-24]],
 		"mine_far_blocks": ["minecraft:sand"],
 		"mine_far_search_radius": 6,
-		"craft_far_target_offsets": [[40,0,0]],
-		"craft_far_items": ["minecraft:chest","minecraft:bowl"]
+		"craft_far_target_offsets": [[24,0,0]],
+		"craft_far_items": ["minecraft:chest","minecraft:bowl"],
+		"craft_far_search_radius": 8
 	}`), 0o600))
 
 	pool, err := loadCurriculumPool(path)
@@ -462,8 +463,9 @@ func TestLoadCurriculumPoolReadsTheFarFields(t *testing.T) {
 	assert.Equal(t, [][3]float64{{24, 0, 0}, {0, 0, -24}}, pool.MineFarTargetOffsets)
 	assert.Equal(t, []string{"minecraft:sand"}, pool.MineFarBlocks)
 	assert.Equal(t, 6, pool.MineFarSearchRadius)
-	assert.Equal(t, [][3]float64{{40, 0, 0}}, pool.CraftFarTargetOffsets)
+	assert.Equal(t, [][3]float64{{24, 0, 0}}, pool.CraftFarTargetOffsets)
 	assert.Equal(t, []string{"minecraft:chest", "minecraft:bowl"}, pool.CraftFarItems)
+	assert.Equal(t, 8, pool.CraftFarSearchRadius)
 }
 
 func TestEffectiveTimePenaltyFallsBackToRlenvsDefault(t *testing.T) {

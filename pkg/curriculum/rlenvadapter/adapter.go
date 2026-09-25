@@ -54,6 +54,7 @@ func TaskSelector(gen curriculum.Generator, rng *rand.Rand) rlenv.TaskSelector {
 			override.GoToTargetDisabled = false
 			override.TargetOffset = spec.TargetOffset
 			override.CraftTargetItem = spec.CraftTargetItem
+			override.CraftSearchRadius = spec.CraftSearchRadius
 			override.SeedAtGoal = true
 		}
 		return override

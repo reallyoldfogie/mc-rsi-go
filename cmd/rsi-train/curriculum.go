@@ -25,6 +25,7 @@ type curriculumPoolJSON struct {
 	MineFarSearchRadius   int          `json:"mine_far_search_radius"`
 	CraftFarTargetOffsets [][3]float64 `json:"craft_far_target_offsets"`
 	CraftFarItems         []string     `json:"craft_far_items"`
+	CraftFarSearchRadius  int          `json:"craft_far_search_radius"`
 }
 
 // loadCurriculumPool reads path as curriculumPoolJSON and converts it
@@ -49,5 +50,6 @@ func loadCurriculumPool(path string) (curriculum.Pool, error) {
 		MineFarSearchRadius:   cfg.MineFarSearchRadius,
 		CraftFarTargetOffsets: cfg.CraftFarTargetOffsets,
 		CraftFarItems:         cfg.CraftFarItems,
+		CraftFarSearchRadius:  cfg.CraftFarSearchRadius,
 	}, nil
 }
