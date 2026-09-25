@@ -19,6 +19,12 @@ type curriculumPoolJSON struct {
 	MineTargetBlocks []string     `json:"mine_target_blocks"`
 	MineSearchRadius int          `json:"mine_search_radius"`
 	CraftTargetItems []string     `json:"craft_target_items"`
+
+	MineFarTargetOffsets  [][3]float64 `json:"mine_far_target_offsets"`
+	MineFarBlocks         []string     `json:"mine_far_blocks"`
+	MineFarSearchRadius   int          `json:"mine_far_search_radius"`
+	CraftFarTargetOffsets [][3]float64 `json:"craft_far_target_offsets"`
+	CraftFarItems         []string     `json:"craft_far_items"`
 }
 
 // loadCurriculumPool reads path as curriculumPoolJSON and converts it
@@ -37,5 +43,11 @@ func loadCurriculumPool(path string) (curriculum.Pool, error) {
 		MineTargetBlocks: cfg.MineTargetBlocks,
 		MineSearchRadius: cfg.MineSearchRadius,
 		CraftTargetItems: cfg.CraftTargetItems,
+
+		MineFarTargetOffsets:  cfg.MineFarTargetOffsets,
+		MineFarBlocks:         cfg.MineFarBlocks,
+		MineFarSearchRadius:   cfg.MineFarSearchRadius,
+		CraftFarTargetOffsets: cfg.CraftFarTargetOffsets,
+		CraftFarItems:         cfg.CraftFarItems,
 	}, nil
 }

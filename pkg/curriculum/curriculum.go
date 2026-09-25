@@ -29,6 +29,13 @@ const (
 	TaskGoto TaskType = iota
 	TaskMine
 	TaskCraft
+	// TaskMineFar and TaskCraftFar are composite "go there, then mine/craft"
+	// tasks: the block or crafting table is placed beside a goto target far
+	// enough away that it is out of sight (and, for crafting, out of the
+	// agent's table search radius) from the start, so the policy has to
+	// GoToTarget first and only then Mine or Craft.
+	TaskMineFar
+	TaskCraftFar
 )
 
 func (t TaskType) String() string {
@@ -39,6 +46,10 @@ func (t TaskType) String() string {
 		return "mine"
 	case TaskCraft:
 		return "craft"
+	case TaskMineFar:
+		return "mine_far"
+	case TaskCraftFar:
+		return "craft_far"
 	default:
 		return "unknown"
 	}
@@ -58,15 +69,17 @@ func (t TaskType) String() string {
 type TaskSpec struct {
 	Type TaskType
 
-	// TargetOffset is meaningful only when Type == TaskGoto.
+	// TargetOffset is meaningful when Type is TaskGoto, TaskMineFar or
+	// TaskCraftFar.
 	TargetOffset [3]float64
 
 	// MineTargetBlock/MineSearchRadius are meaningful only when
-	// Type == TaskMine.
+	// Type is TaskMine or TaskMineFar.
 	MineTargetBlock  string
 	MineSearchRadius int
 
-	// CraftTargetItem is meaningful only when Type == TaskCraft.
+	// CraftTargetItem is meaningful only when Type is TaskCraft or
+	// TaskCraftFar.
 	CraftTargetItem string
 }
 
@@ -102,6 +115,26 @@ type Pool struct {
 	// CraftTargetItems is the set of candidate item names a craft
 	// episode samples uniformly from (e.g. "minecraft:stick").
 	CraftTargetItems []string
+
+	// MineFarTargetOffsets/MineFarBlocks/MineFarSearchRadius pose "go there,
+	// then mine": a mine block is placed beside a goto target sampled from
+	// MineFarTargetOffsets. The search radius must be smaller than the
+	// offsets' length so the block starts out of sight, and the blocks must
+	// not occur in the terrain itself (in a flat world dirt and grass are
+	// the floor and would always be "visible"). Empty offsets or blocks
+	// disable the type.
+	MineFarTargetOffsets [][3]float64
+	MineFarBlocks        []string
+	MineFarSearchRadius  int
+
+	// CraftFarTargetOffsets/CraftFarItems pose "go there, then craft": a
+	// crafting table is placed beside the goto target. The offsets must be
+	// longer than the agent's crafting-table search radius (32 blocks) so
+	// Craft can't simply walk there itself, and the items must be recipes
+	// that need a table (chest, bowl). Empty offsets or items disable the
+	// type.
+	CraftFarTargetOffsets [][3]float64
+	CraftFarItems         []string
 }
 
 // availableTypes returns which of TaskGoto/TaskMine/TaskCraft have at
@@ -119,6 +152,14 @@ func (p Pool) availableTypes() []TaskType {
 	}
 	if len(p.CraftTargetItems) > 0 {
 		types = append(types, TaskCraft)
+	}
+	// Appended after the original three, so a Pool without far tasks
+	// selects exactly as it always did for any given rng stream.
+	if len(p.MineFarTargetOffsets) > 0 && len(p.MineFarBlocks) > 0 {
+		types = append(types, TaskMineFar)
+	}
+	if len(p.CraftFarTargetOffsets) > 0 && len(p.CraftFarItems) > 0 {
+		types = append(types, TaskCraftFar)
 	}
 	return types
 }
@@ -160,8 +201,21 @@ func (g *UniformRandom) Next(_ int, rng *rand.Rand) TaskSpec {
 		}
 	case TaskCraft:
 		return TaskSpec{Type: TaskCraft, CraftTargetItem: g.pool.CraftTargetItems[rng.IntN(len(g.pool.CraftTargetItems))]}
+	case TaskMineFar:
+		return TaskSpec{
+			Type:             TaskMineFar,
+			TargetOffset:     g.pool.MineFarTargetOffsets[rng.IntN(len(g.pool.MineFarTargetOffsets))],
+			MineTargetBlock:  g.pool.MineFarBlocks[rng.IntN(len(g.pool.MineFarBlocks))],
+			MineSearchRadius: g.pool.MineFarSearchRadius,
+		}
+	case TaskCraftFar:
+		return TaskSpec{
+			Type:            TaskCraftFar,
+			TargetOffset:    g.pool.CraftFarTargetOffsets[rng.IntN(len(g.pool.CraftFarTargetOffsets))],
+			CraftTargetItem: g.pool.CraftFarItems[rng.IntN(len(g.pool.CraftFarItems))],
+		}
 	default:
-		// Unreachable: availableTypes only ever returns the three cases
+		// Unreachable: availableTypes only ever returns the cases
 		// above, and NewUniformRandom already rejected an empty result.
 		panic("curriculum: UniformRandom.Next: unreachable task type")
 	}

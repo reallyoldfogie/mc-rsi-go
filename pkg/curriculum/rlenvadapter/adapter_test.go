@@ -116,3 +116,31 @@ func (g recordingGenerator) Next(episode int, _ *rand.Rand) curriculum.TaskSpec 
 }
 
 var _ rlenv.TaskSelector = TaskSelector(fixedGenerator{}, rand.New(rand.NewPCG(0, 0)))
+
+func TestTaskSelectorMineFarSpecIsAGotoThenMineComposite(t *testing.T) {
+	gen := fixedGenerator{spec: curriculum.TaskSpec{
+		Type: curriculum.TaskMineFar, TargetOffset: [3]float64{24, 0, 0},
+		MineTargetBlock: "minecraft:sand", MineSearchRadius: 6,
+	}}
+	override := TaskSelector(gen, rand.New(rand.NewPCG(1, 2)))(0, nil)
+
+	assert.False(t, override.GoToTargetDisabled, "the goto task must be active alongside the mine")
+	assert.Equal(t, [3]float64{24, 0, 0}, override.TargetOffset)
+	assert.Equal(t, "minecraft:sand", override.MineTargetBlock)
+	assert.Equal(t, 6, override.MineSearchRadius)
+	assert.Empty(t, override.CraftTargetItem)
+	assert.True(t, override.SeedAtGoal, "the block must be seeded beside the goto target, not the bot")
+}
+
+func TestTaskSelectorCraftFarSpecIsAGotoThenCraftComposite(t *testing.T) {
+	gen := fixedGenerator{spec: curriculum.TaskSpec{
+		Type: curriculum.TaskCraftFar, TargetOffset: [3]float64{40, 0, 0}, CraftTargetItem: "minecraft:chest",
+	}}
+	override := TaskSelector(gen, rand.New(rand.NewPCG(1, 2)))(0, nil)
+
+	assert.False(t, override.GoToTargetDisabled)
+	assert.Equal(t, [3]float64{40, 0, 0}, override.TargetOffset)
+	assert.Equal(t, "minecraft:chest", override.CraftTargetItem)
+	assert.Empty(t, override.MineTargetBlock)
+	assert.True(t, override.SeedAtGoal)
+}

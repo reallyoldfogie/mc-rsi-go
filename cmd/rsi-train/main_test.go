@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/reallyoldfogie/mc-agent/models"
@@ -429,4 +431,33 @@ func TestPairedEvalTaskReseederPinsEachEnvironmentToTheSameSeedsForBothSidesAndV
 	assert.NotEqual(t, envA[0], envA[2], "each round draws fresh seeds")
 
 	assert.Nil(t, pairedEvalTaskReseeder(nil), "no curriculum means no reseeding hook")
+}
+
+func TestTaskNameForOverrideDistinguishesTheFarComposites(t *testing.T) {
+	assert.Equal(t, "goto", taskNameForOverride(rlenv.TaskOverride{}))
+	assert.Equal(t, "mine", taskNameForOverride(rlenv.TaskOverride{GoToTargetDisabled: true, MineTargetBlock: "minecraft:dirt"}))
+	assert.Equal(t, "craft", taskNameForOverride(rlenv.TaskOverride{GoToTargetDisabled: true, CraftTargetItem: "minecraft:stick"}))
+	assert.Equal(t, "mine_far", taskNameForOverride(rlenv.TaskOverride{MineTargetBlock: "minecraft:sand", SeedAtGoal: true}))
+	assert.Equal(t, "craft_far", taskNameForOverride(rlenv.TaskOverride{CraftTargetItem: "minecraft:chest", SeedAtGoal: true}))
+	assert.Equal(t, "unknown", taskNameForOverride(rlenv.TaskOverride{GoToTargetDisabled: true}))
+}
+
+func TestLoadCurriculumPoolReadsTheFarFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "curriculum.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"target_offsets": [[5,0,0]],
+		"mine_far_target_offsets": [[24,0,0],[0,0,-24]],
+		"mine_far_blocks": ["minecraft:sand"],
+		"mine_far_search_radius": 6,
+		"craft_far_target_offsets": [[40,0,0]],
+		"craft_far_items": ["minecraft:chest","minecraft:bowl"]
+	}`), 0o600))
+
+	pool, err := loadCurriculumPool(path)
+	require.NoError(t, err)
+	assert.Equal(t, [][3]float64{{24, 0, 0}, {0, 0, -24}}, pool.MineFarTargetOffsets)
+	assert.Equal(t, []string{"minecraft:sand"}, pool.MineFarBlocks)
+	assert.Equal(t, 6, pool.MineFarSearchRadius)
+	assert.Equal(t, [][3]float64{{40, 0, 0}}, pool.CraftFarTargetOffsets)
+	assert.Equal(t, []string{"minecraft:chest", "minecraft:bowl"}, pool.CraftFarItems)
 }

@@ -162,7 +162,7 @@ var (
 	metricTaskEpisodesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "rsi_task_episodes_total",
 		Help: "Episodes posed by the curriculum, by task type. Only emitted when -curriculum-config is set.",
-	}, []string{"task"}) // "goto" | "mine" | "craft"
+	}, []string{"task"}) // "goto" | "mine" | "craft" | "mine_far" | "craft_far"
 )
 
 // recordRoundEvaluation publishes a completed round's evaluation statistics
@@ -305,12 +305,7 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 // (GoToTargetDisabled defaults true; MineTargetBlock/CraftTargetItem are
 // empty unless that task was chosen).
 func recordTaskSelection(override rlenv.TaskOverride) {
-	switch {
-	case !override.GoToTargetDisabled:
-		metricTaskEpisodesTotal.WithLabelValues("goto").Inc()
-	case override.MineTargetBlock != "":
-		metricTaskEpisodesTotal.WithLabelValues("mine").Inc()
-	case override.CraftTargetItem != "":
-		metricTaskEpisodesTotal.WithLabelValues("craft").Inc()
+	if name := taskNameForOverride(override); name != "unknown" {
+		metricTaskEpisodesTotal.WithLabelValues(name).Inc()
 	}
 }

@@ -26,9 +26,10 @@ import (
 // rlenv's older math/rand type on every call) and converts it into a
 // TaskOverride that activates exactly that one task, disabling the other
 // two — matching docs/plans/07's "Selection strategy": one task per
-// episode, not composed multi-task episodes (see that document's own
-// "Reward composition" section on why composing was deliberately not
-// attempted).
+// episode. The exception is the far types (TaskMineFar/TaskCraftFar):
+// "go there, then mine/craft" composites, which activate the goto task
+// alongside a mine or craft task and ask rlenv to seed the mine block or
+// table beside the goto target (see rlenv.TaskOverride.SeedAtGoal).
 func TaskSelector(gen curriculum.Generator, rng *rand.Rand) rlenv.TaskSelector {
 	return func(episode int, _ *oldrand.Rand) rlenv.TaskOverride {
 		spec := gen.Next(episode, rng)
@@ -43,6 +44,17 @@ func TaskSelector(gen curriculum.Generator, rng *rand.Rand) rlenv.TaskSelector {
 			override.MineSearchRadius = spec.MineSearchRadius
 		case curriculum.TaskCraft:
 			override.CraftTargetItem = spec.CraftTargetItem
+		case curriculum.TaskMineFar:
+			override.GoToTargetDisabled = false
+			override.TargetOffset = spec.TargetOffset
+			override.MineTargetBlock = spec.MineTargetBlock
+			override.MineSearchRadius = spec.MineSearchRadius
+			override.SeedAtGoal = true
+		case curriculum.TaskCraftFar:
+			override.GoToTargetDisabled = false
+			override.TargetOffset = spec.TargetOffset
+			override.CraftTargetItem = spec.CraftTargetItem
+			override.SeedAtGoal = true
 		}
 		return override
 	}

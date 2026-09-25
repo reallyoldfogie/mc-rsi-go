@@ -117,3 +117,61 @@ func TestUniformRandomIsDeterministicForAFixedRNGSequence(t *testing.T) {
 		assert.Equal(t, a, b, "episode %d: identical rng streams should produce identical TaskSpecs", episode)
 	}
 }
+
+func farPool() Pool {
+	p := fullPool()
+	p.MineFarTargetOffsets = [][3]float64{{24, 0, 0}, {0, 0, -24}}
+	p.MineFarBlocks = []string{"minecraft:sand", "minecraft:gravel"}
+	p.MineFarSearchRadius = 6
+	p.CraftFarTargetOffsets = [][3]float64{{40, 0, 0}, {0, 0, 44}}
+	p.CraftFarItems = []string{"minecraft:chest", "minecraft:bowl"}
+	return p
+}
+
+func TestUniformRandomProducesTheFarTypesWithTheirOwnParameters(t *testing.T) {
+	gen, err := NewUniformRandom(farPool())
+	require.NoError(t, err)
+
+	rng := rand.New(rand.NewPCG(3, 4))
+	seen := map[TaskType]bool{}
+	for range 2000 {
+		spec := gen.Next(0, rng)
+		seen[spec.Type] = true
+		switch spec.Type {
+		case TaskMineFar:
+			assert.Contains(t, farPool().MineFarTargetOffsets, spec.TargetOffset)
+			assert.Contains(t, farPool().MineFarBlocks, spec.MineTargetBlock)
+			assert.Equal(t, 6, spec.MineSearchRadius, "the far search radius, not the near one")
+			assert.Empty(t, spec.CraftTargetItem)
+		case TaskCraftFar:
+			assert.Contains(t, farPool().CraftFarTargetOffsets, spec.TargetOffset)
+			assert.Contains(t, farPool().CraftFarItems, spec.CraftTargetItem)
+			assert.Empty(t, spec.MineTargetBlock)
+		}
+	}
+	for _, typ := range []TaskType{TaskGoto, TaskMine, TaskCraft, TaskMineFar, TaskCraftFar} {
+		assert.True(t, seen[typ], "%s must be reachable", typ)
+	}
+}
+
+func TestFarTypesNeedBothOffsetsAndTargets(t *testing.T) {
+	p := fullPool()
+	p.MineFarTargetOffsets = [][3]float64{{24, 0, 0}} // no blocks
+	p.CraftFarItems = []string{"minecraft:chest"}     // no offsets
+	assert.NotContains(t, p.availableTypes(), TaskMineFar)
+	assert.NotContains(t, p.availableTypes(), TaskCraftFar)
+}
+
+// A pool without far tasks must select exactly as it did before they existed
+// for any given rng stream (the far types are appended, never interleaved).
+func TestPoolWithoutFarTasksSelectsExactlyAsBefore(t *testing.T) {
+	gen, err := NewUniformRandom(fullPool())
+	require.NoError(t, err)
+	a, b := rand.New(rand.NewPCG(9, 9)), rand.New(rand.NewPCG(9, 9))
+	for range 200 {
+		got := gen.Next(0, a)
+		assert.NotEqual(t, TaskMineFar, got.Type)
+		assert.NotEqual(t, TaskCraftFar, got.Type)
+		_ = gen.Next(0, b)
+	}
+}

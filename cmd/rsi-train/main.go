@@ -981,6 +981,10 @@ func taskName(settings mcconfig.EnvSettings) string {
 
 func taskNameForOverride(override rlenv.TaskOverride) string {
 	switch {
+	case !override.GoToTargetDisabled && override.MineTargetBlock != "":
+		return "mine_far"
+	case !override.GoToTargetDisabled && override.CraftTargetItem != "":
+		return "craft_far"
 	case !override.GoToTargetDisabled:
 		return "goto"
 	case override.MineTargetBlock != "":
