@@ -25,6 +25,7 @@ import (
 	"github.com/reallyoldfogie/cRL-go/pkg/rl"
 
 	"github.com/reallyoldfogie/mc-agent/rlenv"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 )
 
 var (
@@ -62,6 +63,36 @@ var (
 	metricStudentReward = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "rsi_student_reward",
 		Help: "Student's mean evaluation reward in the most recently completed round.",
+	})
+
+	metricEvalEpisodes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_eval_episodes",
+		Help: "Evaluation episodes per side (Teacher and Student each) in the most recently completed round, summed over every environment.",
+	})
+
+	metricEvalRewardStd = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rsi_eval_reward_std",
+		Help: "Sample standard deviation of per-episode evaluation reward in the most recently completed round, by side.",
+	}, []string{"side"}) // "teacher" | "student"
+
+	metricEvalPairedDiff = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_eval_paired_diff",
+		Help: "Mean paired per-episode evaluation reward difference (Student minus Teacher, same task on each side) in the most recently completed round.",
+	})
+
+	metricEvalPairedDiffStdErr = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_eval_paired_diff_stderr",
+		Help: "Standard error of rsi_eval_paired_diff. A difference within a couple of these of zero is noise, not a real gap between the two policies.",
+	})
+
+	metricEvalPairedDiffZ = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_eval_paired_diff_zscore",
+		Help: "rsi_eval_paired_diff divided by rsi_eval_paired_diff_stderr (0 when the standard error is 0): how many standard errors the Student's advantage is. Compare with rsi_eval_win_zscore_threshold.",
+	})
+
+	metricEvalWinZThreshold = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_eval_win_zscore_threshold",
+		Help: "The -win-z-score this run promotes at: a Student must beat the Teacher by at least this many standard errors (0 = plain strictly-greater rule).",
 	})
 
 	metricEpochAvgReturn = promauto.NewGauge(prometheus.GaugeOpts{
@@ -133,6 +164,26 @@ var (
 		Help: "Episodes posed by the curriculum, by task type. Only emitted when -curriculum-config is set.",
 	}, []string{"task"}) // "goto" | "mine" | "craft"
 )
+
+// recordRoundEvaluation publishes a completed round's evaluation statistics
+// (see leapfrog.Result): the two sides' mean rewards and spread, how many
+// episodes each was evaluated on, and the paired difference with its
+// standard error and z-score - the numbers the promotion decision actually
+// rests on, so a dashboard can show whether a win was signal or noise.
+func recordRoundEvaluation(result leapfrog.Result) {
+	metricTeacherReward.Set(float64(result.TeacherReward))
+	metricStudentReward.Set(float64(result.StudentReward))
+	metricEvalEpisodes.Set(float64(result.EvalEpisodes))
+	metricEvalRewardStd.WithLabelValues("teacher").Set(float64(result.TeacherStd))
+	metricEvalRewardStd.WithLabelValues("student").Set(float64(result.StudentStd))
+	metricEvalPairedDiff.Set(float64(result.MeanDiff))
+	metricEvalPairedDiffStdErr.Set(float64(result.DiffStdErr))
+	z := 0.0
+	if result.DiffStdErr > 0 {
+		z = float64(result.MeanDiff) / float64(result.DiffStdErr)
+	}
+	metricEvalPairedDiffZ.Set(z)
+}
 
 // startMetricsServer serves /metrics on addr in the background. Errors
 // (e.g. the port is already taken) are logged, not fatal — a metrics

@@ -243,6 +243,7 @@ func run(args []string) error {
 	}
 	log.Printf("starting from generation %d (provenance=%s)", rec.Generation, rec.Provenance)
 	metricGeneration.Set(float64(rec.Generation))
+	metricEvalWinZThreshold.Set(f.winZScore)
 	metricCurrentRound.Set(0)
 	metricCurrentEpoch.Set(-1)
 	progress := rec.Metadata
@@ -334,8 +335,7 @@ func run(args []string) error {
 		}
 		elapsed := time.Since(start).Round(time.Second)
 		metricRoundDurationSeconds.Observe(elapsed.Seconds())
-		metricTeacherReward.Set(float64(result.TeacherReward))
-		metricStudentReward.Set(float64(result.StudentReward))
+		recordRoundEvaluation(result)
 
 		if result.StudentWon {
 			rec = lineage.Record{

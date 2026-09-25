@@ -15,6 +15,7 @@ import (
 	"github.com/reallyoldfogie/cRL-go/pkg/actorcritic"
 	"github.com/reallyoldfogie/cRL-go/pkg/checkpoint"
 	"github.com/reallyoldfogie/cRL-go/pkg/rl"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -262,6 +263,26 @@ func TestClearInterimCheckpointsPreventsResumingAFinishedRound(t *testing.T) {
 	assert.Empty(t, entries, "every recovery file must be gone")
 
 	clearInterimCheckpoints(dir) // and clearing an already-clear directory is fine
+}
+
+func TestRecordRoundEvaluationPublishesTheStatisticsThePromotionRestsOn(t *testing.T) {
+	recordRoundEvaluation(leapfrog.Result{
+		TeacherReward: 9.5, StudentReward: 11.0, EvalEpisodes: 35,
+		TeacherStd: 3.25, StudentStd: 2.75, MeanDiff: 1.5, DiffStdErr: 0.75,
+	})
+	body := gatherMetrics(t)
+	require.Contains(t, body, "rsi_teacher_reward 9.5")
+	require.Contains(t, body, "rsi_student_reward 11")
+	require.Contains(t, body, "rsi_eval_episodes 35")
+	require.Contains(t, body, `rsi_eval_reward_std{side="teacher"} 3.25`)
+	require.Contains(t, body, `rsi_eval_reward_std{side="student"} 2.75`)
+	require.Contains(t, body, "rsi_eval_paired_diff 1.5")
+	require.Contains(t, body, "rsi_eval_paired_diff_stderr 0.75")
+	require.Contains(t, body, "rsi_eval_paired_diff_zscore 2", "1.5 / 0.75")
+
+	// A zero standard error must not produce +Inf/NaN.
+	recordRoundEvaluation(leapfrog.Result{MeanDiff: 1, DiffStdErr: 0})
+	require.Contains(t, gatherMetrics(t), "rsi_eval_paired_diff_zscore 0")
 }
 
 func gatherMetrics(t *testing.T) string {

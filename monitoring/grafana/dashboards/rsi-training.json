@@ -170,9 +170,38 @@
     },
 
     {
+      "type": "timeseries",
+      "title": "Student advantage vs. promotion threshold",
+      "description": "rsi_eval_paired_diff (Student minus Teacher mean evaluation reward, same tasks on each side) against the advantage a Student needs to be promoted: rsi_eval_win_zscore_threshold standard errors (rsi_eval_paired_diff_stderr). The advantage line must sit above the threshold line for a win; when the two policies are equally good it should hover around zero, well below it. Values are the most recently completed round's.",
+      "id": 38,
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "rsi_eval_paired_diff", "refId": "A", "legendFormat": "student advantage" },
+        { "expr": "rsi_eval_win_zscore_threshold * rsi_eval_paired_diff_stderr", "refId": "B", "legendFormat": "needed to promote" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "pointSize": 6, "showPoints": "always" } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Evaluation spread and sample size",
+      "description": "rsi_eval_reward_std by side (per-episode evaluation reward spread) and rsi_eval_episodes (episodes per side, summed over every environment) for the most recently completed round. A large spread with a small sample is why a single round's teacher/student comparison can't be trusted on its own.",
+      "id": 39,
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "rsi_eval_reward_std{side=\"teacher\"}", "refId": "A", "legendFormat": "teacher std" },
+        { "expr": "rsi_eval_reward_std{side=\"student\"}", "refId": "B", "legendFormat": "student std" },
+        { "expr": "rsi_eval_episodes", "refId": "C", "legendFormat": "episodes per side" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "pointSize": 6, "showPoints": "always" } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
       "type": "row",
       "title": "Episode health and activity",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
       "id": 103,
       "collapsed": false,
       "panels": []
@@ -182,7 +211,7 @@
       "title": "Episode outcomes/sec",
       "description": "sum(rate(rsi_episodes_total[5m])) by outcome — completed episode success, failure, and truncation rates. A truncation means a new reset began before the prior episode reported Done.",
       "id": 30,
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 26 },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 34 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         { "expr": "sum(rate(rsi_episodes_total{outcome=\"success\"}[5m]))", "refId": "A", "legendFormat": "success" },
@@ -197,7 +226,7 @@
       "title": "Episode starts and steps/sec",
       "description": "rates of rsi_episodes_started_total and rsi_episode_steps_total — live environment activity. In curriculum runs, task labels identify the selected goto, mine, or craft episode.",
       "id": 31,
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 26 },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 34 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         { "expr": "sum(rate(rsi_episodes_started_total[5m]))", "refId": "A", "legendFormat": "episodes started/sec" },
@@ -211,7 +240,7 @@
       "title": "Step duration by task (p50/p95/p99)",
       "description": "histogram_quantile over rsi_step_duration_seconds by task — per-environment-step wall-clock time (network round-trip plus in-game action wait, e.g. a mine/craft tick). Meant to surface slow steps (a stuck retry loop, a blocking sleep) directly, rather than requiring manual log-timestamp correlation.",
       "id": 37,
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 35 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 43 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         { "expr": "histogram_quantile(0.5, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))", "refId": "A", "legendFormat": "p50 {{task}}" },
@@ -225,7 +254,7 @@
     {
       "type": "row",
       "title": "Training health",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 52 },
       "id": 104,
       "collapsed": false,
       "panels": []
@@ -235,7 +264,7 @@
       "title": "Gradient updates/sec",
       "description": "rate(rsi_gradient_updates_total[5m]) — optimizer update throughput during Student training.",
       "id": 32,
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 45 },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 53 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "rate(rsi_gradient_updates_total[5m])", "refId": "A", "legendFormat": "updates/sec" }],
       "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
@@ -246,7 +275,7 @@
       "title": "Reset failures",
       "description": "sum(increase(rsi_reset_failures_total[$__range])) — environment reset failures during the selected dashboard range.",
       "id": 33,
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 45 },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 53 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "sum(increase(rsi_reset_failures_total[$__range]))", "refId": "A" }],
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "orange" }, { "value": 10, "color": "red" }] } } },
@@ -257,7 +286,7 @@
       "title": "Step errors",
       "description": "sum(increase(rsi_step_errors_total[$__range])) — environment step failures during the selected dashboard range.",
       "id": 34,
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 45 },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 53 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "sum(increase(rsi_step_errors_total[$__range]))", "refId": "A" }],
       "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "orange" }, { "value": 10, "color": "red" }] } } },
@@ -267,7 +296,7 @@
     {
       "type": "row",
       "title": "Completion rates",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 53 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 61 },
       "id": 105,
       "collapsed": false,
       "panels": []
@@ -277,7 +306,7 @@
       "title": "Cumulative completion rate",
       "description": "Cumulative successful episode completions divided by cumulative completed episodes (success + failure). Truncated episodes are excluded because they did not reach a task outcome. Success is the reward-based completion proxy used by rsi-train.",
       "id": 35,
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 54 },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 62 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "100 * sum(rsi_episodes_total{outcome=\"success\"}) / sum(rsi_episodes_total{outcome=~\"success|failure\"})", "refId": "A", "legendFormat": "all tasks" }],
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
@@ -288,7 +317,7 @@
       "title": "Completion rate by task",
       "description": "Cumulative successful episode completions divided by cumulative completed episodes for each selected task type. The task label is assigned when the curriculum poses the episode.",
       "id": 36,
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 54 },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 62 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "100 * sum by (task) (rsi_episodes_total{outcome=\"success\"}) / sum by (task) (rsi_episodes_total{outcome=~\"success|failure\"})", "refId": "A", "legendFormat": "{{task}}" }],
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
