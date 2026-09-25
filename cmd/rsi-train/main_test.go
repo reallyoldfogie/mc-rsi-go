@@ -33,6 +33,7 @@ func TestParseFlagsRejectsMissingOrInvalidInput(t *testing.T) {
 		{"negative checkpoint-interval", validArgs("-checkpoint-interval", "-1")},
 		{"negative max-rounds", validArgs("-max-rounds", "-1")},
 		{"negative max-step-timeouts", validArgs("-max-step-timeouts", "-1")},
+		{"negative time-penalty", validArgs("-time-penalty", "-0.1")},
 		{"negative win-z-score", validArgs("-win-z-score", "-1")},
 		{"negative min-win-margin", validArgs("-min-win-margin", "-1")},
 		{"negative clear-area-radius", validArgs("-clear-area-radius", "-1")},
@@ -80,6 +81,7 @@ func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
 	assert.Equal(t, 0, f.clearAreaRadius, "-clear-area-radius deletes blocks (flat worlds only), so it must default off")
 	assert.InDelta(t, 1.645, f.winZScore, 1e-9, "promotion must require a statistically real advantage by default")
 	assert.Zero(t, f.minWinMargin)
+	assert.Zero(t, f.timePenalty, "-time-penalty changes the reward scale, so it must default to rlenv's own 0.01")
 
 	f, err = parseFlags([]string{
 		"-checkpoint-dir", "/tmp/ckpt",
@@ -391,13 +393,15 @@ func TestLoadOrInitTeacherResumesExistingLatestGeneration(t *testing.T) {
 
 func TestApplyEpisodeLimitsFillsUnsetFieldsAndLeavesOperatorValuesAlone(t *testing.T) {
 	cfg := rlenv.Config{}
-	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, clearAreaRadius: 16})
+	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, clearAreaRadius: 16, timePenalty: 0.2})
+	assert.Equal(t, float32(0.2), cfg.TimePenalty)
 	assert.Equal(t, 5, cfg.MaxConsecutiveStepTimeouts)
 	assert.Equal(t, 16, cfg.ClearAreaRadius)
 	assert.Equal(t, clearAreaHeightBlocks, cfg.ClearAreaHeight)
 
-	cfg = rlenv.Config{MaxConsecutiveStepTimeouts: 9, ClearAreaRadius: 3, ClearAreaHeight: 6}
-	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, clearAreaRadius: 16})
+	cfg = rlenv.Config{MaxConsecutiveStepTimeouts: 9, ClearAreaRadius: 3, ClearAreaHeight: 6, TimePenalty: 0.5}
+	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, clearAreaRadius: 16, timePenalty: 0.2})
+	assert.Equal(t, float32(0.5), cfg.TimePenalty, "an operator-configured time penalty must win")
 	assert.Equal(t, 9, cfg.MaxConsecutiveStepTimeouts, "an operator-configured value must win")
 	assert.Equal(t, 3, cfg.ClearAreaRadius)
 	assert.Equal(t, 6, cfg.ClearAreaHeight)
@@ -460,4 +464,9 @@ func TestLoadCurriculumPoolReadsTheFarFields(t *testing.T) {
 	assert.Equal(t, 6, pool.MineFarSearchRadius)
 	assert.Equal(t, [][3]float64{{40, 0, 0}}, pool.CraftFarTargetOffsets)
 	assert.Equal(t, []string{"minecraft:chest", "minecraft:bowl"}, pool.CraftFarItems)
+}
+
+func TestEffectiveTimePenaltyFallsBackToRlenvsDefault(t *testing.T) {
+	assert.InDelta(t, 0.01, effectiveTimePenalty(0), 1e-12)
+	assert.InDelta(t, 0.2, effectiveTimePenalty(0.2), 1e-12)
 }

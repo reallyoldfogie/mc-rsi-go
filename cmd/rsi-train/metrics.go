@@ -90,6 +90,11 @@ var (
 		Help: "rsi_eval_paired_diff divided by rsi_eval_paired_diff_stderr (0 when the standard error is 0): how many standard errors the Student's advantage is. Compare with rsi_eval_win_zscore_threshold.",
 	})
 
+	metricRewardTimePenalty = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_reward_time_penalty",
+		Help: "The per-step time penalty this run's reward uses (-time-penalty, or rlenv's 0.01 default). Returns from runs with different values aren't comparable.",
+	})
+
 	metricEvalWinZThreshold = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "rsi_eval_win_zscore_threshold",
 		Help: "The -win-z-score this run promotes at: a Student must beat the Teacher by at least this many standard errors (0 = plain strictly-greater rule).",
@@ -303,6 +308,19 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 		e.started = false
 	}
 	return result, nil
+}
+
+// defaultTimePenalty mirrors rlenv's built-in per-step penalty, which applies
+// when Config.TimePenalty is 0 (see -time-penalty).
+const defaultTimePenalty = 0.01
+
+// effectiveTimePenalty is the penalty the reward actually uses for flag value
+// v: 0 means rlenv's default.
+func effectiveTimePenalty(v float64) float64 {
+	if v <= 0 {
+		return defaultTimePenalty
+	}
+	return v
 }
 
 // actionName is the metric label for one of rlenv's discrete actions.
