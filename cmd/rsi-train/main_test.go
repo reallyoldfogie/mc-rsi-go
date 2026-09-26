@@ -472,3 +472,12 @@ func TestEffectiveTimePenaltyFallsBackToRlenvsDefault(t *testing.T) {
 	assert.InDelta(t, 0.01, effectiveTimePenalty(0), 1e-12)
 	assert.InDelta(t, 0.2, effectiveTimePenalty(0.2), 1e-12)
 }
+
+func TestApplyEpisodeLimitsTurnsOnObservationNormalization(t *testing.T) {
+	var cfg rlenv.Config
+	applyEpisodeLimits(&cfg, episodeLimits{})
+	assert.False(t, cfg.NormalizeObservation, "off unless asked for")
+
+	applyEpisodeLimits(&cfg, episodeLimits{normalizeObservation: true})
+	assert.True(t, cfg.NormalizeObservation)
+}

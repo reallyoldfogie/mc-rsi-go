@@ -18,6 +18,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -57,7 +58,11 @@ import (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		if errors.Is(err, errNetworkDead) {
+			os.Exit(exitNetworkDead)
+		}
+		os.Exit(1)
 	}
 }
 
@@ -78,6 +83,7 @@ type flags struct {
 	maxRounds                    int
 	maxStepTimeouts              int
 	timePenalty                  float64
+	normalizeObservation         bool
 	winZScore                    float64
 	minWinMargin                 float64
 	clearAreaRadius              int
@@ -103,6 +109,7 @@ func parseFlags(args []string) (flags, error) {
 	fs.Float64Var(&f.winZScore, "win-z-score", 1.645, "a Student is promoted only if its mean evaluation advantage over the Teacher exceeds this many standard errors of the paired per-episode difference (1.645 = one-sided 95%). Guards against promoting a coin flip once tasks are saturated (11 of 20 rounds were 'won' with return flat); 0 restores the plain strictly-greater rule")
 	fs.Float64Var(&f.minWinMargin, "min-win-margin", 0, "additionally require the Student's mean evaluation reward to beat the Teacher's by at least this much; 0 disables")
 	fs.IntVar(&f.maxStepTimeouts, "max-step-timeouts", 5, "end an episode once this many dispatched steps in a row hit the step timeout without their action resolving - bounds a wedged bot that would otherwise run its whole step budget while every other environment waits on it at the epoch barrier (found live: ~17 minutes); 0 disables. Ignored for an environment whose -mc-agent-config already sets its own")
+	fs.BoolVar(&f.normalizeObservation, "normalize-observation", false, "scale every observation feature to about [-1, 1] (rlenv.Config.NormalizeObservation). Raw blocks and degrees saturate the policy's first layer and, with a learning rate that isn't tiny, kill its ReLU units for good (found live). Changes what the policy sees, so it is part of the checkpoint's environment ID: a checkpoint trained one way is rejected by the other. Ignored for an environment whose -mc-agent-config already sets it")
 	fs.Float64Var(&f.timePenalty, "time-penalty", 0, "reward subtracted every step (rlenv.Config.TimePenalty); 0 keeps rlenv's built-in 0.01, which is negligible next to the +10 success bonus - a policy that wastes ten steps loses 0.1, so nothing makes it efficient (found live: the Wait action took 38-70% of all steps and mine_far episodes averaged ~10.7 steps where ~3 suffice). Around 0.2 makes a wasted step cost about 2% of the bonus. Changes the reward scale, so returns before and after aren't comparable. Ignored for an environment whose -mc-agent-config already sets its own")
 	fs.IntVar(&f.clearAreaRadius, "clear-area-radius", 0, "each Reset, fill with air the box this many blocks either side of the reset origin in X and Z, from the origin's own Y up 4 blocks - wipes seeded blocks and crafting tables that pile up into obstacles over a run. FLAT WORLDS ONLY (it would delete trees and hills); needs -auto-reset-origin and RCON; 0 (the default) disables. Keep (2r+1)^2*5 under 32768")
 	fs.BoolVar(&f.autoResetOrigin, "auto-reset-origin", false, "if RCON is configured and -mc-agent-config didn't already set env.use_reset_origin, teleport back to the bot's actual spawn position every episode (via a captured Config.ResetOrigin) plus a small default Config.Jitter, instead of letting the goto task's target drift from wherever the previous episode ended — see run's own doc comment for why this exists. Opt-in: false preserves every existing config's behavior unchanged.")
@@ -197,7 +204,7 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.checkpointDir, episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius, timePenalty: float32(f.timePenalty)})
+	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.checkpointDir, episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius, timePenalty: float32(f.timePenalty), normalizeObservation: f.normalizeObservation})
 	if err != nil {
 		return err
 	}
@@ -241,12 +248,23 @@ func run(args []string) error {
 	// (parallelenv.DeriveSettings only changes connection/RCON/username,
 	// never Env), so envs[0]'s shape speaks for all of them.
 	environmentID := fmt.Sprintf("mc-agent-rlenv:actions=%d:obs=%d", envs[0].ActionSpace(), envs[0].ObservationSize())
+	if f.normalizeObservation {
+		// Same shape, different meaning: a policy trained on raw features
+		// would run on scaled ones without complaint, so the ID has to differ.
+		environmentID += ":norm=1"
+	}
 
 	teacherParams, rec, err := loadOrInitTeacher(f.checkpointDir, environmentID, envs[0].ObservationSize(), trainerSettings.HiddenSize, envs[0].ActionSpace())
 	if err != nil {
 		return err
 	}
 	log.Printf("starting from generation %d (provenance=%s)", rec.Generation, rec.Provenance)
+	startHealth := measureNetworkHealth(teacherParams)
+	recordNetworkHealth(startHealth)
+	log.Printf("policy network health: layer1 %.0f%% and layer2 %.0f%% of units active, logit std %.3f", startHealth.Layer1Active*100, startHealth.Layer2Active*100, startHealth.LogitStd)
+	if startHealth.dead() {
+		return fmt.Errorf("generation %d: %w; start from a fresh network instead (move the checkpoint directory aside)", rec.Generation, errNetworkDead)
+	}
 	metricGeneration.Set(float64(rec.Generation))
 	metricEvalWinZThreshold.Set(f.winZScore)
 	metricRewardTimePenalty.Set(effectiveTimePenalty(f.timePenalty))
@@ -271,6 +289,12 @@ func run(args []string) error {
 	// checkpoint's progress counters.
 	madeEpochProgress := false
 
+	// networkDead is set by OnEpoch once the student has looked dead for
+	// deadEpochsBeforeAbort epochs in a row; the run then stops and returns
+	// errNetworkDead. deadEpochs counts the current streak.
+	networkDead := false
+	deadEpochs := 0
+
 	interimDir := filepath.Join(f.checkpointDir, "interim")
 	cfg := leapfrog.Config{
 		Trainer:             trainerSettings,
@@ -289,6 +313,18 @@ func run(args []string) error {
 				progress.BestReturn = stats.AverageReturn
 			}
 			log.Printf("  epoch %d: average return %.3f, samples %d", stats.Epoch, stats.AverageReturn, stats.SampleCount)
+			health := measureNetworkHealth(params)
+			recordNetworkHealth(health)
+			if health.dead() {
+				deadEpochs++
+				log.Printf("  WARNING: policy network looks dead (layer2 %.0f%% active, logit std %.4f), %d of %d epochs before aborting", health.Layer2Active*100, health.LogitStd, deadEpochs, deadEpochsBeforeAbort)
+				if deadEpochs >= deadEpochsBeforeAbort && !networkDead {
+					networkDead = true
+					stop()
+				}
+			} else {
+				deadEpochs = 0
+			}
 			metricCurrentEpoch.Set(float64(stats.Epoch))
 			metricEpochAvgReturn.Set(float64(stats.AverageReturn))
 			metricEpochsTotal.Inc()
@@ -376,6 +412,11 @@ func run(args []string) error {
 		// from it, already past its epoch budget.
 		clearInterimCheckpoints(interimDir)
 		madeEpochProgress = false
+	}
+	if networkDead {
+		// A dead student must not be resumed or saved as the latest progress.
+		clearInterimCheckpoints(interimDir)
+		return errNetworkDead
 	}
 	if !madeEpochProgress {
 		log.Printf("no epoch completed this process's lifetime; leaving any existing recovery checkpoint in %s untouched", interimDir)
@@ -465,11 +506,16 @@ type episodeLimits struct {
 	maxStepTimeouts int
 	clearAreaRadius int
 	timePenalty     float32
+
+	normalizeObservation bool
 }
 
 // applyEpisodeLimits sets cfg's episode safety nets from limits, leaving any
 // value the operator already set in -mc-agent-config alone.
 func applyEpisodeLimits(cfg *rlenv.Config, limits episodeLimits) {
+	if limits.normalizeObservation {
+		cfg.NormalizeObservation = true
+	}
 	if cfg.TimePenalty == 0 {
 		cfg.TimePenalty = limits.timePenalty
 	}

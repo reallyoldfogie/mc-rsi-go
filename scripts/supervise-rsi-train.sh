@@ -76,6 +76,12 @@ while [ "$stopping" -eq 0 ]; do
 
   ran=$(( $(date +%s) - start ))
   say "trainer exited on its own (code $rc) after ${ran}s"
+  # Code 3 is the trainer reporting a condition a restart cannot fix (a dead
+  # policy network); restarting would only resume into it.
+  if [ "$rc" -eq 3 ]; then
+    say "trainer reported a fatal condition (code 3); not restarting"
+    break
+  fi
   if [ "$ran" -ge "$healthy_seconds" ]; then
     backoff=$min_backoff
   else

@@ -29,6 +29,16 @@ import (
 )
 
 var (
+	metricNetworkActiveUnits = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rsi_network_active_units_fraction",
+		Help: "Fraction of a policy hidden layer's ReLU units that fire for at least one probe observation, by layer (1 or 2). A dead unit never recovers; 0 in layer 2 means the network is dead.",
+	}, []string{"layer"})
+
+	metricPolicyLogitStd = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_policy_logit_std",
+		Help: "Mean standard deviation of the policy's output logits across probe observations. 0 means the policy is the same in every state (a dead network).",
+	})
+
 	metricGeneration = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "rsi_generation",
 		Help: "Current Teacher generation number (increases by one each time a Student beats its Teacher and is promoted).",
@@ -174,6 +184,13 @@ var (
 		Help: "Episodes posed by the curriculum, by task type. Only emitted when -curriculum-config is set.",
 	}, []string{"task"}) // "goto" | "mine" | "craft" | "mine_far" | "craft_far"
 )
+
+// recordNetworkHealth publishes h.
+func recordNetworkHealth(h networkHealth) {
+	metricNetworkActiveUnits.WithLabelValues("1").Set(h.Layer1Active)
+	metricNetworkActiveUnits.WithLabelValues("2").Set(h.Layer2Active)
+	metricPolicyLogitStd.Set(h.LogitStd)
+}
 
 // recordRoundEvaluation publishes a completed round's evaluation statistics
 // (see leapfrog.Result): the two sides' mean rewards and spread, how many
