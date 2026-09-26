@@ -50,6 +50,7 @@ type flags struct {
 	episodes          int
 	episodeLen        int
 	greedy            bool
+	normalize         bool
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -61,6 +62,7 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.episodes, "episodes", 0, "number of episodes to run, then exit; 0 runs until interrupted (Ctrl+C)")
 	fs.IntVar(&f.episodeLen, "episode-len", 200, "max steps per episode, matching rsi-train's -eval-episode-len default")
 	fs.BoolVar(&f.greedy, "greedy", true, "act on the policy's highest-probability action every step (matches rsi-train's own evaluation behavior); false samples from the policy's distribution instead")
+	fs.BoolVar(&f.normalize, "normalize-observation", false, "must match the rsi-train run that produced the checkpoint: scale observation features to about [-1, 1] (rlenv.Config.NormalizeObservation). It is part of the checkpoint's environment ID, so a mismatch is rejected rather than silently misread")
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}
@@ -122,12 +124,17 @@ func run(args []string) error {
 		return err
 	}
 
-	env, err := rlenv.New(liveAgent, actions.NewRegistry(), mcSettings.Env.ToRlenvConfig())
+	envCfg := mcSettings.Env.ToRlenvConfig()
+	envCfg.NormalizeObservation = f.normalize
+	env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
 	if err != nil {
 		return fmt.Errorf("constructing environment: %w", err)
 	}
 
 	environmentID := fmt.Sprintf("mc-agent-rlenv:actions=%d:obs=%d", env.ActionSpace(), env.ObservationSize())
+	if f.normalize {
+		environmentID += ":norm=1" // same suffix rsi-train's -normalize-observation adds
+	}
 
 	generation := f.generation
 	if generation < 0 {
