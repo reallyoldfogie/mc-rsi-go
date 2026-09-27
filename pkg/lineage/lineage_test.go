@@ -40,6 +40,10 @@ func TestValidateAcceptsWellFormedRecords(t *testing.T) {
 			Generation: 2, ParentGeneration: 1, Provenance: ProvenanceSeededLive,
 			SeededFromGeneration: 1, EnvironmentID: "mc:teleport-v1",
 		}},
+		{"widened", Record{
+			Generation: 0, ParentGeneration: -1, Provenance: ProvenanceWidened,
+			SeededFromGeneration: -1, EnvironmentID: "mc:teleport-v1",
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -58,6 +62,7 @@ func TestValidateRejectsMalformedRecords(t *testing.T) {
 		{"non-root with no parent", Record{Generation: 1, ParentGeneration: -1, Provenance: ProvenanceLeapfrog, SeededFromGeneration: -1, EnvironmentID: "e"}},
 		{"leapfrog with seeded-from set", Record{Generation: 1, ParentGeneration: 0, Provenance: ProvenanceLeapfrog, SeededFromGeneration: 0, EnvironmentID: "e"}},
 		{"seeded-live with no seeded-from", Record{Generation: 1, ParentGeneration: 0, Provenance: ProvenanceSeededLive, SeededFromGeneration: -1, EnvironmentID: "e"}},
+		{"widened with seeded-from set", Record{Generation: 0, ParentGeneration: -1, Provenance: ProvenanceWidened, SeededFromGeneration: 0, EnvironmentID: "e"}},
 		{"unknown provenance", Record{Generation: 0, ParentGeneration: -1, Provenance: "mystery", SeededFromGeneration: -1, EnvironmentID: "e"}},
 		{"empty environment ID", Record{Generation: 0, ParentGeneration: -1, Provenance: ProvenanceLeapfrog, SeededFromGeneration: -1, EnvironmentID: ""}},
 	}

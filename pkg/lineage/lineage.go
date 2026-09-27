@@ -45,6 +45,20 @@ const (
 	// like any other candidate — Record.SeededFromGeneration exists so
 	// that provenance survives that evaluation.
 	ProvenanceSeededLive Provenance = "seeded-live"
+
+	// ProvenanceWidened is a generation produced by cmd/widen-checkpoint
+	// applying cRL-go's actorcritic.Net2WiderNet to a generation from
+	// another (or, in principle, this same) lineage directory - same
+	// "not evaluated against the current Teacher yet" status as
+	// ProvenanceSeededLive, but not itself seeded from a live deployment,
+	// so it gets its own value rather than overloading that one.
+	// cmd/widen-checkpoint always writes it as a fresh generation 0
+	// (ParentGeneration -1) in its own output directory, not appended to
+	// the source lineage, so SeededFromGeneration plays no role here
+	// either - see that command's own doc comment for why, and for where
+	// the actual source generation gets recorded (a plain-text note
+	// alongside the new generation's files, not this struct).
+	ProvenanceWidened Provenance = "widened"
 )
 
 // Record is the RSI-specific metadata for one generation, stored
@@ -109,6 +123,13 @@ func (rec Record) Validate() error {
 			return fmt.Errorf(
 				"lineage: generation %d has provenance %q but no seeded-from generation set",
 				rec.Generation, rec.Provenance,
+			)
+		}
+	case ProvenanceWidened:
+		if rec.SeededFromGeneration != -1 {
+			return fmt.Errorf(
+				"lineage: generation %d has provenance %q but a seeded-from generation %d set",
+				rec.Generation, rec.Provenance, rec.SeededFromGeneration,
 			)
 		}
 	default:
