@@ -89,6 +89,18 @@ type Config struct {
 	// evaluation reward to beat the Teacher's by at least this much.
 	MinWinMargin float32
 
+	// EvalGreedy makes evaluation act on each step's highest-probability
+	// action instead of sampling from the policy. Off by default: the
+	// policy that was trained is a stochastic one, and a greedy read of it
+	// can be a different, much worse policy. Found live: at a state where
+	// "goto" had 0.8 and "mine" 0.19, training (sampling) mined within a few
+	// steps, while greedy evaluation chose goto for all 200 steps, scoring
+	// -40 for the episode, so a Student that had learned fine looked
+	// collapsed round after round. Greedy evaluation is only a fair
+	// comparison for policies sharp enough that the top action is nearly
+	// always the one sampled.
+	EvalGreedy bool
+
 	// EvalEpisodeLen caps the number of steps in one evaluation
 	// episode, mirroring config.Settings.EpisodeLen's role during
 	// training. Must be positive.
@@ -229,12 +241,10 @@ type Result struct {
 // own numbers), so parallelizing it isn't worth the added complexity
 // this round.
 //
-// Evaluation picks each step's highest-probability action (via
-// Actor.ActWithInfo) rather than sampling stochastically, matching
-// rsi-with-rl.md section 2's "Teacher: low exploration" for both sides
-// during comparison — only Student *training* (via ppo.Trainer's own
-// rollout collection) explores; evaluation should measure each side's
-// best judgment, not exploration noise.
+// Evaluation samples each step's action from the policy (Actor.ActWithInfo),
+// the same stochastic policy training optimizes, unless cfg.EvalGreedy asks
+// for the highest-probability action instead (see that field for why
+// sampling is the default).
 func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcritic.Params, cfg Config, rng *rand.Rand) (Result, error) {
 	if len(envs) == 0 {
 		return Result{}, fmt.Errorf("leapfrog: at least one environment is required")
@@ -254,7 +264,7 @@ func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcriti
 	if cfg.OnBeforeEvaluation != nil {
 		cfg.OnBeforeEvaluation(EvalTeacher)
 	}
-	teacherScores, err := evaluateAll(ctx, envs, teacherParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
+	teacherScores, err := evaluateAll(ctx, envs, teacherParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, cfg.EvalGreedy, rng)
 	if err != nil {
 		return Result{}, fmt.Errorf("leapfrog: evaluating teacher: %w", err)
 	}
@@ -262,7 +272,7 @@ func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcriti
 	if cfg.OnBeforeEvaluation != nil {
 		cfg.OnBeforeEvaluation(EvalStudent)
 	}
-	studentScores, err := evaluateAll(ctx, envs, studentParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, rng)
+	studentScores, err := evaluateAll(ctx, envs, studentParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, cfg.EvalGreedy, rng)
 	if err != nil {
 		return Result{}, fmt.Errorf("leapfrog: evaluating student: %w", err)
 	}
@@ -322,7 +332,7 @@ func trainStudent(ctx context.Context, envs []rl.Environment, teacherParams *act
 // evaluate runs episodes episodes of at most episodeLen steps each
 // against env using params, greedily (see Round's doc comment), and
 // returns each episode's total reward in order.
-func evaluate(ctx context.Context, env rl.Environment, params *actorcritic.Params, episodes, episodeLen int, rng *rand.Rand) ([]float32, error) {
+func evaluate(ctx context.Context, env rl.Environment, params *actorcritic.Params, episodes, episodeLen int, greedy bool, rng *rand.Rand) ([]float32, error) {
 	actor, err := actorcritic.NewActor(params)
 	if err != nil {
 		return nil, fmt.Errorf("building actor: %w", err)
@@ -330,7 +340,7 @@ func evaluate(ctx context.Context, env rl.Environment, params *actorcritic.Param
 
 	rewards := make([]float32, 0, episodes)
 	for range episodes {
-		reward, err := evaluateEpisode(ctx, env, actor, episodeLen, rng)
+		reward, err := evaluateEpisode(ctx, env, actor, episodeLen, greedy, rng)
 		if err != nil {
 			return nil, err
 		}
@@ -343,14 +353,14 @@ func evaluate(ctx context.Context, env rl.Environment, params *actorcritic.Param
 // own goroutine and its own rng, so nothing is shared but the read-only
 // params) and returns each environment's per-episode rewards, indexed by
 // environment. A single environment runs inline, exactly as before.
-func evaluateAll(ctx context.Context, envs []rl.Environment, params *actorcritic.Params, episodes, episodeLen int, rng *rand.Rand) ([][]float32, error) {
+func evaluateAll(ctx context.Context, envs []rl.Environment, params *actorcritic.Params, episodes, episodeLen int, greedy bool, rng *rand.Rand) ([][]float32, error) {
 	rngs := make([]*rand.Rand, len(envs))
 	for i := range envs {
 		rngs[i] = rand.New(rand.NewPCG(rng.Uint64(), uint64(i)))
 	}
 	scores := make([][]float32, len(envs))
 	if len(envs) == 1 {
-		s, err := evaluate(ctx, envs[0], params, episodes, episodeLen, rngs[0])
+		s, err := evaluate(ctx, envs[0], params, episodes, episodeLen, greedy, rngs[0])
 		if err != nil {
 			return nil, err
 		}
@@ -366,7 +376,7 @@ func evaluateAll(ctx context.Context, envs []rl.Environment, params *actorcritic
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			scores[i], errs[i] = evaluate(ctx, envs[i], params, episodes, episodeLen, rngs[i])
+			scores[i], errs[i] = evaluate(ctx, envs[i], params, episodes, episodeLen, greedy, rngs[i])
 			if errs[i] != nil {
 				cancel()
 			}
@@ -450,7 +460,7 @@ func meanStd(xs []float64) (mean, std float64) {
 // mask-lookup pattern (a type assertion to rl.ActionMasker, nil mask if
 // env doesn't implement it) so this package behaves identically to
 // training rollouts with respect to action masking.
-func evaluateEpisode(ctx context.Context, env rl.Environment, actor *actorcritic.Actor, episodeLen int, rng *rand.Rand) (float32, error) {
+func evaluateEpisode(ctx context.Context, env rl.Environment, actor *actorcritic.Actor, episodeLen int, greedy bool, rng *rand.Rand) (float32, error) {
 	observation, err := env.Reset(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("resetting environment: %w", err)
@@ -468,7 +478,7 @@ func evaluateEpisode(ctx context.Context, env rl.Environment, actor *actorcritic
 			return 0, fmt.Errorf("deciding action: %w", err)
 		}
 
-		result, err := env.Step(ctx, greedyAction(decision.Probabilities))
+		result, err := env.Step(ctx, evalAction(decision, greedy))
 		if err != nil {
 			return 0, fmt.Errorf("stepping environment: %w", err)
 		}
@@ -479,6 +489,15 @@ func evaluateEpisode(ctx context.Context, env rl.Environment, actor *actorcritic
 		}
 	}
 	return totalReward, nil
+}
+
+// evalAction is the action an evaluation step takes: the sampled one, or with
+// greedy the highest-probability one.
+func evalAction(decision rl.Decision, greedy bool) rl.Action {
+	if greedy {
+		return greedyAction(decision.Probabilities)
+	}
+	return decision.Action
 }
 
 // greedyAction returns the index of the highest probability in probs,

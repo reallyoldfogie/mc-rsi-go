@@ -331,7 +331,7 @@ func TestEvaluateAllRunsEveryEnvironmentAndKeepsPerEnvironmentOrder(t *testing.T
 	b := &scriptedEnv{rewards: []float32{10, 20, 30}}
 	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 4, 2)
 
-	scores, err := evaluateAll(context.Background(), []rl.Environment{a, b}, params, 3, 5, rand.New(rand.NewPCG(3, 4)))
+	scores, err := evaluateAll(context.Background(), []rl.Environment{a, b}, params, 3, 5, true, rand.New(rand.NewPCG(3, 4)))
 	require.NoError(t, err)
 
 	assert.Equal(t, [][]float32{{1, 2, 3}, {10, 20, 30}}, scores, "each environment evaluates EvalEpisodes episodes, in order, concurrently")
@@ -374,4 +374,12 @@ func TestConfigValidateRejectsNegativeWinRules(t *testing.T) {
 	bad.MinWinMargin = -1
 	assert.Error(t, bad.Validate())
 	assert.NoError(t, base.Validate())
+}
+
+// Evaluation takes the sampled action by default, and the most probable one
+// only when asked.
+func TestEvalActionSamplesUnlessGreedy(t *testing.T) {
+	decision := rl.Decision{Action: 1, Probabilities: []float32{0.9, 0.1}} // sampled the unlikely action
+	assert.Equal(t, rl.Action(1), evalAction(decision, false), "sampling evaluation acts on the sampled action")
+	assert.Equal(t, rl.Action(0), evalAction(decision, true), "greedy evaluation acts on the most probable action")
 }
