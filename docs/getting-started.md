@@ -149,7 +149,92 @@ means the Teacher held.
   [ReplayMod](https://www.replaymod.com/) in a matching Minecraft client — this repo doesn't do
   anything with them itself beyond recording them.
 
-## 5. Monitoring a training run
+## 5. Running inference against a trained policy
+
+`cmd/rsi-infer` runs a checkpoint's policy live against a real bot session, acting greedily (or
+optionally sampling) rather than training — for watching what a generation has actually learned to
+do, or for evaluating it outside of `rsi-train`'s own paired Teacher/Student comparison.
+
+```
+go build -o rsi-infer ./cmd/rsi-infer
+./rsi-infer -mc-agent-config ./my-config.json -checkpoint-dir ./checkpoints -episodes 5
+```
+
+It needs the same two pieces of configuration as `rsi-train` (`-mc-agent-config`, `-checkpoint-dir`),
+plus:
+
+- **`-generation`** — which generation to load; `-1` (the default) loads the highest one found.
+- **`-episodes`** — how many episodes to run before exiting; `0` (the default) runs until you
+  press `Ctrl-C`.
+- **`-greedy`** — act on the highest-probability action every step rather than sampling from the
+  policy's distribution; `true` by default. Turning this off is worth trying if greedy play looks
+  stuck doing nothing: at a state where two actions are close to equally likely, the greedy choice
+  can be the worse one even though the policy would pick correctly most of the time it actually
+  matters — `rsi-train`'s own round evaluation defaults the other way (`Config.EvalGreedy`, off by
+  default — see its doc comment in `pkg/leapfrog/leapfrog.go`) for exactly this reason, after a
+  greedy-only evaluation made a policy that had genuinely improved look like it had collapsed,
+  round after round.
+- **`-normalize-observation`** — must match whatever the training run that produced this checkpoint
+  used. It's folded into the checkpoint's environment ID, so a mismatch is rejected outright rather
+  than silently feeding the policy the wrong kind of input.
+
+See `rsi-infer -h` for the rest (episode length, an explicit `-generation` for evaluating an older
+one specifically).
+
+**Connecting it to the same server a training run is already using:** this works, and shares the
+same world, but needs a bot name (`connection.name` in your `-mc-agent-config`) distinct from
+whatever `rsi-train` is already using, or it collides with an in-use player slot outright. Also give
+it its own `env.reset_origin` well clear of the training run's own working area (`env.use_reset_origin:
+true` plus a `reset_origin` far from wherever the training bots operate) — a fresh bot dropped into
+an active bot's own square meter of world mostly just gets in its way. A `reset_origin` you're
+using for the first time can also take a few seconds for its chunk data to reach this new
+connection even once the server itself has it loaded (`FindVisibleBlock`'s own doc comment in
+mc-agent covers this — a search there can legitimately find nothing for a moment after teleporting
+somewhere new, which is a different thing from the target genuinely not being there).
+
+## 6. Widening a trained network's hidden layer
+
+`cmd/widen-checkpoint` applies cRL-go's `actorcritic.Net2WiderNet` to a saved generation, growing its
+hidden layers' width without discarding what training already learned — an alternative to starting a
+bigger network from scratch and re-climbing the whole learning curve. See that function's own doc
+comment in cRL-go for the technique itself (Chen, Goodfellow, Shlens 2016, "Net2Net"); this section
+covers using the tool.
+
+```
+go build -o widen-checkpoint ./cmd/widen-checkpoint
+./widen-checkpoint -checkpoint-dir ./checkpoints -out-dir ./checkpoints-widened -new-hidden-size 256
+```
+
+This reads `-checkpoint-dir`'s latest generation and writes the result as a **fresh generation 0 in
+`-out-dir`** — a separate directory, not appended to the source lineage. Nothing about the source
+checkpoint directory changes, and `rsi-train`/`rsi-infer` only ever pick up the widened network if
+you point their own `-checkpoint-dir` at `-out-dir` yourself. `-out-dir` also gets a `source.txt`
+recording which generation it came from and what parameters were used.
+
+Other flags worth knowing about:
+
+- **`-noise-std`** (default `0.05`) — each newly-created unit is an exact copy of an existing one
+  until this much random noise is added to it, which is what actually lets it diverge and use its
+  added capacity during further training; `0` gives an exactly function-preserving widen with no such
+  head start. Verified against a real, currently-trained checkpoint: at the default, the policy's
+  output shifted by only a few percent, but the value head (whose output is unbounded, unlike the
+  policy's probabilities) moved by close to 2 — pick something smaller than `0.05` if you want the
+  value head's starting point preserved more tightly.
+- **`-seed`** — reproduces the exact same widened network from the same source checkpoint, so you
+  can compare `-noise-std` values on an otherwise identical draw of which units got cloned.
+- **`-verify-probes`** (default `8`) — runs that many random observations through both the source
+  and widened network afterward and reports the largest difference in their outputs, as a quick
+  sanity check.
+
+To actually train against the result, point `rsi-train` at it directly:
+
+```
+./rsi-train -checkpoint-dir ./checkpoints-widened -mc-agent-config ./my-config.json \
+  -normalize-observation  # if the source run used it — the widened checkpoint keeps whatever
+                           # environment ID the source had
+```
+
+## 7. Monitoring a training run
 
 `rsi-train` exposes live Prometheus metrics on `-metrics-addr` (default `:9400`) for the whole
 duration of a run — generation, round outcomes, training throughput, task mix, and more (see
