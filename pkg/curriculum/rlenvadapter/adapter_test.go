@@ -146,3 +146,32 @@ func TestTaskSelectorCraftFarSpecIsAGotoThenCraftComposite(t *testing.T) {
 	assert.Empty(t, override.MineTargetBlock)
 	assert.True(t, override.SeedAtGoal)
 }
+
+func TestTaskSelectorChainSpecsBecomeChainEpisodes(t *testing.T) {
+	cases := []struct {
+		typ   curriculum.TaskType
+		craft string
+		stage int
+	}{
+		{curriculum.TaskChainGather, "", rlenv.ChainGather},
+		{curriculum.TaskChainTable, curriculum.ChainTableItem, rlenv.ChainTable},
+		{curriculum.TaskChainPlace, curriculum.ChainTableItem, rlenv.ChainPlace},
+		{curriculum.TaskChainUse, "minecraft:bowl", rlenv.ChainUse},
+	}
+	for _, c := range cases {
+		gen := fixedGenerator{spec: curriculum.TaskSpec{
+			Type: c.typ, TargetOffset: [3]float64{18, 0, 0},
+			MineTargetBlock: curriculum.ChainTreeBlock, MineSearchRadius: 8, CraftTargetItem: c.craft,
+		}}
+		o := TaskSelector(gen, rand.New(rand.NewPCG(1, 2)))(0, nil)
+
+		assert.Equal(t, c.stage, o.ChainStage, c.typ.String())
+		assert.False(t, o.GoToTargetDisabled, "the bot must travel to the tree")
+		assert.Equal(t, [3]float64{18, 0, 0}, o.TargetOffset)
+		assert.Equal(t, curriculum.ChainTreeBlock, o.MineTargetBlock)
+		assert.Equal(t, 8, o.MineSearchRadius)
+		assert.Equal(t, c.craft, o.CraftTargetItem)
+		assert.True(t, o.SeedAtGoal, "the tree must be seeded beside the goto target")
+		assert.True(t, o.CollectDrops, "the mined logs must reach the inventory")
+	}
+}

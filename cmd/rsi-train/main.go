@@ -1040,6 +1040,14 @@ func taskName(settings mcconfig.EnvSettings) string {
 
 func taskNameForOverride(override rlenv.TaskOverride) string {
 	switch {
+	case override.ChainStage == rlenv.ChainGather:
+		return "chain_gather"
+	case override.ChainStage == rlenv.ChainTable:
+		return "chain_table"
+	case override.ChainStage == rlenv.ChainPlace:
+		return "chain_place"
+	case override.ChainStage == rlenv.ChainUse:
+		return "chain_use"
 	case !override.GoToTargetDisabled && override.MineTargetBlock != "":
 		return "mine_far"
 	case !override.GoToTargetDisabled && override.CraftTargetItem != "":

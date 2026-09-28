@@ -263,6 +263,8 @@ func actionName(action rl.Action) string {
 		return "Mine"
 	case rlenv.ActionCraft:
 		return "Craft"
+	case rlenv.ActionPlace:
+		return "Place"
 	default:
 		return fmt.Sprintf("Action(%d)", action)
 	}

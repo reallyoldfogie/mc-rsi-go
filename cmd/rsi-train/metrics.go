@@ -182,7 +182,7 @@ var (
 	metricTaskEpisodesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "rsi_task_episodes_total",
 		Help: "Episodes posed by the curriculum, by task type. Only emitted when -curriculum-config is set.",
-	}, []string{"task"}) // "goto" | "mine" | "craft" | "mine_far" | "craft_far"
+	}, []string{"task"}) // "goto" | "mine" | "craft" | "mine_far" | "craft_far" | "chain_gather" | "chain_table" | "chain_place" | "chain_use"
 )
 
 // recordNetworkHealth publishes h.
@@ -351,6 +351,8 @@ func actionName(action rl.Action) string {
 		return "mine"
 	case rlenv.ActionCraft:
 		return "craft"
+	case rlenv.ActionPlace:
+		return "place"
 	default:
 		return "unknown"
 	}

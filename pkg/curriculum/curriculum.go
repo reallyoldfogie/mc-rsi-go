@@ -36,7 +36,40 @@ const (
 	// GoToTarget first and only then Mine or Craft.
 	TaskMineFar
 	TaskCraftFar
+	// TaskChainGather..TaskChainUse are the stages of the multi-step crafting
+	// chain (docs/plans/12, rlenv.Config.ChainStage): a tree out of sight,
+	// then gather a log (stage 1), craft planks and a crafting table (2),
+	// place the table (3), or craft a goal item at it (4). Each is its own
+	// type so the mix can weight them and the easier stages keep
+	// regularizing the policy while the harder ones are learned.
+	TaskChainGather
+	TaskChainTable
+	TaskChainPlace
+	TaskChainUse
 )
+
+// ChainTreeBlock is the block a chain episode's tree is made of.
+const ChainTreeBlock = "minecraft:oak_log"
+
+// ChainTableItem is the item a chain's table stages craft.
+const ChainTableItem = "minecraft:crafting_table"
+
+// ChainStage returns which rlenv chain stage t is (1-4), or 0 for a task
+// that is not part of the chain.
+func (t TaskType) ChainStage() int {
+	switch t {
+	case TaskChainGather:
+		return 1
+	case TaskChainTable:
+		return 2
+	case TaskChainPlace:
+		return 3
+	case TaskChainUse:
+		return 4
+	default:
+		return 0
+	}
+}
 
 func (t TaskType) String() string {
 	switch t {
@@ -50,6 +83,14 @@ func (t TaskType) String() string {
 		return "mine_far"
 	case TaskCraftFar:
 		return "craft_far"
+	case TaskChainGather:
+		return "chain_gather"
+	case TaskChainTable:
+		return "chain_table"
+	case TaskChainPlace:
+		return "chain_place"
+	case TaskChainUse:
+		return "chain_use"
 	default:
 		return "unknown"
 	}
@@ -142,6 +183,18 @@ type Pool struct {
 	CraftFarTargetOffsets [][3]float64
 	CraftFarItems         []string
 	CraftFarSearchRadius  int
+
+	// ChainTargetOffsets/ChainSearchRadius pose the multi-step crafting chain
+	// (docs/plans/12): a tree of ChainTreeBlock is seeded beside a goto
+	// target sampled from ChainTargetOffsets, out of sight from the start, and
+	// the episode asks for stage 1-4 of the chain. Stages 1-3 (gather, table,
+	// place) need only the offsets and a radius > 0; stage 4 (craft a goal
+	// item at the placed table) additionally needs ChainGoalItems, each a
+	// rlenv chain goal (bowl, chest, wooden_pickaxe). The search radius must
+	// be smaller than the offsets' length so the tree starts out of sight.
+	ChainTargetOffsets [][3]float64
+	ChainGoalItems     []string
+	ChainSearchRadius  int
 }
 
 // availableTypes returns which of TaskGoto/TaskMine/TaskCraft have at
@@ -167,6 +220,13 @@ func (p Pool) availableTypes() []TaskType {
 	}
 	if len(p.CraftFarTargetOffsets) > 0 && len(p.CraftFarItems) > 0 && p.CraftFarSearchRadius > 0 {
 		types = append(types, TaskCraftFar)
+	}
+	// The chain types come last too, for the same reason.
+	if len(p.ChainTargetOffsets) > 0 && p.ChainSearchRadius > 0 {
+		types = append(types, TaskChainGather, TaskChainTable, TaskChainPlace)
+		if len(p.ChainGoalItems) > 0 {
+			types = append(types, TaskChainUse)
+		}
 	}
 	return types
 }
@@ -197,7 +257,8 @@ func NewUniformRandom(pool Pool) (*UniformRandom, error) {
 // Next implements Generator.
 func (g *UniformRandom) Next(_ int, rng *rand.Rand) TaskSpec {
 	types := g.pool.availableTypes()
-	switch types[rng.IntN(len(types))] {
+	typ := types[rng.IntN(len(types))]
+	switch typ {
 	case TaskGoto:
 		return TaskSpec{Type: TaskGoto, TargetOffset: g.pool.TargetOffsets[rng.IntN(len(g.pool.TargetOffsets))]}
 	case TaskMine:
@@ -222,6 +283,20 @@ func (g *UniformRandom) Next(_ int, rng *rand.Rand) TaskSpec {
 			CraftTargetItem:   g.pool.CraftFarItems[rng.IntN(len(g.pool.CraftFarItems))],
 			CraftSearchRadius: g.pool.CraftFarSearchRadius,
 		}
+	case TaskChainGather, TaskChainTable, TaskChainPlace, TaskChainUse:
+		spec := TaskSpec{
+			Type:             typ,
+			TargetOffset:     g.pool.ChainTargetOffsets[rng.IntN(len(g.pool.ChainTargetOffsets))],
+			MineTargetBlock:  ChainTreeBlock,
+			MineSearchRadius: g.pool.ChainSearchRadius,
+		}
+		switch typ {
+		case TaskChainTable, TaskChainPlace:
+			spec.CraftTargetItem = ChainTableItem
+		case TaskChainUse:
+			spec.CraftTargetItem = g.pool.ChainGoalItems[rng.IntN(len(g.pool.ChainGoalItems))]
+		}
+		return spec
 	default:
 		// Unreachable: availableTypes only ever returns the cases
 		// above, and NewUniformRandom already rejected an empty result.

@@ -50,6 +50,18 @@ func TaskSelector(gen curriculum.Generator, rng *rand.Rand) rlenv.TaskSelector {
 			override.MineTargetBlock = spec.MineTargetBlock
 			override.MineSearchRadius = spec.MineSearchRadius
 			override.SeedAtGoal = true
+		case curriculum.TaskChainGather, curriculum.TaskChainTable, curriculum.TaskChainPlace, curriculum.TaskChainUse:
+			// The multi-step chain (docs/plans/12): a tree seeded out of
+			// sight beside the goto target; mine its logs (collecting the
+			// drops), craft, place, and craft the goal at the placed table.
+			override.GoToTargetDisabled = false
+			override.TargetOffset = spec.TargetOffset
+			override.MineTargetBlock = spec.MineTargetBlock
+			override.MineSearchRadius = spec.MineSearchRadius
+			override.CraftTargetItem = spec.CraftTargetItem
+			override.ChainStage = spec.Type.ChainStage()
+			override.CollectDrops = true
+			override.SeedAtGoal = true
 		case curriculum.TaskCraftFar:
 			override.GoToTargetDisabled = false
 			override.TargetOffset = spec.TargetOffset

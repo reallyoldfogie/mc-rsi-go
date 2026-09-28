@@ -481,3 +481,32 @@ func TestApplyEpisodeLimitsTurnsOnObservationNormalization(t *testing.T) {
 	applyEpisodeLimits(&cfg, episodeLimits{normalizeObservation: true})
 	assert.True(t, cfg.NormalizeObservation)
 }
+
+func TestTaskNameForOverrideNamesTheChainStages(t *testing.T) {
+	for stage, want := range map[int]string{
+		rlenv.ChainGather: "chain_gather", rlenv.ChainTable: "chain_table",
+		rlenv.ChainPlace: "chain_place", rlenv.ChainUse: "chain_use",
+	} {
+		ov := rlenv.TaskOverride{ChainStage: stage, MineTargetBlock: "minecraft:oak_log", CraftTargetItem: "minecraft:bowl", SeedAtGoal: true}
+		assert.Equal(t, want, taskNameForOverride(ov), "a chain episode must not be counted as mine_far/craft_far")
+	}
+}
+
+func TestLoadCurriculumPoolReadsTheChainKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "curriculum.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"target_offsets": [[5,0,0]],
+		"chain_target_offsets": [[18,0,0],[0,0,-18]],
+		"chain_goal_items": ["minecraft:bowl","minecraft:chest"],
+		"chain_search_radius": 8
+	}`), 0o600))
+	pool, err := loadCurriculumPool(path)
+	require.NoError(t, err)
+	assert.Equal(t, [][3]float64{{18, 0, 0}, {0, 0, -18}}, pool.ChainTargetOffsets)
+	assert.Equal(t, []string{"minecraft:bowl", "minecraft:chest"}, pool.ChainGoalItems)
+	assert.Equal(t, 8, pool.ChainSearchRadius)
+}
+
+func TestActionNamesIncludePlace(t *testing.T) {
+	assert.Equal(t, "place", actionName(rlenv.ActionPlace))
+}

@@ -186,3 +186,89 @@ func TestPoolWithoutFarTasksSelectsExactlyAsBefore(t *testing.T) {
 		_ = gen.Next(0, b)
 	}
 }
+
+func chainPool() Pool {
+	p := fullPool()
+	p.ChainTargetOffsets = [][3]float64{{18, 0, 0}, {0, 0, -18}}
+	p.ChainGoalItems = []string{"minecraft:bowl", "minecraft:chest"}
+	p.ChainSearchRadius = 8
+	return p
+}
+
+func TestChainTypesNeedOffsetsAndARadius_AndStageFourAlsoNeedsGoals(t *testing.T) {
+	p := fullPool()
+	p.ChainTargetOffsets = [][3]float64{{18, 0, 0}}
+	assert.NotContains(t, p.availableTypes(), TaskChainGather, "no radius: the tree would start in sight")
+
+	p.ChainSearchRadius = 8
+	got := p.availableTypes()
+	assert.Contains(t, got, TaskChainGather)
+	assert.Contains(t, got, TaskChainTable)
+	assert.Contains(t, got, TaskChainPlace)
+	assert.NotContains(t, got, TaskChainUse, "stage 4 needs a goal item")
+
+	p.ChainGoalItems = []string{"minecraft:bowl"}
+	assert.Contains(t, p.availableTypes(), TaskChainUse)
+}
+
+func TestChainSpecsCarryTheirStageAndItems(t *testing.T) {
+	gen, err := NewUniformRandom(chainPool())
+	require.NoError(t, err)
+	rng := rand.New(rand.NewPCG(11, 12))
+	seen := map[TaskType]bool{}
+	for range 4000 {
+		spec := gen.Next(0, rng)
+		stage := spec.Type.ChainStage()
+		if stage == 0 {
+			assert.Empty(t, spec.CraftTargetItem == ChainTableItem && spec.MineTargetBlock == ChainTreeBlock, "a non-chain spec must not look like one")
+			continue
+		}
+		seen[spec.Type] = true
+		assert.Equal(t, ChainTreeBlock, spec.MineTargetBlock)
+		assert.Equal(t, 8, spec.MineSearchRadius)
+		assert.Contains(t, chainPool().ChainTargetOffsets, spec.TargetOffset)
+		switch stage {
+		case 1:
+			assert.Empty(t, spec.CraftTargetItem, "gather has nothing to craft")
+		case 2, 3:
+			assert.Equal(t, ChainTableItem, spec.CraftTargetItem)
+		case 4:
+			assert.Contains(t, chainPool().ChainGoalItems, spec.CraftTargetItem)
+		}
+	}
+	for _, typ := range []TaskType{TaskChainGather, TaskChainTable, TaskChainPlace, TaskChainUse} {
+		assert.True(t, seen[typ], "%s must be reachable", typ)
+	}
+}
+
+func TestChainStageAndNames(t *testing.T) {
+	for typ, want := range map[TaskType]struct {
+		stage int
+		name  string
+	}{
+		TaskChainGather: {1, "chain_gather"},
+		TaskChainTable:  {2, "chain_table"},
+		TaskChainPlace:  {3, "chain_place"},
+		TaskChainUse:    {4, "chain_use"},
+		TaskGoto:        {0, "goto"},
+		TaskCraftFar:    {0, "craft_far"},
+	} {
+		assert.Equal(t, want.stage, typ.ChainStage())
+		assert.Equal(t, want.name, typ.String())
+	}
+}
+
+// A pool without a chain must select exactly as it did before the chain types
+// existed, for any given rng stream: they are appended, never interleaved.
+func TestPoolWithoutAChainSelectsExactlyAsBefore(t *testing.T) {
+	before, err := NewUniformRandom(farPool())
+	require.NoError(t, err)
+	withZeroChain := farPool()
+	withZeroChain.ChainSearchRadius = 8 // a radius alone enables nothing
+	after, err := NewUniformRandom(withZeroChain)
+	require.NoError(t, err)
+	a, b := rand.New(rand.NewPCG(5, 5)), rand.New(rand.NewPCG(5, 5))
+	for range 300 {
+		assert.Equal(t, before.Next(0, a), after.Next(0, b))
+	}
+}
