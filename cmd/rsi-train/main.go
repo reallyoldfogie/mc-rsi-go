@@ -74,6 +74,7 @@ func main() {
 // mc-agent's own package and not reusable from here.
 type flags struct {
 	checkpointDir                string
+	packetLogs                   bool
 	mcAgentConfigPath            string
 	trainerConfigPath            string
 	epochsPerGeneration          int
@@ -100,6 +101,7 @@ func parseFlags(args []string) (flags, error) {
 	fs := flag.NewFlagSet("rsi-train", flag.ContinueOnError)
 	f := flags{}
 	fs.StringVar(&f.checkpointDir, "checkpoint-dir", "", "directory to load the latest generation from (if any) and save new ones into (required)")
+	fs.BoolVar(&f.packetLogs, "packet-logs", false, "write each bot's packet/agent log to <checkpoint-dir>/packet-logs (roughly 15 GB a day with 7 bots; off by default)")
 	fs.StringVar(&f.mcAgentConfigPath, "mc-agent-config", "", "path to mc-agent's own config.Settings JSON file — connection, RCON, the rlenv task, replay recording (required)")
 	fs.StringVar(&f.trainerConfigPath, "trainer-config", "", "optional path to a cRL-go config.Settings JSON file (PPO hyperparameters); config.Default() applies if unset")
 	fs.IntVar(&f.epochsPerGeneration, "epochs-per-generation", 50, "PPO epochs the Student trains for before facing evaluation against the Teacher")
@@ -206,7 +208,7 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.checkpointDir, episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius, timePenalty: float32(f.timePenalty), normalizeObservation: f.normalizeObservation})
+	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.packetLogDir(), episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius, timePenalty: float32(f.timePenalty), normalizeObservation: f.normalizeObservation})
 	if err != nil {
 		return err
 	}
@@ -1092,6 +1094,16 @@ type connectedEnvironment struct {
 	// wiring for why this exists: pinning Teacher's and Student's eval
 	// episodes to the identical task sequence each round.
 	reseedEvalTasks func(seed1, seed2 uint64)
+}
+
+// packetLogDir is the directory the per-bot packet logs go in, or "" when
+// -packet-logs is off. They were once always written and reached tens of GB
+// per run, so they are opt-in.
+func (f flags) packetLogDir() string {
+	if !f.packetLogs {
+		return ""
+	}
+	return f.checkpointDir
 }
 
 // connectEnvironments builds n live bot sessions and their

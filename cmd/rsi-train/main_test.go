@@ -51,6 +51,17 @@ func TestParseFlagsRejectsMissingOrInvalidInput(t *testing.T) {
 	}
 }
 
+func TestPacketLogsAreOptIn(t *testing.T) {
+	f, err := parseFlags([]string{"-checkpoint-dir", "/tmp/ckpt", "-mc-agent-config", "/tmp/config.json"})
+	require.NoError(t, err)
+	assert.False(t, f.packetLogs, "packet logs reached tens of GB per run, so they default off")
+	assert.Equal(t, "", f.packetLogDir(), "no directory means connectAgent writes no packet log")
+
+	f, err = parseFlags([]string{"-checkpoint-dir", "/tmp/ckpt", "-mc-agent-config", "/tmp/config.json", "-packet-logs"})
+	require.NoError(t, err)
+	assert.Equal(t, "/tmp/ckpt", f.packetLogDir())
+}
+
 func TestParseFlagsIgnoresSeparationChunksValidationWithoutSharedServer(t *testing.T) {
 	f, err := parseFlags([]string{
 		"-checkpoint-dir", "/tmp/ckpt",
