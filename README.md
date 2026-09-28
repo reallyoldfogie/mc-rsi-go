@@ -39,9 +39,10 @@ produces a policy that keeps getting better without a human hand-tuning it after
   margin over the paired per-episode difference — a bare strict-inequality rule alone promotes noise
   about as often as real improvement.
 - **[`pkg/curriculum`](pkg/curriculum) + [`pkg/curriculum/rlenvadapter`](pkg/curriculum/rlenvadapter)**
-  — varies which task an episode poses (currently: go to a point, mine a block, craft an item, and
-  two "go there, then mine/craft" composites), the mechanism this project uses against capability
-  lock — a policy that only ever practices one fixed skill.
+  — varies which task an episode poses (go to a point, mine a block, craft an item, "go there, then
+  mine/craft" composites, and multi-step chains: gather logs, craft planks and a crafting table,
+  place the table, then craft a goal item at it), the mechanism this project uses against
+  capability lock — a policy that only ever practices one fixed skill.
 - **[`pkg/parallelenv`](pkg/parallelenv)** — derives settings for many concurrent live bot sessions
   (against one shared server or several) for training throughput.
 - **[`cmd/rsi-train`](cmd/rsi-train)** — the training entrypoint: resumes or freshly initializes a

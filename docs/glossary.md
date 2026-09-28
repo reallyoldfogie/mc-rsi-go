@@ -107,7 +107,8 @@ your own queries.
   completed.
 - **`rsi_episodes_started_total{task}`** / **`rsi_episode_steps_total{task}`** — counts of
   successfully reset episodes and environment steps, respectively. In curriculum runs, the task
-  label is the task selected for that episode (`goto`, `mine`, or `craft`).
+  label is the task selected for that episode (`goto`, `mine`, `craft`, their `_far` variants, or the
+  multi-step `chain_gather` / `chain_table` / `chain_place` / `chain_use`).
 - **`rsi_episodes_total{task,outcome}`** — completed episodes split into `success`, `failure`, or
   `truncated` (a new reset began before the prior episode reported `Done`), with the same
   per-episode task label. Success means the final step's reward reached the current
