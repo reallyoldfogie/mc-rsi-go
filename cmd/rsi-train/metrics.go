@@ -212,15 +212,16 @@ func recordRoundEvaluation(result leapfrog.Result) {
 	metricEvalPairedDiffZ.Set(z)
 }
 
-// startMetricsServer serves /metrics on addr in the background. Errors
-// (e.g. the port is already taken) are logged, not fatal — a metrics
-// server going down is an observability problem, not a reason to stop an
-// otherwise-healthy training run.
-func startMetricsServer(addr string) {
+// startMetricsServer serves /metrics, and exporter's POST /checkpoint/export,
+// on addr in the background. Errors (e.g. the port is already taken) are
+// logged, not fatal — this server going down is an observability problem,
+// not a reason to stop an otherwise-healthy training run.
+func startMetricsServer(addr string, exporter *checkpointExporter) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
+	mux.Handle("/checkpoint/export", exporter)
 	go func() {
-		log.Printf("metrics: serving /metrics on %s", addr)
+		log.Printf("metrics: serving /metrics and POST /checkpoint/export on %s", addr)
 		if err := http.ListenAndServe(addr, mux); err != nil {
 			log.Printf("metrics: server error: %v", err)
 		}

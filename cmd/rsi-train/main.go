@@ -201,8 +201,9 @@ func run(args []string) error {
 		}
 	}
 
+	exporter := newCheckpointExporter(f.checkpointDir)
 	if f.metricsAddr != "" {
-		startMetricsServer(f.metricsAddr)
+		startMetricsServer(f.metricsAddr, exporter)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -262,6 +263,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	exporter.setTeacher(teacherParams, rec)
 	log.Printf("starting from generation %d (provenance=%s)", rec.Generation, rec.Provenance)
 	startHealth := measureNetworkHealth(teacherParams)
 	recordNetworkHealth(startHealth)
@@ -312,6 +314,7 @@ func run(args []string) error {
 		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.Params) {
 			madeEpochProgress = true
 			latestParams = params
+			exporter.setStudent(params, environmentID, progress, rec.Generation)
 			progress.Epoch = stats.Epoch
 			progress.TotalUpdates += stats.UpdateCount
 			if stats.AverageReturn > progress.BestReturn {
@@ -338,6 +341,22 @@ func run(args []string) error {
 			if f.checkpointInterval > 0 && (stats.Epoch+1)%f.checkpointInterval == 0 {
 				if err := saveInterimCheckpoint(interimDir, params, environmentID, stats.Epoch, progress, rec.Generation); err != nil {
 					log.Printf("  saving interim checkpoint: %v", err)
+				}
+				// Defensive: lineage.Save otherwise only ever runs at startup
+				// (if nothing exists yet) and on a round win, so a checkpoint
+				// directory wiped by mistake mid-round has no generation file
+				// to resume from until the round happens to be won - any
+				// restart before then (this trainer exits, and gets restarted,
+				// whenever any one bot's connection drops) silently falls back
+				// to a fresh random generation 0. Re-persisting the generation
+				// this round is actually training against - unchanged, just
+				// teacherParams again - on the same cadence as the interim
+				// checkpoint recreates it well within one round, not only at
+				// the next win. Found live: an accidental `rm` of the whole
+				// checkpoint dir, mid-round, with the next restart's fate
+				// resting entirely on the round finishing first.
+				if err := lineage.Save(f.checkpointDir, teacherParams, rec); err != nil {
+					log.Printf("  re-saving generation %d checkpoint: %v", rec.Generation, err)
 				}
 			}
 		},
@@ -399,6 +418,7 @@ func run(args []string) error {
 			}
 			teacherParams = result.StudentParams
 			latestParams = teacherParams
+			exporter.setTeacher(teacherParams, rec)
 			metricRoundsTotal.WithLabelValues("won").Inc()
 			metricGeneration.Set(float64(rec.Generation))
 		} else {
