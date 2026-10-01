@@ -183,6 +183,7 @@ func run(args []string) error {
 			return fmt.Errorf("loading trainer config: %w", err)
 		}
 	}
+	log.Printf("trainer settings: learning_rate=%v entropy_coef=%v max_grad_norm=%v hidden_size=%d", trainerSettings.LearningRate, trainerSettings.EntropyCoef, trainerSettings.MaxGradNorm, trainerSettings.HiddenSize)
 
 	mcSettings, err := mcconfig.Load(f.mcAgentConfigPath)
 	if err != nil {
