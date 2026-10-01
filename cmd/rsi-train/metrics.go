@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -212,16 +213,26 @@ func recordRoundEvaluation(result leapfrog.Result) {
 	metricEvalPairedDiffZ.Set(z)
 }
 
-// startMetricsServer serves /metrics, and exporter's POST /checkpoint/export,
-// on addr in the background. Errors (e.g. the port is already taken) are
-// logged, not fatal — this server going down is an observability problem,
-// not a reason to stop an otherwise-healthy training run.
+// startMetricsServer serves /metrics, exporter's POST /checkpoint/export,
+// and net/http/pprof's standard profiling endpoints (/debug/pprof/..., e.g.
+// `go tool pprof 'http://host:PORT/debug/pprof/profile?seconds=30'` for a
+// CPU profile of this exact live process - the reason these are wired in
+// at all, rather than left to pprof's usual DefaultServeMux auto-register
+// trick, is that this file already runs its own mux for /metrics) on addr
+// in the background. Errors (e.g. the port is already taken) are logged,
+// not fatal — this server going down is an observability problem, not a
+// reason to stop an otherwise-healthy training run.
 func startMetricsServer(addr string, exporter *checkpointExporter) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.Handle("/checkpoint/export", exporter)
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	go func() {
-		log.Printf("metrics: serving /metrics and POST /checkpoint/export on %s", addr)
+		log.Printf("metrics: serving /metrics, POST /checkpoint/export, and /debug/pprof/ on %s", addr)
 		if err := http.ListenAndServe(addr, mux); err != nil {
 			log.Printf("metrics: server error: %v", err)
 		}
