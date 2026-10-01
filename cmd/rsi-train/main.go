@@ -203,8 +203,9 @@ func run(args []string) error {
 	}
 
 	exporter := newCheckpointExporter(f.checkpointDir)
+	envCountReq := newEnvCountRequest()
 	if f.metricsAddr != "" {
-		startMetricsServer(f.metricsAddr, exporter)
+		startMetricsServer(f.metricsAddr, exporter, envCountReq)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -225,15 +226,7 @@ func run(args []string) error {
 	// one of the N sessions ending stops the whole run, matching how a
 	// single-environment run already stops on its one session ending.
 	for _, c := range connected {
-		if done := c.agent.Done(); done != nil {
-			go func(done <-chan struct{}) {
-				select {
-				case <-ctx.Done():
-				case <-done:
-					stop()
-				}
-			}(done)
-		}
+		watchForUnexpectedExit(ctx, stop, c)
 	}
 
 	envs := make([]rl.Environment, len(connected))
@@ -244,6 +237,7 @@ func run(args []string) error {
 	for i, c := range connected {
 		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode}
 	}
+	metricParallelEnvs.Set(float64(len(connected)))
 
 	// Self-versioning by construction, matching mc-agent's own
 	// cmd/rl-train convention exactly: any observation-shape change (e.g.
@@ -377,6 +371,34 @@ func run(args []string) error {
 		if err := ctx.Err(); err != nil {
 			log.Printf("stopping before round %d: %v", round, err)
 			break
+		}
+
+		if n, ok := envCountReq.take(); ok {
+			// Only ever applied here, between rounds: nothing about
+			// live-adjusting connected/envs is safe to do while
+			// leapfrog.Round is actively driving rollout collection
+			// against them.
+			newConnected, newEnvs, rcErr := reconcileEnvCount(ctx, stop, connected, envs, n,
+				mcSettings, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks,
+				curriculumGen, f.packetLogDir(),
+				episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius, timePenalty: float32(f.timePenalty), normalizeObservation: f.normalizeObservation},
+				episodeTask)
+			if rcErr != nil {
+				log.Printf("round %d: scaling to %d parallel envs failed, continuing with %d: %v", round, n, len(connected), rcErr)
+			} else {
+				connected, envs = newConnected, newEnvs
+				// Every environment's reseedEvalTasks feeds
+				// cfg.OnBeforeEvaluation, built once from whatever
+				// connected looked like at the time - a newly added
+				// environment's reseeder isn't in that closure until this
+				// rebuilds it, so without this, new environments' Teacher
+				// and Student evaluation episodes wouldn't be paired to
+				// the same task sequence (see pairedEvalTaskReseeder's own
+				// doc comment for why that pairing matters).
+				cfg.OnBeforeEvaluation = pairedEvalTaskReseeder(evalTaskReseeders(connected))
+				metricParallelEnvs.Set(float64(len(connected)))
+				log.Printf("round %d: scaled to %d parallel envs", round, len(connected))
+			}
 		}
 
 		metricCurrentRound.Set(float64(round))
@@ -1115,6 +1137,11 @@ type connectedEnvironment struct {
 	// wiring for why this exists: pinning Teacher's and Student's eval
 	// episodes to the identical task sequence each round.
 	reseedEvalTasks func(seed1, seed2 uint64)
+	// stopWatch is closed right before this environment's agent is closed
+	// intentionally (reconcileEnvCount's scale-down path), telling its
+	// watchForUnexpectedExit goroutine this wasn't an unexpected exit, so
+	// it must return without stopping the whole run. Always non-nil.
+	stopWatch chan struct{}
 }
 
 // packetLogDir is the directory the per-bot packet logs go in, or "" when
@@ -1159,15 +1186,29 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 			return nil, fmt.Errorf("applying shared-server gamerules: %w", err)
 		}
 	}
+	return connectEnvironmentRange(ctx, base, 0, n, autoResetOrigin, sharedServer, separationChunks, curriculumGen, trainingDataDir, limits)
+}
 
-	connected := make([]connectedEnvironment, 0, n)
+// connectEnvironmentRange connects environments at indices [start, n) out
+// of n total, reusing connectEnvironments' own per-bot setup (minus the
+// shared-server gamerules call, which only ever needs applying once and
+// is this function's caller's job). Every one of a bot's derived
+// settings — working-area offset (parallelenv.WorkingAreaOffset, a
+// function of its own index only), username suffix, RCON port offset —
+// depends only on its own index, never on n, so this is safe to call
+// again later with a larger n to add more bots alongside ones an earlier,
+// smaller-n call already connected and is actively using. See
+// reconcileEnvCount, the live POST /config/parallel-envs path this
+// exists for.
+func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, error) {
+	connected := make([]connectedEnvironment, 0, n-start)
 	closeAll := func() {
 		for _, c := range connected {
 			closeConnectedAgent(c.agent)
 		}
 	}
 
-	for i := 0; i < n; i++ {
+	for i := start; i < n; i++ {
 		var settings mcconfig.Settings
 		if sharedServer {
 			settings = parallelenv.DeriveSharedServerSettings(base, i, n)
@@ -1256,6 +1297,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 				env:             env,
 				taskForEpisode:  taskForEpisode,
 				reseedEvalTasks: taskPCG.Seed,
+				stopWatch:       make(chan struct{}),
 			})
 			continue
 		}
@@ -1266,9 +1308,74 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 			return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
 		}
 
-		connected = append(connected, connectedEnvironment{agent: a, env: env, taskForEpisode: func() string { return taskName(settings.Env) }})
+		connected = append(connected, connectedEnvironment{agent: a, env: env, taskForEpisode: func() string { return taskName(settings.Env) }, stopWatch: make(chan struct{})})
 	}
 	return connected, nil
+}
+
+// reconcileEnvCount adjusts connected/envs to have exactly n entries,
+// connecting n-len(connected) additional bot sessions (via
+// connectEnvironmentRange) or closing the len(connected)-n highest-
+// indexed ones, and returns the updated slices. Called only between
+// rounds, in run's own round loop — never while leapfrog.Round is
+// actively driving rollout collection against the current env set, since
+// nothing about this is safe to do concurrently with that. A no-op,
+// returning connected/envs unchanged, when n already equals
+// len(connected).
+//
+// Closing an excess environment closes its stopWatch first (see that
+// field's own doc comment) so watchForUnexpectedExit's watcher for it
+// exits quietly instead of treating the close as an unexpected session
+// end and stopping the whole run.
+func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected []connectedEnvironment, envs []rl.Environment, n int, base mcconfig.Settings, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string, limits episodeLimits, episodeTask string) ([]connectedEnvironment, []rl.Environment, error) {
+	current := len(connected)
+	if n == current {
+		return connected, envs, nil
+	}
+	if n < 1 {
+		return connected, envs, fmt.Errorf("parallel envs must be at least 1, got %d", n)
+	}
+
+	if n < current {
+		for i := n; i < current; i++ {
+			close(connected[i].stopWatch)
+			closeConnectedAgent(connected[i].agent)
+		}
+		return connected[:n], envs[:n], nil
+	}
+
+	added, err := connectEnvironmentRange(ctx, base, current, n, autoResetOrigin, sharedServer, separationChunks, curriculumGen, trainingDataDir, limits)
+	if err != nil {
+		return connected, envs, fmt.Errorf("connecting %d additional environment(s): %w", n-current, err)
+	}
+	for _, c := range added {
+		watchForUnexpectedExit(ctx, stop, c)
+		connected = append(connected, c)
+		envs = append(envs, &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode})
+	}
+	return connected, envs, nil
+}
+
+// watchForUnexpectedExit starts the background watcher that treats c's
+// live bot session ending on its own (e.g. the .agentStop file, a
+// dropped connection) the same as SIGINT/SIGTERM — stopping the whole
+// run — unless c.stopWatch is closed first, which marks the exit as
+// intentional (see reconcileEnvCount's scale-down path, the only place
+// that happens). Safe to call for every connectedEnvironment, including
+// ones added well after startup.
+func watchForUnexpectedExit(ctx context.Context, stop context.CancelFunc, c connectedEnvironment) {
+	done := c.agent.Done()
+	if done == nil {
+		return
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-c.stopWatch:
+		case <-done:
+			stop()
+		}
+	}()
 }
 
 // closeConnectedAgent closes both the live agent and the optional raw packet

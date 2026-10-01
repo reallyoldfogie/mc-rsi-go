@@ -55,6 +55,11 @@ var (
 		Help: "The Student-training epoch currently in progress within rsi_current_round (0-indexed). Reset to -1 at the start of each round, before its first epoch completes.",
 	})
 
+	metricParallelEnvs = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_parallel_envs",
+		Help: "The number of parallel bot sessions currently connected. Can change mid-run via POST /config/parallel-envs, applied at the next round boundary.",
+	})
+
 	metricRoundsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "rsi_rounds_total",
 		Help: "Completed leapfrog rounds, by outcome.",
@@ -214,7 +219,8 @@ func recordRoundEvaluation(result leapfrog.Result) {
 }
 
 // startMetricsServer serves /metrics, exporter's POST /checkpoint/export,
-// and net/http/pprof's standard profiling endpoints (/debug/pprof/..., e.g.
+// envCount's POST /config/parallel-envs, and net/http/pprof's standard
+// profiling endpoints (/debug/pprof/..., e.g.
 // `go tool pprof 'http://host:PORT/debug/pprof/profile?seconds=30'` for a
 // CPU profile of this exact live process - the reason these are wired in
 // at all, rather than left to pprof's usual DefaultServeMux auto-register
@@ -222,17 +228,18 @@ func recordRoundEvaluation(result leapfrog.Result) {
 // in the background. Errors (e.g. the port is already taken) are logged,
 // not fatal — this server going down is an observability problem, not a
 // reason to stop an otherwise-healthy training run.
-func startMetricsServer(addr string, exporter *checkpointExporter) {
+func startMetricsServer(addr string, exporter *checkpointExporter, envCount *envCountRequest) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.Handle("/checkpoint/export", exporter)
+	mux.Handle("/config/parallel-envs", envCount)
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	go func() {
-		log.Printf("metrics: serving /metrics, POST /checkpoint/export, and /debug/pprof/ on %s", addr)
+		log.Printf("metrics: serving /metrics, POST /checkpoint/export, POST /config/parallel-envs, and /debug/pprof/ on %s", addr)
 		if err := http.ListenAndServe(addr, mux); err != nil {
 			log.Printf("metrics: server error: %v", err)
 		}
