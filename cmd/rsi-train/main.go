@@ -204,6 +204,7 @@ func run(args []string) error {
 
 	exporter := newCheckpointExporter(f.checkpointDir)
 	envCountReq := newEnvCountRequest()
+	envConfirmer := newParallelEnvsConfirmer(f.checkpointDir)
 	if f.metricsAddr != "" {
 		startMetricsServer(f.metricsAddr, exporter, envCountReq)
 	}
@@ -211,7 +212,19 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	connected, err := connectEnvironments(ctx, mcSettings, f.parallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.packetLogDir(), episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius, timePenalty: float32(f.timePenalty), normalizeObservation: f.normalizeObservation})
+	// A live scale (POST /config/parallel-envs) only ever overrides this
+	// startup count once it's survived parallelEnvsStabilityWindow without
+	// the process exiting — see parallelEnvsConfirmer's own doc comment.
+	// Anything else (never scaled, or the last scale crashed before
+	// proving itself) falls straight through to -parallel-envs's own flag
+	// value, unchanged from before this existed.
+	initialParallelEnvs := f.parallelEnvs
+	if persisted, ok := loadPersistedParallelEnvs(f.checkpointDir); ok {
+		log.Printf("using persisted parallel-envs count %d (overriding -parallel-envs=%d)", persisted, f.parallelEnvs)
+		initialParallelEnvs = persisted
+	}
+
+	connected, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.packetLogDir(), episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius, timePenalty: float32(f.timePenalty), normalizeObservation: f.normalizeObservation})
 	if err != nil {
 		return err
 	}
@@ -397,6 +410,7 @@ func run(args []string) error {
 				// doc comment for why that pairing matters).
 				cfg.OnBeforeEvaluation = pairedEvalTaskReseeder(evalTaskReseeders(connected))
 				metricParallelEnvs.Set(float64(len(connected)))
+				envConfirmer.scheduleConfirm(len(connected))
 				log.Printf("round %d: scaled to %d parallel envs", round, len(connected))
 			}
 		}
