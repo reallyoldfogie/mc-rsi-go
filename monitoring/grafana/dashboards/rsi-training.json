@@ -172,11 +172,12 @@
     {
       "type": "bargauge",
       "title": "Task mix",
-      "description": "rsi_task_episodes_total, by task — how the curriculum's random per-episode task selection has actually split across Goto / Mine / Craft so far. Only present when rsi-train was started with -curriculum-config.",
+      "description": "rsi_task_episodes_total, by task — how the curriculum's random per-episode task selection has actually split across tasks so far (raw cumulative counts, so they only ever grow; compare shapes, not absolute size). Only present when rsi-train was started with -curriculum-config. See \"Task mix balance\" below for whether the split is actually even.",
       "id": 22,
       "gridPos": { "h": 9, "w": 6, "x": 18, "y": 16 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [{ "expr": "rsi_task_episodes_total", "legendFormat": "{{task}}", "refId": "A" }],
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] } } },
       "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } }
     },
 
@@ -391,6 +392,46 @@
       "targets": [{ "expr": "go_goroutines{job=\"rsi-train\"}", "refId": "A", "legendFormat": "goroutines" }],
       "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
       "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+
+    {
+      "type": "row",
+      "title": "Curriculum balance",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 89 },
+      "id": 107,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "bargauge",
+      "title": "Task mix balance (% deviation from other tasks' average)",
+      "description": "For each task, 100 * (its count - the average of every OTHER task's count) / that average - i.e. how far above or below the rest of the curriculum's tasks it currently sits, as a percentage. A perfectly even split sits at 0% for every task; the thresholds flag a task that's meaningfully over- or under-represented relative to the others, not an arbitrary absolute count (the old default threshold here - green under 80, red over - was exactly that: meaningless against a counter with no natural ceiling). ±15% green, ±15-30% orange, beyond ±30% red.",
+      "id": 44,
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 90 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "100 * (rsi_task_episodes_total - (scalar(sum(rsi_task_episodes_total)) - rsi_task_episodes_total) / (scalar(count(rsi_task_episodes_total)) - 1)) / ((scalar(sum(rsi_task_episodes_total)) - rsi_task_episodes_total) / (scalar(count(rsi_task_episodes_total)) - 1))",
+          "legendFormat": "{{task}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "value": null, "color": "red" },
+              { "value": -30, "color": "orange" },
+              { "value": -15, "color": "green" },
+              { "value": 15, "color": "orange" },
+              { "value": 30, "color": "red" }
+            ]
+          }
+        }
+      },
+      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } }
     }
   ],
   "templating": {
