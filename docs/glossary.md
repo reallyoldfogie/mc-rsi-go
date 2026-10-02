@@ -121,6 +121,29 @@ your own queries.
   posed of each task type so far. Only present when `rsi-train` was started with
   `-curriculum-config` (see **Curriculum / task generator**, above) — without one, there's no
   per-episode task-selection hook for this command to count from at all.
+- **`rsi_network_active_units_fraction{layer="1"|"2"}`** — fraction of that hidden layer's ReLU
+  units that fire for at least one of a fixed set of probe observations. A dead unit never
+  recovers; `0` in layer 2 means the network is dead (see `cmd/rsi-train/health.go`'s
+  `deadLayer2Active`/`deadLogitStd` thresholds — the run aborts rather than keep training into a
+  dead network).
+- **`rsi_policy_logit_std`** — mean standard deviation of the policy's raw output logits (before
+  softmax) across the same probes. `0` means the policy is identical in every state (dead); a
+  rising value over time means the policy is becoming more confident/peaked, for better or worse.
+- **`rsi_policy_entropy`** — mean Shannon entropy (nats) of `softmax(logits)` across the probes —
+  how uncertain the actual action distribution is, as opposed to `rsi_policy_logit_std`'s raw
+  pre-softmax spread. Falls as the policy sharpens; near `0` means it has become effectively
+  deterministic for every probe (a possible sign of **softmax saturation** — see
+  `plans/12-multi-step-crafting-curriculum.md`'s "Diagnosing a training plateau" section).
+- **`rsi_network_unit_correlation{layer="1"|"2"}`** — mean absolute Pearson correlation, over every
+  pair of that layer's units, of their activations across the probes. Not a dead-unit check (that's
+  `rsi_network_active_units_fraction`) — a *capacity* signal: high means many units behave
+  near-identically (redundant, unused headroom); low means units are already doing mutually
+  distinct work (closer to actually capacity-constrained). See `plans/12`'s "Diagnosing a training
+  plateau" section for how to read this alongside the others.
+- **`rsi_best_return_alltime`** — the best Student-training epoch average return ever seen in this
+  run, carried forward across restarts, rounds, *and* promotions (never reset). A value that stays
+  flat across many rounds despite continued training is one signal — not proof on its own — that
+  the architecture, not optimization, may be the ceiling.
 - **`up{job="rsi-train"}`** — not one of this project's own metrics; Prometheus sets this
   automatically for every scrape target. `1` means the last scrape of `rsi-train`'s `/metrics`
   endpoint succeeded (the process is alive and reachable); `0` means it didn't (crashed, still

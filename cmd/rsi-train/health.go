@@ -36,6 +36,29 @@ type networkHealth struct {
 	// deviation of that logit across the probes. 0 means the policy is the
 	// same in every state.
 	LogitStd float64
+	// PolicyEntropy is the mean Shannon entropy (nats) of softmax(logits)
+	// across the probes - how uncertain the action distribution actually is,
+	// as opposed to LogitStd's raw spread of the pre-softmax values. A fresh
+	// network sits near ln(actionSpace) (closest to uniform); it falls as
+	// the policy sharpens, and a near-zero value means the policy is
+	// effectively deterministic for every probe - the softmax-saturation
+	// concern entropy_coef is meant to counteract.
+	PolicyEntropy float64
+	// Layer1Correlation and Layer2Correlation are the mean absolute Pearson
+	// correlation, over every pair of that layer's units, of their
+	// activations across the probes (dead or constant units, whose std is
+	// ~0, are excluded - their correlation with anything is undefined, not
+	// informative). This is a capacity-direction proxy, not a dead-unit
+	// check (Layer*Active already covers that): HIGH correlation means many
+	// units are behaving near-identically - redundant, so the layer has
+	// unused headroom already and growing hidden_size would likely just add
+	// more redundant capacity. LOW correlation means units are already
+	// doing mutually distinct work - no redundancy to reclaim, which is the
+	// more capacity-constrained-looking signature. See
+	// docs/plans/12-multi-step-crafting-curriculum.md's "Diagnosing a
+	// training plateau" section for how to read this alongside the other
+	// signals.
+	Layer1Correlation, Layer2Correlation float64
 }
 
 // Thresholds for dead. A freshly initialised network has ~99-100% of its
@@ -88,22 +111,38 @@ func measureNetworkHealth(p *actorcritic.Params) networkHealth {
 	active1 := make([]bool, p.W0.Rows)
 	active2 := make([]bool, p.W1.Rows)
 	logits := make([][]float64, p.Wpi.Rows)
+	// acts1/acts2 are unit-major (one []float64 per unit, one entry per
+	// probe) so unitCorrelation can compute each unit's own mean/std once
+	// and every pairwise correlation without re-scanning the probes.
+	acts1 := make([][]float64, p.W0.Rows)
+	acts2 := make([][]float64, p.W1.Rows)
+	for i := range acts1 {
+		acts1[i] = make([]float64, 0, len(probes))
+	}
+	for i := range acts2 {
+		acts2[i] = make([]float64, 0, len(probes))
+	}
+	var entropySum float64
 	for _, x := range probes {
 		h1 := relu(affine(p.W0, p.B0, x))
 		for j, v := range h1 {
 			if v > 0 {
 				active1[j] = true
 			}
+			acts1[j] = append(acts1[j], float64(v))
 		}
 		h2 := relu(affine(p.W1, p.B1, h1))
 		for j, v := range h2 {
 			if v > 0 {
 				active2[j] = true
 			}
+			acts2[j] = append(acts2[j], float64(v))
 		}
-		for k, v := range affine(p.Wpi, p.Bpi, h2) {
+		out := affine(p.Wpi, p.Bpi, h2)
+		for k, v := range out {
 			logits[k] = append(logits[k], float64(v))
 		}
+		entropySum += softmaxEntropy(out)
 	}
 
 	var stdSum float64
@@ -112,10 +151,77 @@ func measureNetworkHealth(p *actorcritic.Params) networkHealth {
 		stdSum += std
 	}
 	return networkHealth{
-		Layer1Active: fractionTrue(active1),
-		Layer2Active: fractionTrue(active2),
-		LogitStd:     stdSum / float64(len(logits)),
+		Layer1Active:      fractionTrue(active1),
+		Layer2Active:      fractionTrue(active2),
+		LogitStd:          stdSum / float64(len(logits)),
+		PolicyEntropy:     entropySum / float64(len(probes)),
+		Layer1Correlation: meanAbsCorrelation(acts1),
+		Layer2Correlation: meanAbsCorrelation(acts2),
 	}
+}
+
+// softmaxEntropy returns the Shannon entropy, in nats, of softmax(logits).
+// The max-subtraction is the standard numerically-stable softmax (keeps
+// exp's argument <= 0 regardless of how large the raw logits have grown).
+func softmaxEntropy(logits []float32) float64 {
+	maxLogit := logits[0]
+	for _, v := range logits[1:] {
+		if v > maxLogit {
+			maxLogit = v
+		}
+	}
+	var sumExp float64
+	exps := make([]float64, len(logits))
+	for i, v := range logits {
+		exps[i] = math.Exp(float64(v - maxLogit))
+		sumExp += exps[i]
+	}
+	var entropy float64
+	for _, e := range exps {
+		p := e / sumExp
+		if p > 0 {
+			entropy -= p * math.Log(p)
+		}
+	}
+	return entropy
+}
+
+// meanAbsCorrelation returns the mean absolute Pearson correlation over
+// every pair of units in acts (one []float64 per unit, one entry per
+// probe), excluding any unit whose activation is constant across every
+// probe (std 0 - correlation with it is undefined, not zero, so including
+// it would misleadingly pull the mean toward "uncorrelated"). Returns 0 if
+// fewer than two units have nonzero variance.
+func meanAbsCorrelation(acts [][]float64) float64 {
+	means := make([]float64, len(acts))
+	stds := make([]float64, len(acts))
+	varying := make([]int, 0, len(acts))
+	for i, a := range acts {
+		means[i], stds[i] = meanStdOf(a)
+		if stds[i] > 0 {
+			varying = append(varying, i)
+		}
+	}
+	if len(varying) < 2 {
+		return 0
+	}
+
+	var sum float64
+	var pairs int
+	for a := 0; a < len(varying); a++ {
+		i := varying[a]
+		for b := a + 1; b < len(varying); b++ {
+			j := varying[b]
+			var cov float64
+			for t := range acts[i] {
+				cov += (acts[i][t] - means[i]) * (acts[j][t] - means[j])
+			}
+			cov /= float64(len(acts[i]))
+			sum += math.Abs(cov / (stds[i] * stds[j]))
+			pairs++
+		}
+	}
+	return sum / float64(pairs)
 }
 
 func affine(w, b *mat.Matrix, x []float32) []float32 {

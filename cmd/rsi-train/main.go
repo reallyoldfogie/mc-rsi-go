@@ -285,6 +285,7 @@ func run(args []string) error {
 	metricCurrentRound.Set(0)
 	metricCurrentEpoch.Set(-1)
 	progress := rec.Metadata
+	metricBestReturnAllTime.Set(float64(progress.BestReturn))
 	latestParams := teacherParams
 	// madeEpochProgress becomes true the first time OnEpoch actually
 	// fires. Guards the final-checkpoint save below against overwriting
@@ -328,6 +329,7 @@ func run(args []string) error {
 			if stats.AverageReturn > progress.BestReturn {
 				progress.BestReturn = stats.AverageReturn
 			}
+			metricBestReturnAllTime.Set(float64(progress.BestReturn))
 			log.Printf("  epoch %d: average return %.3f, samples %d", stats.Epoch, stats.AverageReturn, stats.SampleCount)
 			health := measureNetworkHealth(params)
 			recordNetworkHealth(health)

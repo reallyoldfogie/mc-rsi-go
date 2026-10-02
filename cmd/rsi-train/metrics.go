@@ -40,6 +40,21 @@ var (
 		Help: "Mean standard deviation of the policy's output logits across probe observations. 0 means the policy is the same in every state (a dead network).",
 	})
 
+	metricPolicyEntropy = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_policy_entropy",
+		Help: "Mean Shannon entropy (nats) of softmax(logits) across probe observations - how uncertain the action distribution actually is. Falls as the policy sharpens; near 0 means it's effectively deterministic for every probe (softmax saturation).",
+	})
+
+	metricNetworkUnitCorrelation = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "rsi_network_unit_correlation",
+		Help: "Mean absolute pairwise Pearson correlation between a hidden layer's unit activations across probe observations, by layer (1 or 2). A capacity-direction proxy, not a dead-unit check: high means many units behave near-identically (redundant, unused headroom - growing hidden_size would likely just add more redundancy); low means units are already doing mutually distinct work (closer to actually capacity-constrained). See docs/plans/12's 'Diagnosing a training plateau' section.",
+	}, []string{"layer"})
+
+	metricBestReturnAllTime = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_best_return_alltime",
+		Help: "The best Student-training epoch average return ever seen in this run (checkpoint.Metadata.BestReturn) - persisted across restarts, rounds, AND promotions (it is carried forward in rec.Metadata, never reset). A value that stays flat across many rounds despite continued training is one signal (not proof on its own) that the architecture, not optimization, may be the ceiling - see docs/plans/12's 'Diagnosing a training plateau' section.",
+	})
+
 	metricGeneration = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "rsi_generation",
 		Help: "Current Teacher generation number (increases by one each time a Student beats its Teacher and is promoted).",
@@ -196,6 +211,9 @@ func recordNetworkHealth(h networkHealth) {
 	metricNetworkActiveUnits.WithLabelValues("1").Set(h.Layer1Active)
 	metricNetworkActiveUnits.WithLabelValues("2").Set(h.Layer2Active)
 	metricPolicyLogitStd.Set(h.LogitStd)
+	metricPolicyEntropy.Set(h.PolicyEntropy)
+	metricNetworkUnitCorrelation.WithLabelValues("1").Set(h.Layer1Correlation)
+	metricNetworkUnitCorrelation.WithLabelValues("2").Set(h.Layer2Correlation)
 }
 
 // recordRoundEvaluation publishes a completed round's evaluation statistics

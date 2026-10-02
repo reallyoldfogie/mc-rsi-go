@@ -1,0 +1,102 @@
+{
+  "title": "RSI Network Diagnostics",
+  "uid": "rsi-network-diagnostics",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": { "from": "now-24h", "to": "now" },
+  "tags": ["mc-rsi-trainer"],
+  "panels": [
+    {
+      "type": "row",
+      "title": "Saturation & exploration",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Policy entropy",
+      "description": "rsi_policy_entropy — mean Shannon entropy (nats) of softmax(logits) across a fixed set of probe observations. How uncertain the policy's action choice actually is, not just the raw logit spread (see Policy logit std, to the right, for that). Falls as the policy sharpens; near 0 means it has become effectively deterministic for every probe - the softmax-saturation concern entropy_coef is meant to counteract. A fresh network sits near ln(action_space).",
+      "id": 2,
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rsi_policy_entropy", "refId": "A", "legendFormat": "entropy (nats)" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Policy logit std",
+      "description": "rsi_policy_logit_std — mean standard deviation of the policy's raw output logits (before softmax) across probe observations. 0 means the policy is identical in every state (dead - see Active units by layer). A rising value over time means the policy is becoming more confident/peaked. Complements Policy entropy: this is the pre-softmax spread, entropy is what that spread actually does to the action distribution.",
+      "id": 3,
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rsi_policy_logit_std", "refId": "A", "legendFormat": "logit std" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Active units by layer",
+      "description": "rsi_network_active_units_fraction — fraction of each hidden layer's ReLU units that fire for at least one probe observation. A dead unit never recovers; the run aborts on its own if layer 2 falls below 5% (or logit std below 0.02) for 3 consecutive epochs, so a value this low should never actually be visible here for long.",
+      "id": 4,
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "rsi_network_active_units_fraction{layer=\"1\"}", "refId": "A", "legendFormat": "layer 1" },
+        { "expr": "rsi_network_active_units_fraction{layer=\"2\"}", "refId": "B", "legendFormat": "layer 2" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+
+    {
+      "type": "row",
+      "title": "Capacity signal",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 },
+      "id": 5,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Hidden-unit correlation by layer",
+      "description": "rsi_network_unit_correlation — mean absolute pairwise Pearson correlation between a layer's unit activations across the probes. Not a dead-unit check - a capacity-direction proxy: HIGH means many units behave near-identically (redundant, unused headroom already - growing hidden_size would likely just add more redundancy, so the bottleneck is probably elsewhere). LOW means units are already doing mutually distinct work (no redundancy to reclaim - closer to actually capacity-constrained). See plans/12-multi-step-crafting-curriculum.md's \"Diagnosing a training plateau\" section for the full methodology this feeds into.",
+      "id": 6,
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "rsi_network_unit_correlation{layer=\"1\"}", "refId": "A", "legendFormat": "layer 1" },
+        { "expr": "rsi_network_unit_correlation{layer=\"2\"}", "refId": "B", "legendFormat": "layer 2" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Best return ever (all-time)",
+      "description": "rsi_best_return_alltime — the best Student-training epoch average return ever seen in this run, carried forward across restarts, rounds, AND promotions (never reset - see checkpoint.Metadata.BestReturn). A value that keeps climbing means optimization still has room to find something better; one that's been flat for many rounds despite continued training is a signal (not proof on its own - pair with the correlation panel and with cmd/widen-checkpoint's actual widen-and-see test) that the architecture itself may be the current ceiling.",
+      "id": 7,
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rsi_best_return_alltime", "refId": "A", "legendFormat": "best return" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "DS_PROMETHEUS",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      }
+    ]
+  }
+}
