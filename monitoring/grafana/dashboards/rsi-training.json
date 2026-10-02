@@ -346,6 +346,51 @@
       ],
       "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0 } } },
       "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi" } }
+    },
+
+    {
+      "type": "row",
+      "title": "Process resources",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 80 },
+      "id": 106,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Process CPU usage",
+      "description": "rate(process_cpu_seconds_total[1m]) — CPU cores in use by the trainer process itself (1.0 = one full core saturated; this process is multi-threaded, so it can exceed 1.0). Exposed automatically by the Prometheus client library, not a custom rsi_* metric. Found live (2026-10): a busy-wait bug and an uncached per-call lookup in mc-agent's pathfinding together held this at 3-4 the whole run; both are fixed as of mc-agent v0.0.36/v0.0.37, after which it should sit low except during real bursts of PPO gradient computation.",
+      "id": 41,
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 81 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "rate(process_cpu_seconds_total{job=\"rsi-train\"}[1m])", "refId": "A", "legendFormat": "CPU cores" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Process memory usage",
+      "description": "process_resident_memory_bytes (RSS, the OS-level view) and go_memstats_heap_alloc_bytes (what Go's own heap thinks is live) for the trainer process. RSS normally sits above heap-in-use; a sustained, growing gap between them is itself worth noticing, not just a rising RSS alone.",
+      "id": 42,
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 81 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        { "expr": "process_resident_memory_bytes{job=\"rsi-train\"}", "refId": "A", "legendFormat": "RSS" },
+        { "expr": "go_memstats_heap_alloc_bytes{job=\"rsi-train\"}", "refId": "B", "legendFormat": "heap in use" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "type": "timeseries",
+      "title": "Goroutines",
+      "description": "go_goroutines — live goroutine count. A steady climb (rather than a bounded, roughly-flat count tracking rsi_parallel_envs) is the signature a prior live incident had: a busy-wait bug left dozens of goroutines stuck runnable, visible here before it was diagnosed via a SIGQUIT stack dump.",
+      "id": 43,
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 81 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [{ "expr": "go_goroutines{job=\"rsi-train\"}", "refId": "A", "legendFormat": "goroutines" }],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
     }
   ],
   "templating": {
