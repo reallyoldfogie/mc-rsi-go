@@ -2,8 +2,10 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"math/rand/v2"
+	"strings"
 
 	"github.com/reallyoldfogie/cRL-go/pkg/actorcritic"
 	"github.com/reallyoldfogie/cRL-go/pkg/mat"
@@ -28,10 +30,11 @@ const deadEpochsBeforeAbort = 3
 // networkHealth summarises whether a policy network still depends on its
 // input, measured on a fixed set of probe observations.
 type networkHealth struct {
-	// Layer1Active and Layer2Active are the fractions of first- and
-	// second-layer ReLU units that fire (pre-activation > 0) for at least one
-	// probe. A dead unit passes no gradient, so it can never recover.
-	Layer1Active, Layer2Active float64
+	// LayerActive is, for each hidden layer in order (index 0 is the layer
+	// closest to the input), the fraction of its ReLU units that fire
+	// (pre-activation > 0) for at least one probe. A dead unit passes no
+	// gradient, so it can never recover.
+	LayerActive []float64
 	// LogitStd is the mean, over the policy's outputs, of the standard
 	// deviation of that logit across the probes. 0 means the policy is the
 	// same in every state.
@@ -44,36 +47,55 @@ type networkHealth struct {
 	// effectively deterministic for every probe - the softmax-saturation
 	// concern entropy_coef is meant to counteract.
 	PolicyEntropy float64
-	// Layer1Correlation and Layer2Correlation are the mean absolute Pearson
-	// correlation, over every pair of that layer's units, of their
-	// activations across the probes (dead or constant units, whose std is
-	// ~0, are excluded - their correlation with anything is undefined, not
-	// informative). This is a capacity-direction proxy, not a dead-unit
-	// check (Layer*Active already covers that): HIGH correlation means many
-	// units are behaving near-identically - redundant, so the layer has
-	// unused headroom already and growing hidden_size would likely just add
-	// more redundant capacity. LOW correlation means units are already
-	// doing mutually distinct work - no redundancy to reclaim, which is the
-	// more capacity-constrained-looking signature. See
+	// LayerCorrelation is, for each hidden layer (index-aligned with
+	// LayerActive), the mean absolute Pearson correlation, over every pair
+	// of that layer's units, of their activations across the probes (dead
+	// or constant units, whose std is ~0, are excluded - their correlation
+	// with anything is undefined, not informative). This is a
+	// capacity-direction proxy, not a dead-unit check (LayerActive already
+	// covers that): HIGH correlation means many units are behaving
+	// near-identically - redundant, so the layer has unused headroom
+	// already and growing hidden_size would likely just add more redundant
+	// capacity. LOW correlation means units are already doing mutually
+	// distinct work - no redundancy to reclaim, which is the more
+	// capacity-constrained-looking signature. See
 	// docs/plans/12-multi-step-crafting-curriculum.md's "Diagnosing a
 	// training plateau" section for how to read this alongside the other
 	// signals.
-	Layer1Correlation, Layer2Correlation float64
+	LayerCorrelation []float64
 }
 
 // Thresholds for dead. A freshly initialised network has ~99-100% of its
-// second layer active and a logit std around 0.2; the dead network that
-// motivated this check measured 0.8% (one unit) and 0.002. The cutoffs sit an
-// order of magnitude on the dead side of a healthy network.
+// last hidden layer active and a logit std around 0.2; the dead network that
+// motivated this check measured 0.8% (one unit) and 0.002, in what was then
+// (before docs/plans/20 Part A) always exactly the second and last hidden
+// layer. The cutoffs sit an order of magnitude on the dead side of a healthy
+// network.
 const (
-	deadLayer2Active = 0.05
-	deadLogitStd     = 0.02
+	deadLastLayerActive = 0.05
+	deadLogitStd        = 0.02
 )
 
 // dead reports whether the network is beyond learning: almost nothing in its
-// second layer fires, or its output barely varies with its input.
+// last hidden layer (the one feeding the policy/value heads directly) fires,
+// or its output barely varies with its input. Checking the *last* layer
+// specifically, regardless of how many hidden layers the network has,
+// matches the original incident this check was built for: a dead last layer
+// means the heads only ever see a constant input, so the policy is a
+// constant no matter how healthy any earlier layer looks.
 func (h networkHealth) dead() bool {
-	return h.Layer2Active < deadLayer2Active || h.LogitStd < deadLogitStd
+	lastLayerActive := h.LayerActive[len(h.LayerActive)-1]
+	return lastLayerActive < deadLastLayerActive || h.LogitStd < deadLogitStd
+}
+
+// formatLayerActive renders LayerActive as a human-readable "layer1 83%,
+// layer2 91%" summary for log messages (see main.go).
+func formatLayerActive(layerActive []float64) string {
+	parts := make([]string, len(layerActive))
+	for i, active := range layerActive {
+		parts[i] = fmt.Sprintf("layer%d %.0f%%", i+1, active*100)
+	}
+	return strings.Join(parts, ", ")
 }
 
 const healthProbeCount = 256
@@ -103,42 +125,44 @@ func healthProbes(inputSize int) [][]float32 {
 	return probes
 }
 
-// measureNetworkHealth runs the probes through p by hand (the same two ReLU
-// layers and linear policy head actorcritic builds) and reports how much of
-// the network responds.
+// measureNetworkHealth runs the probes through p by hand (the same ReLU
+// trunk and linear policy head actorcritic builds, generalized to however
+// many hidden layers p actually has - see docs/plans/20 Part A) and reports
+// how much of the network responds.
 func measureNetworkHealth(p *actorcritic.Params) networkHealth {
 	probes := healthProbes(p.InputSize())
-	active1 := make([]bool, p.W0.Rows)
-	active2 := make([]bool, p.W1.Rows)
+	numLayers := p.NumHiddenLayers()
+
+	active := make([][]bool, numLayers)
+	// acts is layer-major then unit-major (one []float64 per unit, one
+	// entry per probe) so meanAbsCorrelation can compute each unit's own
+	// mean/std once and every pairwise correlation without re-scanning the
+	// probes.
+	acts := make([][][]float64, numLayers)
+	for l := range numLayers {
+		width := p.Hidden[l].W.Rows
+		active[l] = make([]bool, width)
+		acts[l] = make([][]float64, width)
+		for u := range acts[l] {
+			acts[l][u] = make([]float64, 0, len(probes))
+		}
+	}
+
 	logits := make([][]float64, p.Wpi.Rows)
-	// acts1/acts2 are unit-major (one []float64 per unit, one entry per
-	// probe) so unitCorrelation can compute each unit's own mean/std once
-	// and every pairwise correlation without re-scanning the probes.
-	acts1 := make([][]float64, p.W0.Rows)
-	acts2 := make([][]float64, p.W1.Rows)
-	for i := range acts1 {
-		acts1[i] = make([]float64, 0, len(probes))
-	}
-	for i := range acts2 {
-		acts2[i] = make([]float64, 0, len(probes))
-	}
 	var entropySum float64
 	for _, x := range probes {
-		h1 := relu(affine(p.W0, p.B0, x))
-		for j, v := range h1 {
-			if v > 0 {
-				active1[j] = true
+		a := x
+		for l := range numLayers {
+			a = relu(affine(p.Hidden[l].W, p.Hidden[l].B, a))
+			for u, v := range a {
+				if v > 0 {
+					active[l][u] = true
+				}
+				acts[l][u] = append(acts[l][u], float64(v))
 			}
-			acts1[j] = append(acts1[j], float64(v))
 		}
-		h2 := relu(affine(p.W1, p.B1, h1))
-		for j, v := range h2 {
-			if v > 0 {
-				active2[j] = true
-			}
-			acts2[j] = append(acts2[j], float64(v))
-		}
-		out := affine(p.Wpi, p.Bpi, h2)
+
+		out := affine(p.Wpi, p.Bpi, a)
 		for k, v := range out {
 			logits[k] = append(logits[k], float64(v))
 		}
@@ -150,13 +174,19 @@ func measureNetworkHealth(p *actorcritic.Params) networkHealth {
 		_, std := meanStdOf(l)
 		stdSum += std
 	}
+
+	layerActive := make([]float64, numLayers)
+	layerCorrelation := make([]float64, numLayers)
+	for l := range numLayers {
+		layerActive[l] = fractionTrue(active[l])
+		layerCorrelation[l] = meanAbsCorrelation(acts[l])
+	}
+
 	return networkHealth{
-		Layer1Active:      fractionTrue(active1),
-		Layer2Active:      fractionTrue(active2),
-		LogitStd:          stdSum / float64(len(logits)),
-		PolicyEntropy:     entropySum / float64(len(probes)),
-		Layer1Correlation: meanAbsCorrelation(acts1),
-		Layer2Correlation: meanAbsCorrelation(acts2),
+		LayerActive:      layerActive,
+		LogitStd:         stdSum / float64(len(logits)),
+		PolicyEntropy:    entropySum / float64(len(probes)),
+		LayerCorrelation: layerCorrelation,
 	}
 }
 

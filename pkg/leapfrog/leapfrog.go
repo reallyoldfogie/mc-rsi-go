@@ -23,6 +23,15 @@
 // generation, keeping this package free of filesystem concerns exactly
 // like pkg/lineage stays free of "when to create a generation"
 // decisions.
+//
+// Round is generic over the params type (RecurrentOrNot: either
+// *actorcritic.Params or *actorcritic.RecurrentParams) rather than
+// duplicated into two near-identical copies — the only two things that
+// actually differ between a plain and a recurrent round (which trainer
+// constructor to call, and how to build a decision-making actor from
+// params) are isolated into a Seams[P] value (PlainSeams/RecurrentSeams
+// below); everything else here (training loop, evaluation, win
+// decision, summary statistics) is one implementation shared by both.
 package leapfrog
 
 import (
@@ -36,8 +45,110 @@ import (
 	"github.com/reallyoldfogie/cRL-go/pkg/actorcritic"
 	"github.com/reallyoldfogie/cRL-go/pkg/config"
 	"github.com/reallyoldfogie/cRL-go/pkg/ppo"
+	"github.com/reallyoldfogie/cRL-go/pkg/reinforce"
 	"github.com/reallyoldfogie/cRL-go/pkg/rl"
 )
+
+// RecurrentOrNot constrains P to exactly the two params shapes this
+// package trains — a closed union (not an open method-set interface)
+// specifically so ordinary nil comparisons (teacherParams == nil) are
+// valid inside Round: Go only permits comparing a type-parameter value
+// to nil when the constraint provably makes every possible
+// instantiation nilable, which an open interface constraint can't
+// guarantee (nothing stops some future type from satisfying it via a
+// non-pointer value receiver).
+type RecurrentOrNot interface {
+	*actorcritic.Params | *actorcritic.RecurrentParams
+}
+
+// EpochTrainer is the subset of ppo.Trainer/ppo.RecurrentTrainer's own
+// methods Round actually needs — both types already satisfy this
+// exactly as written, with zero cRL-go-side awareness of this package.
+type EpochTrainer[P RecurrentOrNot] interface {
+	RunEpoch(ctx context.Context, epoch int) (ppo.EpochStats, error)
+	Params() P
+}
+
+// DecisionActor is the subset of actorcritic.Actor/RecurrentActor's own
+// methods evaluateEpisode needs. Reset is a no-op for the non-recurrent
+// Actor (see its own doc comment) and a real state-clearing step for
+// RecurrentActor — evaluateEpisode calls it once per episode either way,
+// since zeroing carried (h, c) at episode start is a correctness
+// requirement for the recurrent case and harmless for the plain one.
+type DecisionActor interface {
+	ActWithInfo(obs rl.Observation, mask []bool, rng *rand.Rand) (rl.Decision, error)
+	Reset()
+}
+
+// Seams bundles the things that differ between training a plain
+// *actorcritic.Params round and a recurrent *actorcritic.RecurrentParams
+// one: how to snapshot params into a fresh Student clone, which trainer
+// constructor to call, and how to build a DecisionActor from params for
+// evaluation. Everything else in this package (the training loop,
+// evaluation, win decision, summary statistics) is identical for both
+// and takes no seam.
+//
+// Snapshot exists as a seam function, rather than Round calling
+// teacherParams.Snapshot() directly, because RecurrentOrNot is a plain
+// type union with no declared methods (deliberately — see its own doc
+// comment on why it stays that way for the nil-comparison it needs) and
+// Go only allows calling a method on a type-parameter value when the
+// constraint interface declares that method; *actorcritic.Params.Snapshot
+// and *actorcritic.RecurrentParams.Snapshot have different concrete
+// return types, so there's no single non-generic method signature
+// RecurrentOrNot could declare to cover both.
+type Seams[P RecurrentOrNot] struct {
+	// Snapshot returns an independent copy of params, matching
+	// *actorcritic.Params.Snapshot/*actorcritic.RecurrentParams.Snapshot's
+	// own "the source is never mutated" contract.
+	Snapshot func(params P) P
+
+	// NewTrainer constructs the EpochTrainer Round trains studentParams
+	// with, choosing the persistent single-env or pooled-env constructor
+	// the same way trainStudent always has (see its own doc comment).
+	NewTrainer func(settings config.Settings, envs []rl.Environment, studentParams P) (EpochTrainer[P], error)
+
+	// NewActor builds a DecisionActor for evaluating params.
+	NewActor func(params P) (DecisionActor, error)
+}
+
+// PlainSeams trains and evaluates ordinary, non-recurrent
+// *actorcritic.Params.
+var PlainSeams = Seams[*actorcritic.Params]{
+	Snapshot: func(params *actorcritic.Params) *actorcritic.Params {
+		return params.Snapshot()
+	},
+	NewTrainer: func(settings config.Settings, envs []rl.Environment, studentParams *actorcritic.Params) (EpochTrainer[*actorcritic.Params], error) {
+		if len(envs) == 1 {
+			env := envs[0]
+			persistentFactory := func(*rand.Rand) (rl.Environment, error) { return env, nil }
+			return ppo.NewWithPersistentEnv(settings, persistentFactory, studentParams)
+		}
+		return ppo.NewWithPersistentEnvPool(settings, envs, studentParams)
+	},
+	NewActor: func(params *actorcritic.Params) (DecisionActor, error) {
+		return actorcritic.NewActor(params)
+	},
+}
+
+// RecurrentSeams trains and evaluates *actorcritic.RecurrentParams, via
+// cRL-go's LSTM step-memory trainer/actor pair.
+var RecurrentSeams = Seams[*actorcritic.RecurrentParams]{
+	Snapshot: func(params *actorcritic.RecurrentParams) *actorcritic.RecurrentParams {
+		return params.Snapshot()
+	},
+	NewTrainer: func(settings config.Settings, envs []rl.Environment, studentParams *actorcritic.RecurrentParams) (EpochTrainer[*actorcritic.RecurrentParams], error) {
+		if len(envs) == 1 {
+			env := envs[0]
+			persistentFactory := func(*rand.Rand) (rl.Environment, error) { return env, nil }
+			return ppo.NewRecurrentWithPersistentEnv(settings, reinforce.PersistentEnvFactory(persistentFactory), studentParams)
+		}
+		return ppo.NewRecurrentWithPersistentEnvPool(settings, envs, studentParams)
+	},
+	NewActor: func(params *actorcritic.RecurrentParams) (DecisionActor, error) {
+		return actorcritic.NewRecurrentActor(params)
+	},
+}
 
 // Config configures one leapfrog round. This is narrower than the
 // Config sketched in docs/plans/03's own pseudocode: that sketch's
@@ -46,7 +157,7 @@ import (
 // caller (docs/plans/04) already has its own -environment-id flag value
 // for the lineage.Record it builds from Round's Result, and round-tripping
 // the same string through Config/Result would be dead weight.
-type Config struct {
+type Config[P RecurrentOrNot] struct {
 	// Trainer holds the PPO hyperparameters used to keep training the
 	// Student. Trainer.Epochs is ignored: EpochsPerGeneration below
 	// controls how many epochs one round trains for, since a leapfrog
@@ -117,7 +228,7 @@ type Config struct {
 	// potentially-long Student-training phase, not only at Round's very
 	// end. nil (the default) costs nothing extra — Round behaves exactly
 	// as it did before this field existed.
-	OnEpoch func(stats ppo.EpochStats, params *actorcritic.Params)
+	OnEpoch func(stats ppo.EpochStats, params P)
 
 	// OnBeforeEvaluation, if set, is called exactly twice per Round:
 	// once with EvalTeacher immediately before Teacher's evaluation
@@ -163,7 +274,7 @@ type Config struct {
 	// them after the first call, or every later round would incorrectly
 	// resume the same stale checkpoint instead of cloning from that
 	// round's own (possibly different, if an earlier round won) teacher.
-	ResumeStudent           *actorcritic.Params
+	ResumeStudent           P
 	ResumeStudentStartEpoch int
 }
 
@@ -181,7 +292,7 @@ const (
 // ppo.NewWithPersistentEnv's own settings.Validate() call, so a
 // Trainer-shaped error and a leapfrog-shaped error read distinctly to a
 // caller instead of being merged into one.
-func (cfg Config) Validate() error {
+func (cfg Config[P]) Validate() error {
 	if cfg.EpochsPerGeneration <= 0 {
 		return fmt.Errorf("leapfrog: epochs per generation must be positive, got %d", cfg.EpochsPerGeneration)
 	}
@@ -201,7 +312,7 @@ func (cfg Config) Validate() error {
 }
 
 // Result is the outcome of one leapfrog round.
-type Result struct {
+type Result[P RecurrentOrNot] struct {
 	// StudentWon is true if the Student's mean evaluation reward
 	// strictly exceeded the Teacher's (see docs/plans/03's "Win
 	// condition" — no tie-breaking margin).
@@ -225,56 +336,59 @@ type Result struct {
 	// StudentWon is true — a losing Student's params are discarded
 	// rather than handed back, matching pkg/lineage's own convention of
 	// never recording a generation that didn't win.
-	StudentParams *actorcritic.Params
+	StudentParams P
 }
 
 // Round runs one leapfrog round against envs: clones teacherParams into
-// a Student (actorcritic.Params.Snapshot — teacherParams itself is
-// never mutated), continues training the clone for
-// cfg.EpochsPerGeneration PPO epochs against envs (concurrently across
-// all of them if len(envs) > 1 — see trainStudent), then evaluates both
-// Teacher and Student — Teacher first, Student second, both against
-// fresh envs[0].Reset episodes — over cfg.EvalEpisodes episodes each.
-// Evaluation deliberately stays sequential against envs[0] only even
-// when len(envs) > 1: cfg.EvalEpisodes is small relative to training
-// rollout volume (see docs/plans/08-parallel-environments-and-scaling.md's
-// own numbers), so parallelizing it isn't worth the added complexity
-// this round.
+// a Student (Snapshot — teacherParams itself is never mutated), continues
+// training the clone for cfg.EpochsPerGeneration PPO epochs against envs
+// (concurrently across all of them if len(envs) > 1 — see trainStudent),
+// then evaluates both Teacher and Student — Teacher first, Student
+// second, both against fresh envs[0].Reset episodes — over
+// cfg.EvalEpisodes episodes each. Evaluation deliberately stays
+// sequential against envs[0] only even when len(envs) > 1:
+// cfg.EvalEpisodes is small relative to training rollout volume (see
+// docs/plans/08-parallel-environments-and-scaling.md's own numbers), so
+// parallelizing it isn't worth the added complexity this round.
 //
-// Evaluation samples each step's action from the policy (Actor.ActWithInfo),
-// the same stochastic policy training optimizes, unless cfg.EvalGreedy asks
-// for the highest-probability action instead (see that field for why
-// sampling is the default).
-func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcritic.Params, cfg Config, rng *rand.Rand) (Result, error) {
+// Evaluation samples each step's action from the policy
+// (DecisionActor.ActWithInfo), the same stochastic policy training
+// optimizes, unless cfg.EvalGreedy asks for the highest-probability
+// action instead (see that field for why sampling is the default).
+//
+// seams selects which concrete params type P this call trains and
+// evaluates — pass PlainSeams for *actorcritic.Params or RecurrentSeams
+// for *actorcritic.RecurrentParams; see Seams's own doc comment.
+func Round[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, teacherParams P, cfg Config[P], seams Seams[P], rng *rand.Rand) (Result[P], error) {
 	if len(envs) == 0 {
-		return Result{}, fmt.Errorf("leapfrog: at least one environment is required")
+		return Result[P]{}, fmt.Errorf("leapfrog: at least one environment is required")
 	}
 	if teacherParams == nil {
-		return Result{}, fmt.Errorf("leapfrog: teacher params must not be nil")
+		return Result[P]{}, fmt.Errorf("leapfrog: teacher params must not be nil")
 	}
 	if err := cfg.Validate(); err != nil {
-		return Result{}, err
+		return Result[P]{}, err
 	}
 
-	studentParams, err := trainStudent(ctx, envs, teacherParams, cfg)
+	studentParams, err := trainStudent(ctx, envs, teacherParams, cfg, seams)
 	if err != nil {
-		return Result{}, fmt.Errorf("leapfrog: training student: %w", err)
+		return Result[P]{}, fmt.Errorf("leapfrog: training student: %w", err)
 	}
 
 	if cfg.OnBeforeEvaluation != nil {
 		cfg.OnBeforeEvaluation(EvalTeacher)
 	}
-	teacherScores, err := evaluateAll(ctx, envs, teacherParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, cfg.EvalGreedy, rng)
+	teacherScores, err := evaluateAll(ctx, envs, teacherParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, cfg.EvalGreedy, seams, rng)
 	if err != nil {
-		return Result{}, fmt.Errorf("leapfrog: evaluating teacher: %w", err)
+		return Result[P]{}, fmt.Errorf("leapfrog: evaluating teacher: %w", err)
 	}
 
 	if cfg.OnBeforeEvaluation != nil {
 		cfg.OnBeforeEvaluation(EvalStudent)
 	}
-	studentScores, err := evaluateAll(ctx, envs, studentParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, cfg.EvalGreedy, rng)
+	studentScores, err := evaluateAll(ctx, envs, studentParams, cfg.EvalEpisodes, cfg.EvalEpisodeLen, cfg.EvalGreedy, seams, rng)
 	if err != nil {
-		return Result{}, fmt.Errorf("leapfrog: evaluating student: %w", err)
+		return Result[P]{}, fmt.Errorf("leapfrog: evaluating student: %w", err)
 	}
 
 	return summarizeRound(teacherScores, studentScores, studentParams, cfg), nil
@@ -283,43 +397,34 @@ func Round(ctx context.Context, envs []rl.Environment, teacherParams *actorcriti
 // trainStudent clones teacherParams and trains the clone for
 // cfg.EpochsPerGeneration PPO epochs against envs. A single environment
 // (len(envs) == 1) is driven exactly as before this package supported
-// more than one — ppo.NewWithPersistentEnv, sequential rollout
+// more than one — a persistent-env trainer, sequential rollout
 // collection — so single-environment callers see zero behavioral
 // change. Multiple environments (len(envs) > 1) are driven concurrently
-// via ppo.NewWithPersistentEnvPool, one real bot session per goroutine
-// for the pool's entire lifetime (see that constructor's own doc
-// comment for why concurrency is bounded to len(envs) rather than
+// via a pooled-env trainer, one real bot session per goroutine for the
+// pool's entire lifetime (see seams.NewTrainer's underlying constructor
+// for why concurrency is bounded to len(envs) rather than
 // cfg.Trainer.Workers). Either way, every env is reused as a persistent
 // environment (Reset between episodes, never rebuilt), matching
 // rlenv.Environment's own "long-lived" contract — a live bot session is
 // far too expensive to reconnect per episode.
-func trainStudent(ctx context.Context, envs []rl.Environment, teacherParams *actorcritic.Params, cfg Config) (*actorcritic.Params, error) {
-	studentParams := teacherParams.Snapshot()
+func trainStudent[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, teacherParams P, cfg Config[P], seams Seams[P]) (P, error) {
+	var zero P
+	studentParams := seams.Snapshot(teacherParams)
 	startEpoch := 0
 	if cfg.ResumeStudent != nil {
 		studentParams = cfg.ResumeStudent
 		startEpoch = cfg.ResumeStudentStartEpoch
 	}
 
-	var trainer *ppo.Trainer
-	var err error
-	if len(envs) == 1 {
-		env := envs[0]
-		persistentFactory := func(*rand.Rand) (rl.Environment, error) {
-			return env, nil
-		}
-		trainer, err = ppo.NewWithPersistentEnv(cfg.Trainer, persistentFactory, studentParams)
-	} else {
-		trainer, err = ppo.NewWithPersistentEnvPool(cfg.Trainer, envs, studentParams)
-	}
+	trainer, err := seams.NewTrainer(cfg.Trainer, envs, studentParams)
 	if err != nil {
-		return nil, fmt.Errorf("constructing trainer: %w", err)
+		return zero, fmt.Errorf("constructing trainer: %w", err)
 	}
 
 	for epoch := startEpoch; epoch < cfg.EpochsPerGeneration; epoch++ {
 		stats, err := trainer.RunEpoch(ctx, epoch)
 		if err != nil {
-			return nil, fmt.Errorf("epoch %d: %w", epoch, err)
+			return zero, fmt.Errorf("epoch %d: %w", epoch, err)
 		}
 		if cfg.OnEpoch != nil {
 			cfg.OnEpoch(stats, trainer.Params())
@@ -332,8 +437,8 @@ func trainStudent(ctx context.Context, envs []rl.Environment, teacherParams *act
 // evaluate runs episodes episodes of at most episodeLen steps each
 // against env using params, greedily (see Round's doc comment), and
 // returns each episode's total reward in order.
-func evaluate(ctx context.Context, env rl.Environment, params *actorcritic.Params, episodes, episodeLen int, greedy bool, rng *rand.Rand) ([]float32, error) {
-	actor, err := actorcritic.NewActor(params)
+func evaluate[P RecurrentOrNot](ctx context.Context, env rl.Environment, params P, episodes, episodeLen int, greedy bool, seams Seams[P], rng *rand.Rand) ([]float32, error) {
+	actor, err := seams.NewActor(params)
 	if err != nil {
 		return nil, fmt.Errorf("building actor: %w", err)
 	}
@@ -353,14 +458,14 @@ func evaluate(ctx context.Context, env rl.Environment, params *actorcritic.Param
 // own goroutine and its own rng, so nothing is shared but the read-only
 // params) and returns each environment's per-episode rewards, indexed by
 // environment. A single environment runs inline, exactly as before.
-func evaluateAll(ctx context.Context, envs []rl.Environment, params *actorcritic.Params, episodes, episodeLen int, greedy bool, rng *rand.Rand) ([][]float32, error) {
+func evaluateAll[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, params P, episodes, episodeLen int, greedy bool, seams Seams[P], rng *rand.Rand) ([][]float32, error) {
 	rngs := make([]*rand.Rand, len(envs))
 	for i := range envs {
 		rngs[i] = rand.New(rand.NewPCG(rng.Uint64(), uint64(i)))
 	}
 	scores := make([][]float32, len(envs))
 	if len(envs) == 1 {
-		s, err := evaluate(ctx, envs[0], params, episodes, episodeLen, greedy, rngs[0])
+		s, err := evaluate(ctx, envs[0], params, episodes, episodeLen, greedy, seams, rngs[0])
 		if err != nil {
 			return nil, err
 		}
@@ -376,7 +481,7 @@ func evaluateAll(ctx context.Context, envs []rl.Environment, params *actorcritic
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			scores[i], errs[i] = evaluate(ctx, envs[i], params, episodes, episodeLen, greedy, rngs[i])
+			scores[i], errs[i] = evaluate(ctx, envs[i], params, episodes, episodeLen, greedy, seams, rngs[i])
 			if errs[i] != nil {
 				cancel()
 			}
@@ -402,7 +507,7 @@ func evaluateAll(ctx context.Context, envs []rl.Environment, params *actorcritic
 // the win decision (decideWinner's strict rule, then Config.MinWinMargin
 // and Config.WinZScore if set). Episode j on environment i is treated as
 // the same task for both sides.
-func summarizeRound(teacher, student [][]float32, studentParams *actorcritic.Params, cfg Config) Result {
+func summarizeRound[P RecurrentOrNot](teacher, student [][]float32, studentParams P, cfg Config[P]) Result[P] {
 	var t, s, diffs []float64
 	for i := range teacher {
 		for j := range teacher[i] {
@@ -429,7 +534,8 @@ func summarizeRound(teacher, student [][]float32, studentParams *actorcritic.Par
 		beatsNoise := cfg.WinZScore <= 0 || meanD > float64(cfg.WinZScore)*se
 		if !beatsMargin || !beatsNoise {
 			result.StudentWon = false
-			result.StudentParams = nil
+			var zero P
+			result.StudentParams = zero
 		}
 	}
 	return result
@@ -459,8 +565,12 @@ func meanStd(xs []float64) (mean, std float64) {
 // reward, mirroring cRL-go/pkg/reinforce's own collectTrajectoryFromEnv
 // mask-lookup pattern (a type assertion to rl.ActionMasker, nil mask if
 // env doesn't implement it) so this package behaves identically to
-// training rollouts with respect to action masking.
-func evaluateEpisode(ctx context.Context, env rl.Environment, actor *actorcritic.Actor, episodeLen int, greedy bool, rng *rand.Rand) (float32, error) {
+// training rollouts with respect to action masking. actor is already a
+// concrete DecisionActor by the time this is called, so this needs no
+// type parameter of its own — Reset is called once at episode start (see
+// DecisionActor's own doc comment for why).
+func evaluateEpisode(ctx context.Context, env rl.Environment, actor DecisionActor, episodeLen int, greedy bool, rng *rand.Rand) (float32, error) {
+	actor.Reset()
 	observation, err := env.Reset(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("resetting environment: %w", err)
@@ -518,8 +628,8 @@ func greedyAction(probs []float32) rl.Action {
 // greater than teacherReward, no tie-breaking margin — see
 // docs/plans/03's "Win condition") and omits studentParams from the
 // returned Result when the Student didn't win.
-func decideWinner(teacherReward, studentReward float32, studentParams *actorcritic.Params) Result {
-	result := Result{TeacherReward: teacherReward, StudentReward: studentReward}
+func decideWinner[P RecurrentOrNot](teacherReward, studentReward float32, studentParams P) Result[P] {
+	result := Result[P]{TeacherReward: teacherReward, StudentReward: studentReward}
 	if studentReward > teacherReward {
 		result.StudentWon = true
 		result.StudentParams = studentParams

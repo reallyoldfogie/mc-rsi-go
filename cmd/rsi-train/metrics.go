@@ -18,6 +18,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/pprof"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -28,6 +30,33 @@ import (
 	"github.com/reallyoldfogie/mc-agent/rlenv"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 )
+
+// evaluationInProgress is true from the first OnBeforeEvaluation call of a
+// round (see markEvaluationInProgress) until that round's leapfrog.Round
+// call returns. instrumentedEnvironment.Reset fires for every episode on
+// the shared connected environments regardless of whether leapfrog.Round is
+// currently training or evaluating, but rsi_epoch_trajectories_started is
+// specifically meant to track training rollout collection toward
+// rsi_epoch_rollout_size — without this gate, each round's Teacher+Student
+// evaluation episodes (EvalEpisodes * len(envs) each, entirely unrelated to
+// RolloutSize) also incremented it after the last training epoch's own
+// reset, pushing the "epoch progress" bar past 100% during evaluation.
+// Found live 2026-10-03: a round ending showed the round-progress bar at
+// 100% and the epoch-progress bar at 147%.
+var evaluationInProgress atomic.Bool
+
+// markEvaluationInProgress wraps a leapfrog.Config.OnBeforeEvaluation
+// callback to set evaluationInProgress before running it. The caller is
+// responsible for clearing the flag once leapfrog.Round returns (it has no
+// "evaluation ended" hook of its own to clear it from inside).
+func markEvaluationInProgress(onBeforeEvaluation func(leapfrog.EvalSide)) func(leapfrog.EvalSide) {
+	return func(side leapfrog.EvalSide) {
+		evaluationInProgress.Store(true)
+		if onBeforeEvaluation != nil {
+			onBeforeEvaluation(side)
+		}
+	}
+}
 
 var (
 	metricNetworkActiveUnits = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -68,6 +97,21 @@ var (
 	metricCurrentEpoch = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "rsi_current_epoch",
 		Help: "The Student-training epoch currently in progress within rsi_current_round (0-indexed). Reset to -1 at the start of each round, before its first epoch completes.",
+	})
+
+	metricEpochRolloutSize = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_rollout_size",
+		Help: "Target trajectory count for the epoch currently in progress (cRL-go's config.Settings.RolloutSize) - the denominator for rsi_epoch_trajectories_started / rsi_epoch_rollout_size as an in-progress-epoch completion percentage. Set once at startup; doesn't change mid-run.",
+	})
+
+	metricEpochsPerGeneration = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epochs_per_generation",
+		Help: "How many Student-training epochs make up one round (-epochs-per-generation) - the denominator for (rsi_current_epoch + 1) / rsi_epochs_per_generation as a round-progress percentage (how far through its epoch budget the current round is, distinct from rsi_epoch_rollout_size's within-epoch progress). Set once at startup; doesn't change mid-run.",
+	})
+
+	metricEpochTrajectoriesStarted = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_trajectories_started",
+		Help: "Trajectories (episodes) started so far toward the current epoch's rsi_epoch_rollout_size target. Reset to 0 whenever rsi_current_epoch advances to a new epoch - there is no mid-epoch callback in cRL-go to hook directly, so this is inferred from instrumentedEnvironment.Reset, which already fires once per trajectory in real time regardless of which cRL-go collection function is driving it.",
 	})
 
 	metricParallelEnvs = promauto.NewGauge(prometheus.GaugeOpts{
@@ -194,6 +238,19 @@ var (
 		Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30},
 	}, []string{"task"})
 
+	// Buckets are Fibonacci-ish rather than evenly spaced: most episodes
+	// (see docs/plans/13's step-budget investigation) finish in the
+	// single-to-low-double digits even for the longest chain tasks, so
+	// resolution matters most there, with just enough buckets near the
+	// active step caps (100 for a training episode, 200 for an evaluation
+	// one - see the phase label below) to see how much truncated mass piles
+	// up at each.
+	metricEpisodeLengthSteps = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "rsi_episode_length_steps",
+		Help:    "How many environment steps an episode actually ran before ending, by task, outcome, and phase (\"training\" | \"eval\" - a training episode's step cap is 100, an evaluation one's is 200, so mixing them without this label made a success/truncated episode well past 100 look impossible when it's actually just from evaluation; see -eval-episode-len). truncated episodes land at (or just under) the active step cap almost by definition - what this metric actually reveals is where success/failure episodes fall relative to that cap: a tail hugging the cap means some near-misses might finish with a slightly larger budget; a tail that's short, with truncation making up the rest, means the episodes that don't finish are stuck early rather than merely short on room. See docs/plans/13's step-budget investigation.",
+		Buckets: []float64{1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 100, 130, 160, 200},
+	}, []string{"task", "outcome", "phase"})
+
 	// metricTaskEpisodesTotal is only ever incremented when -curriculum-config
 	// is set (see recordTaskSelection) — without a curriculum, rsi-train has
 	// no hook into per-episode task selection at all (Reset is called deep
@@ -206,14 +263,18 @@ var (
 	}, []string{"task"}) // "goto" | "mine" | "craft" | "mine_far" | "craft_far" | "chain_gather" | "chain_table" | "chain_place" | "chain_use"
 )
 
-// recordNetworkHealth publishes h.
+// recordNetworkHealth publishes h. Labels its per-layer gauges "1", "2", ...
+// in trunk order (see networkHealth.LayerActive), whatever the network's
+// actual depth happens to be.
 func recordNetworkHealth(h networkHealth) {
-	metricNetworkActiveUnits.WithLabelValues("1").Set(h.Layer1Active)
-	metricNetworkActiveUnits.WithLabelValues("2").Set(h.Layer2Active)
+	for i, active := range h.LayerActive {
+		metricNetworkActiveUnits.WithLabelValues(strconv.Itoa(i + 1)).Set(active)
+	}
 	metricPolicyLogitStd.Set(h.LogitStd)
 	metricPolicyEntropy.Set(h.PolicyEntropy)
-	metricNetworkUnitCorrelation.WithLabelValues("1").Set(h.Layer1Correlation)
-	metricNetworkUnitCorrelation.WithLabelValues("2").Set(h.Layer2Correlation)
+	for i, corr := range h.LayerCorrelation {
+		metricNetworkUnitCorrelation.WithLabelValues(strconv.Itoa(i + 1)).Set(corr)
+	}
 }
 
 // recordRoundEvaluation publishes a completed round's evaluation statistics
@@ -221,7 +282,7 @@ func recordNetworkHealth(h networkHealth) {
 // episodes each was evaluated on, and the paired difference with its
 // standard error and z-score - the numbers the promotion decision actually
 // rests on, so a dashboard can show whether a win was signal or noise.
-func recordRoundEvaluation(result leapfrog.Result) {
+func recordRoundEvaluation[P leapfrog.RecurrentOrNot](result leapfrog.Result[P]) {
 	metricTeacherReward.Set(float64(result.TeacherReward))
 	metricStudentReward.Set(float64(result.StudentReward))
 	metricEvalEpisodes.Set(float64(result.EvalEpisodes))
@@ -273,6 +334,7 @@ type instrumentedEnvironment struct {
 	task           string
 	taskForEpisode func() string
 	started        bool
+	steps          int // steps taken so far in the in-progress episode; see metricEpisodeLengthSteps
 }
 
 func (e *instrumentedEnvironment) currentTask() string {
@@ -310,10 +372,26 @@ func (e *instrumentedEnvironment) ActionMask() []bool {
 // happened to be unreachable this time.
 const resetRetries = 5
 
+// episodeLengthPhase is metricEpisodeLengthSteps' third label: whether the
+// episode just recorded was part of training rollout collection or one of a
+// round's Teacher/Student evaluation episodes, reusing evaluationInProgress
+// (the same flag that gates rsi_epoch_trajectories_started). Training's
+// step cap is 100, evaluation's is -eval-episode-len (default 200) - without
+// this, a success/truncated episode past 100 looked impossible when it was
+// actually just from evaluation.
+func episodeLengthPhase() string {
+	if evaluationInProgress.Load() {
+		return "eval"
+	}
+	return "training"
+}
+
 func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, error) {
 	task := e.currentTask()
 	if e.started {
 		metricEpisodesTotal.WithLabelValues(task, "truncated").Inc()
+		metricEpisodeLengthSteps.WithLabelValues(task, "truncated", episodeLengthPhase()).Observe(float64(e.steps))
+		e.steps = 0
 	}
 	var obs rl.Observation
 	var err error
@@ -339,6 +417,9 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 	task = e.currentTask()
 	e.started = true
 	metricEpisodesStartedTotal.WithLabelValues(task).Inc()
+	if !evaluationInProgress.Load() {
+		metricEpochTrajectoriesStarted.Inc()
+	}
 	return obs, nil
 }
 
@@ -353,13 +434,16 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 		return result, err
 	}
 	metricEpisodeStepsTotal.WithLabelValues(task).Inc()
+	e.steps++
 	if result.Done {
 		outcome := "failure"
 		if result.Reward >= episodeSuccessRewardThreshold {
 			outcome = "success"
 		}
 		metricEpisodesTotal.WithLabelValues(task, outcome).Inc()
+		metricEpisodeLengthSteps.WithLabelValues(task, outcome, episodeLengthPhase()).Observe(float64(e.steps))
 		e.started = false
+		e.steps = 0
 	}
 	return result, nil
 }

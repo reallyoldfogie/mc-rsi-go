@@ -19,7 +19,7 @@ const testEnvironmentID = "mc-agent-rlenv:actions=4:obs=17"
 func seedCheckpointDir(t *testing.T, generation int, hiddenSize int) string {
 	t.Helper()
 	dir := t.TempDir()
-	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 17, hiddenSize, 4)
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 17, hiddenSize, 4, 2)
 	require.NoError(t, lineage.Save(dir, params, lineage.Record{
 		Generation:           generation,
 		ParentGeneration:     generation - 1,
@@ -27,7 +27,7 @@ func seedCheckpointDir(t *testing.T, generation int, hiddenSize int) string {
 		SeededFromGeneration: -1,
 		EnvironmentID:        testEnvironmentID,
 		Metadata:             checkpoint.Metadata{Epoch: 12, BestReturn: 5, TotalUpdates: 300},
-	}))
+	}, lineage.PlainCodec))
 	return dir
 }
 
@@ -43,7 +43,7 @@ func TestRunWidensTheLatestGenerationIntoAFreshOutDir(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	wide, rec, err := lineage.Load(outDir, 0, testEnvironmentID)
+	wide, rec, err := lineage.Load(outDir, 0, testEnvironmentID, lineage.PlainCodec)
 	require.NoError(t, err)
 	assert.Equal(t, 10, wide.HiddenSize())
 	assert.Equal(t, 17, wide.InputSize())
@@ -59,11 +59,11 @@ func TestRunWidensTheLatestGenerationIntoAFreshOutDir(t *testing.T) {
 func TestRunRejectsAnOutDirThatAlreadyHasAGeneration(t *testing.T) {
 	dir := seedCheckpointDir(t, 3, 6)
 	outDir := t.TempDir()
-	outParams := actorcritic.NewParams(rand.New(rand.NewPCG(9, 9)), 17, 6, 4)
+	outParams := actorcritic.NewParams(rand.New(rand.NewPCG(9, 9)), 17, 6, 4, 2)
 	require.NoError(t, lineage.Save(outDir, outParams, lineage.Record{
 		Generation: 0, ParentGeneration: -1, Provenance: lineage.ProvenanceLeapfrog,
 		SeededFromGeneration: -1, EnvironmentID: testEnvironmentID,
-	}))
+	}, lineage.PlainCodec))
 
 	err := run([]string{
 		"-checkpoint-dir", dir,
@@ -106,10 +106,10 @@ func TestSameSeedReproducesTheSameWidenedNetwork(t *testing.T) {
 	out2 := filepath.Join(t.TempDir(), "b")
 	require.NoError(t, run([]string{"-checkpoint-dir", dir, "-out-dir", out2, "-new-hidden-size", "9", "-seed", "42"}))
 
-	w1, _, err := lineage.Load(out1, 0, testEnvironmentID)
+	w1, _, err := lineage.Load(out1, 0, testEnvironmentID, lineage.PlainCodec)
 	require.NoError(t, err)
-	w2, _, err := lineage.Load(out2, 0, testEnvironmentID)
+	w2, _, err := lineage.Load(out2, 0, testEnvironmentID, lineage.PlainCodec)
 	require.NoError(t, err)
-	assert.Equal(t, w1.W0.Data, w2.W0.Data)
-	assert.Equal(t, w1.W1.Data, w2.W1.Data)
+	assert.Equal(t, w1.Hidden[0].W.Data, w2.Hidden[0].W.Data)
+	assert.Equal(t, w1.Hidden[1].W.Data, w2.Hidden[1].W.Data)
 }

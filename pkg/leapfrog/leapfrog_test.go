@@ -20,7 +20,7 @@ import (
 // for why this is worth testing in isolation from a full Round.
 func TestDecideWinner(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
-	studentParams := actorcritic.NewParams(rng, 4, 4, 2)
+	studentParams := actorcritic.NewParams(rng, 4, 4, 2, 2)
 
 	tests := []struct {
 		name          string
@@ -48,16 +48,16 @@ func TestDecideWinner(t *testing.T) {
 }
 
 func TestConfigValidateRejectsNonPositiveFields(t *testing.T) {
-	base := Config{EpochsPerGeneration: 1, EvalEpisodes: 1, EvalEpisodeLen: 1}
+	base := Config[*actorcritic.Params]{EpochsPerGeneration: 1, EvalEpisodes: 1, EvalEpisodeLen: 1}
 
 	tests := []struct {
 		name string
-		cfg  Config
+		cfg  Config[*actorcritic.Params]
 	}{
-		{"zero epochs per generation", Config{EpochsPerGeneration: 0, EvalEpisodes: 1, EvalEpisodeLen: 1}},
-		{"negative epochs per generation", Config{EpochsPerGeneration: -1, EvalEpisodes: 1, EvalEpisodeLen: 1}},
-		{"zero eval episodes", Config{EpochsPerGeneration: 1, EvalEpisodes: 0, EvalEpisodeLen: 1}},
-		{"zero eval episode length", Config{EpochsPerGeneration: 1, EvalEpisodes: 1, EvalEpisodeLen: 0}},
+		{"zero epochs per generation", Config[*actorcritic.Params]{EpochsPerGeneration: 0, EvalEpisodes: 1, EvalEpisodeLen: 1}},
+		{"negative epochs per generation", Config[*actorcritic.Params]{EpochsPerGeneration: -1, EvalEpisodes: 1, EvalEpisodeLen: 1}},
+		{"zero eval episodes", Config[*actorcritic.Params]{EpochsPerGeneration: 1, EvalEpisodes: 0, EvalEpisodeLen: 1}},
+		{"zero eval episode length", Config[*actorcritic.Params]{EpochsPerGeneration: 1, EvalEpisodes: 1, EvalEpisodeLen: 0}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -70,13 +70,13 @@ func TestConfigValidateRejectsNonPositiveFields(t *testing.T) {
 
 func TestRoundRejectsNilTeacherParams(t *testing.T) {
 	env, _ := newTestGridEnv(t)
-	_, err := Round(context.Background(), []rl.Environment{env}, nil, testConfig(env), rand.New(rand.NewPCG(1, 2)))
+	_, err := Round(context.Background(), []rl.Environment{env}, nil, testConfig(env), PlainSeams, rand.New(rand.NewPCG(1, 2)))
 	assert.Error(t, err)
 }
 
 func TestRoundRejectsEmptyEnvs(t *testing.T) {
 	env, teacherParams := newTestGridEnv(t)
-	_, err := Round(context.Background(), nil, teacherParams, testConfig(env), rand.New(rand.NewPCG(1, 2)))
+	_, err := Round(context.Background(), nil, teacherParams, testConfig(env), PlainSeams, rand.New(rand.NewPCG(1, 2)))
 	assert.Error(t, err)
 }
 
@@ -93,7 +93,7 @@ func TestRoundEndToEndAgainstGridworld(t *testing.T) {
 	cfg := testConfig(env)
 	rng := rand.New(rand.NewPCG(7, 11))
 
-	result, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rng)
+	result, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, PlainSeams, rng)
 	require.NoError(t, err)
 
 	assert.False(t, isNaN32(result.TeacherReward))
@@ -106,6 +106,60 @@ func TestRoundEndToEndAgainstGridworld(t *testing.T) {
 		assert.Equal(t, teacherParams.OutputSize(), result.StudentParams.OutputSize())
 	} else {
 		assert.Nil(t, result.StudentParams)
+	}
+}
+
+// TestRoundEndToEndAgainstGridworldRecurrent mirrors
+// TestRoundEndToEndAgainstGridworld exactly, but trains and evaluates
+// *actorcritic.RecurrentParams via RecurrentSeams instead of
+// *actorcritic.Params via PlainSeams — the smoke test confirming Round's
+// generic core actually works for both type arguments, not just the one
+// every other test here exercises.
+func TestRoundEndToEndAgainstGridworldRecurrent(t *testing.T) {
+	env, teacherParams := newTestGridEnvRecurrent(t)
+	cfg := testRecurrentConfig(env)
+	rng := rand.New(rand.NewPCG(7, 11))
+
+	result, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, RecurrentSeams, rng)
+	require.NoError(t, err)
+
+	assert.False(t, isNaN32(result.TeacherReward))
+	assert.False(t, isNaN32(result.StudentReward))
+
+	if result.StudentWon {
+		require.NotNil(t, result.StudentParams, "a winning Student must return its params")
+		assert.Equal(t, teacherParams.HiddenSize(), result.StudentParams.HiddenSize())
+	} else {
+		assert.Nil(t, result.StudentParams)
+	}
+}
+
+// newTestGridEnvRecurrent mirrors newTestGridEnv, but returns a freshly
+// initialized *actorcritic.RecurrentParams instead.
+func newTestGridEnvRecurrent(t *testing.T) (*gridworldenv.Adapter, *actorcritic.RecurrentParams) {
+	t.Helper()
+
+	const gridSize = 4 // 2x2 grid: smallest valid perfect-square size.
+	rawEnv, err := gridworldenv.New(gridSize)
+	require.NoError(t, err)
+	env := gridworldenv.NewAdapter(rawEnv)
+
+	rng := rand.New(rand.NewPCG(1, 2))
+	teacherParams := actorcritic.NewRecurrentParams(rng, env.ObservationSize(), 8, env.ActionSpace(), 2)
+	return env, teacherParams
+}
+
+// testRecurrentConfig mirrors testConfig, with RecurrentChunkLen set so
+// the trainer actually trains recurrently rather than rejecting the
+// RecurrentParams/non-recurrent-settings mismatch.
+func testRecurrentConfig(env *gridworldenv.Adapter) Config[*actorcritic.RecurrentParams] {
+	cfg := testConfig(env)
+	cfg.Trainer.RecurrentChunkLen = 2
+	return Config[*actorcritic.RecurrentParams]{
+		Trainer:             cfg.Trainer,
+		EpochsPerGeneration: cfg.EpochsPerGeneration,
+		EvalEpisodes:        cfg.EvalEpisodes,
+		EvalEpisodeLen:      cfg.EvalEpisodeLen,
 	}
 }
 
@@ -126,7 +180,7 @@ func TestRoundCallsOnEpochOncePerStudentTrainingEpoch(t *testing.T) {
 		seenEpochs = append(seenEpochs, stats.Epoch)
 	}
 
-	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
+	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, PlainSeams, rand.New(rand.NewPCG(1, 2)))
 	require.NoError(t, err)
 
 	require.Equal(t, []int{0, 1, 2}, seenEpochs)
@@ -156,7 +210,7 @@ func TestRoundResumesStudentFromConfigInsteadOfCloningTeacher(t *testing.T) {
 		}
 	}
 
-	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
+	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, PlainSeams, rand.New(rand.NewPCG(1, 2)))
 	require.NoError(t, err)
 
 	assert.Equal(t, []int{19, 20}, seenEpochs, "epoch numbers must continue from ResumeStudentStartEpoch and stop at the EpochsPerGeneration total")
@@ -182,7 +236,7 @@ func TestRoundResumedPastTheEpochBudgetSkipsTrainingAndStillEvaluates(t *testing
 	var evaluatedSides []EvalSide
 	cfg.OnBeforeEvaluation = func(side EvalSide) { evaluatedSides = append(evaluatedSides, side) }
 
-	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
+	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, PlainSeams, rand.New(rand.NewPCG(1, 2)))
 	require.NoError(t, err)
 
 	assert.Empty(t, seenEpochs, "no epochs may run once the resumed epoch is past the budget")
@@ -199,7 +253,7 @@ func TestRoundEndToEndAgainstMultipleGridworlds(t *testing.T) {
 	cfg := testConfig(envs[0].(*gridworldenv.Adapter))
 	rng := rand.New(rand.NewPCG(7, 11))
 
-	result, err := Round(context.Background(), envs, teacherParams, cfg, rng)
+	result, err := Round(context.Background(), envs, teacherParams, cfg, PlainSeams, rng)
 	require.NoError(t, err)
 
 	assert.False(t, isNaN32(result.TeacherReward))
@@ -230,7 +284,7 @@ func TestRoundCallsOnBeforeEvaluationOncePerSideInOrder(t *testing.T) {
 		seenSides = append(seenSides, side)
 	}
 
-	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, rand.New(rand.NewPCG(1, 2)))
+	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, PlainSeams, rand.New(rand.NewPCG(1, 2)))
 	require.NoError(t, err)
 
 	assert.Equal(t, []EvalSide{EvalTeacher, EvalStudent}, seenSides)
@@ -249,7 +303,7 @@ func newTestGridEnv(t *testing.T) (*gridworldenv.Adapter, *actorcritic.Params) {
 	env := gridworldenv.NewAdapter(rawEnv)
 
 	rng := rand.New(rand.NewPCG(1, 2))
-	teacherParams := actorcritic.NewParams(rng, env.ObservationSize(), 8, env.ActionSpace())
+	teacherParams := actorcritic.NewParams(rng, env.ObservationSize(), 8, env.ActionSpace(), 2)
 	return env, teacherParams
 }
 
@@ -272,15 +326,15 @@ func newTestGridEnvPool(t *testing.T, n int) ([]rl.Environment, *actorcritic.Par
 	}
 
 	rng := rand.New(rand.NewPCG(1, 2))
-	teacherParams := actorcritic.NewParams(rng, observationSize, 8, actionSpace)
+	teacherParams := actorcritic.NewParams(rng, observationSize, 8, actionSpace, 2)
 	return envs, teacherParams
 }
 
 // testConfig returns a Config sized for a fast unit test: one training
 // epoch over a two-trajectory rollout, two short evaluation episodes per
 // side.
-func testConfig(env *gridworldenv.Adapter) Config {
-	return Config{
+func testConfig(env *gridworldenv.Adapter) Config[*actorcritic.Params] {
+	return Config[*actorcritic.Params]{
 		Trainer: config.Settings{
 			RolloutSize:   2,
 			EpisodeLen:    10,
@@ -329,9 +383,9 @@ func (e *scriptedEnv) ActionSpace() int     { return 2 }
 func TestEvaluateAllRunsEveryEnvironmentAndKeepsPerEnvironmentOrder(t *testing.T) {
 	a := &scriptedEnv{rewards: []float32{1, 2, 3}}
 	b := &scriptedEnv{rewards: []float32{10, 20, 30}}
-	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 4, 2)
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 4, 2, 2)
 
-	scores, err := evaluateAll(context.Background(), []rl.Environment{a, b}, params, 3, 5, true, rand.New(rand.NewPCG(3, 4)))
+	scores, err := evaluateAll(context.Background(), []rl.Environment{a, b}, params, 3, 5, true, PlainSeams, rand.New(rand.NewPCG(3, 4)))
 	require.NoError(t, err)
 
 	assert.Equal(t, [][]float32{{1, 2, 3}, {10, 20, 30}}, scores, "each environment evaluates EvalEpisodes episodes, in order, concurrently")
@@ -340,11 +394,11 @@ func TestEvaluateAllRunsEveryEnvironmentAndKeepsPerEnvironmentOrder(t *testing.T
 // TestSummarizeRoundPairedStatistics: the paired difference, its standard
 // error and the win rules, on hand-computable numbers.
 func TestSummarizeRoundPairedStatistics(t *testing.T) {
-	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 4, 2)
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 4, 2, 2)
 	teacher := [][]float32{{10, 10, 10, 10}}
 	student := [][]float32{{11, 11, 11, 11}} // +1 every pair: zero spread, so any z-score is beaten
 
-	result := summarizeRound(teacher, student, params, Config{})
+	result := summarizeRound(teacher, student, params, Config[*actorcritic.Params]{})
 	assert.True(t, result.StudentWon)
 	assert.InDelta(t, 1.0, result.MeanDiff, 1e-6)
 	assert.InDelta(t, 0.0, result.DiffStdErr, 1e-6)
@@ -354,19 +408,19 @@ func TestSummarizeRoundPairedStatistics(t *testing.T) {
 	// wildly, so a 1.645 z-score must reject what the plain rule accepts.
 	noisyTeacher := [][]float32{{10, 10, 10, 10}}
 	noisyStudent := [][]float32{{20, 0, 18, 6}} // mean 11, diffs +10 -10 +8 -4
-	plain := summarizeRound(noisyTeacher, noisyStudent, params, Config{})
+	plain := summarizeRound(noisyTeacher, noisyStudent, params, Config[*actorcritic.Params]{})
 	assert.True(t, plain.StudentWon, "the unguarded rule promotes on any positive mean difference")
-	guarded := summarizeRound(noisyTeacher, noisyStudent, params, Config{WinZScore: 1.645})
+	guarded := summarizeRound(noisyTeacher, noisyStudent, params, Config[*actorcritic.Params]{WinZScore: 1.645})
 	assert.False(t, guarded.StudentWon, "a +1 mean over a per-pair spread of ~9 is noise, not improvement")
 	assert.Nil(t, guarded.StudentParams, "a rejected Student's params must be dropped")
 
 	// Margin: +1 is not enough when 2 is demanded.
-	assert.False(t, summarizeRound(teacher, student, params, Config{MinWinMargin: 2}).StudentWon)
-	assert.True(t, summarizeRound(teacher, student, params, Config{MinWinMargin: 1}).StudentWon)
+	assert.False(t, summarizeRound(teacher, student, params, Config[*actorcritic.Params]{MinWinMargin: 2}).StudentWon)
+	assert.True(t, summarizeRound(teacher, student, params, Config[*actorcritic.Params]{MinWinMargin: 1}).StudentWon)
 }
 
 func TestConfigValidateRejectsNegativeWinRules(t *testing.T) {
-	base := Config{EpochsPerGeneration: 1, EvalEpisodes: 1, EvalEpisodeLen: 1}
+	base := Config[*actorcritic.Params]{EpochsPerGeneration: 1, EvalEpisodes: 1, EvalEpisodeLen: 1}
 	bad := base
 	bad.WinZScore = -1
 	assert.Error(t, bad.Validate())

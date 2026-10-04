@@ -94,9 +94,9 @@ func TestRoundAgainstLiveRlenv(t *testing.T) {
 
 	rng := rand.New(rand.NewPCG(1, 2))
 	const hiddenSize = 16
-	teacherParams := actorcritic.NewParams(rng, env.ObservationSize(), hiddenSize, env.ActionSpace())
+	teacherParams := actorcritic.NewParams(rng, env.ObservationSize(), hiddenSize, env.ActionSpace(), 2)
 
-	cfg := leapfrog.Config{
+	cfg := leapfrog.Config[*actorcritic.Params]{
 		Trainer: crlconfig.Settings{
 			RolloutSize: 2,
 			// Deliberately short: this test's job is to prove the
@@ -123,7 +123,7 @@ func TestRoundAgainstLiveRlenv(t *testing.T) {
 		EvalEpisodeLen:      50,
 	}
 
-	result, err := leapfrog.Round(ctx, []rl.Environment{env}, teacherParams, cfg, rng)
+	result, err := leapfrog.Round(ctx, []rl.Environment{env}, teacherParams, cfg, leapfrog.PlainSeams, rng)
 	require.NoError(t, err)
 	t.Logf("live round result: teacher=%.3f student=%.3f studentWon=%v", result.TeacherReward, result.StudentReward, result.StudentWon)
 }

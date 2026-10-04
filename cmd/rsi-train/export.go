@@ -88,7 +88,7 @@ func (e *checkpointExporter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusServiceUnavailable, result)
 		return
 	}
-	if err := lineage.Save(e.dir, teacherParams, teacherRec); err != nil {
+	if err := lineage.Save(e.dir, teacherParams, teacherRec, lineage.PlainCodec); err != nil {
 		result.Error = fmt.Sprintf("saving generation %d: %v", teacherRec.Generation, err)
 		respondJSON(w, http.StatusInternalServerError, result)
 		return

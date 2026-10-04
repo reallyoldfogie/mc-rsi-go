@@ -92,7 +92,7 @@ func run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("finding the latest generation in %s: %w", f.checkpointDir, err)
 	}
-	params, rec, err := lineage.Load(f.checkpointDir, latest.Generation, latest.EnvironmentID)
+	params, rec, err := lineage.Load(f.checkpointDir, latest.Generation, latest.EnvironmentID, lineage.PlainCodec)
 	if err != nil {
 		return fmt.Errorf("loading generation %d: %w", latest.Generation, err)
 	}
@@ -124,7 +124,7 @@ func run(args []string) error {
 		EnvironmentID:        rec.EnvironmentID,
 		Metadata:             checkpoint.Metadata{},
 	}
-	if err := lineage.Save(f.outDir, wide, newRec); err != nil {
+	if err := lineage.Save(f.outDir, wide, newRec, lineage.PlainCodec); err != nil {
 		return fmt.Errorf("saving the widened network to %s: %w", f.outDir, err)
 	}
 

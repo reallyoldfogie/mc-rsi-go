@@ -95,6 +95,7 @@ type flags struct {
 	sharedServerSeparationChunks int
 	curriculumConfigPath         string
 	metricsAddr                  string
+	hiddenLayers                 int
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -122,6 +123,7 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.sharedServerSeparationChunks, "shared-server-separation-chunks", 16, "chunks between adjacent bots' working areas when -shared-server is set; ignored otherwise")
 	fs.StringVar(&f.curriculumConfigPath, "curriculum-config", "", "optional path to a pkg/curriculum pool JSON file (target_offsets/mine_target_blocks/mine_search_radius/craft_target_items) — if set, each environment's Config.TaskSelector picks a fresh task+goal every episode (pkg/curriculum.UniformRandom via pkg/curriculum/rlenvadapter) instead of -mc-agent-config's single static env.target_offset/mine/craft settings for the whole run. Unset preserves that static-Config behavior exactly.")
 	fs.StringVar(&f.metricsAddr, "metrics-addr", ":9400", "address to serve Prometheus metrics on (see monitoring/README.md); empty disables the metrics server entirely")
+	fs.IntVar(&f.hiddenLayers, "hidden-layers", 2, "number of hidden layers in a freshly-created generation-0 policy network (docs/plans/20-configurable-depth-step-memory-and-dynamic-architecture.md Part A); only used when -checkpoint-dir has no existing generation to resume — an existing checkpoint's own depth always wins, whatever this flag says, including one produced by cmd/deepen-checkpoint with a depth other than 2. 2 is the default this repo has always used.")
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}
@@ -166,6 +168,9 @@ func parseFlags(args []string) (flags, error) {
 	}
 	if f.sharedServer && f.sharedServerSeparationChunks <= 0 {
 		return flags{}, fmt.Errorf("rsi-train: -shared-server-separation-chunks must be positive, got %d", f.sharedServerSeparationChunks)
+	}
+	if f.hiddenLayers <= 0 {
+		return flags{}, fmt.Errorf("rsi-train: -hidden-layers must be positive, got %d", f.hiddenLayers)
 	}
 	return f, nil
 }
@@ -267,7 +272,20 @@ func run(args []string) error {
 		environmentID += ":norm=1"
 	}
 
-	teacherParams, rec, err := loadOrInitTeacher(f.checkpointDir, environmentID, envs[0].ObservationSize(), trainerSettings.HiddenSize, envs[0].ActionSpace())
+	// RecurrentChunkLen > 0 is the sole trigger for recurrent (LSTM
+	// step-memory) training - see config.Settings.RecurrentChunkLen's own
+	// doc comment and runRecurrentRounds's. Every environment-connection
+	// and metrics/exporter/envCountReq setup above this point is shared
+	// unchanged by both paths; everything below it (teacher
+	// loading/warm-starting, the round loop itself, checkpointing) is
+	// *actorcritic.Params-specific, so it forks here rather than being
+	// made generic in place - runRecurrentRounds mirrors it for
+	// *actorcritic.RecurrentParams instead.
+	if trainerSettings.RecurrentChunkLen > 0 {
+		return runRecurrentRounds(ctx, stop, f, trainerSettings, connected, envs, environmentID)
+	}
+
+	teacherParams, rec, err := loadOrInitTeacher(f.checkpointDir, environmentID, envs[0].ObservationSize(), trainerSettings.HiddenSize, envs[0].ActionSpace(), f.hiddenLayers)
 	if err != nil {
 		return err
 	}
@@ -275,7 +293,7 @@ func run(args []string) error {
 	log.Printf("starting from generation %d (provenance=%s)", rec.Generation, rec.Provenance)
 	startHealth := measureNetworkHealth(teacherParams)
 	recordNetworkHealth(startHealth)
-	log.Printf("policy network health: layer1 %.0f%% and layer2 %.0f%% of units active, logit std %.3f", startHealth.Layer1Active*100, startHealth.Layer2Active*100, startHealth.LogitStd)
+	log.Printf("policy network health: %s active, logit std %.3f", formatLayerActive(startHealth.LayerActive), startHealth.LogitStd)
 	if startHealth.dead() {
 		return fmt.Errorf("generation %d: %w; start from a fresh network instead (move the checkpoint directory aside)", rec.Generation, errNetworkDead)
 	}
@@ -284,6 +302,9 @@ func run(args []string) error {
 	metricRewardTimePenalty.Set(effectiveTimePenalty(f.timePenalty))
 	metricCurrentRound.Set(0)
 	metricCurrentEpoch.Set(-1)
+	metricEpochRolloutSize.Set(float64(trainerSettings.RolloutSize))
+	metricEpochsPerGeneration.Set(float64(f.epochsPerGeneration))
+	metricEpochTrajectoriesStarted.Set(0)
 	progress := rec.Metadata
 	metricBestReturnAllTime.Set(float64(progress.BestReturn))
 	latestParams := teacherParams
@@ -311,7 +332,7 @@ func run(args []string) error {
 	deadEpochs := 0
 
 	interimDir := filepath.Join(f.checkpointDir, "interim")
-	cfg := leapfrog.Config{
+	cfg := leapfrog.Config[*actorcritic.Params]{
 		Trainer:             trainerSettings,
 		EpochsPerGeneration: f.epochsPerGeneration,
 		EvalEpisodes:        f.evalEpisodes,
@@ -319,7 +340,7 @@ func run(args []string) error {
 		WinZScore:           float32(f.winZScore),
 		MinWinMargin:        float32(f.minWinMargin),
 		EvalGreedy:          f.evalGreedy,
-		OnBeforeEvaluation:  pairedEvalTaskReseeder(evalTaskReseeders(connected)),
+		OnBeforeEvaluation:  markEvaluationInProgress(pairedEvalTaskReseeder(evalTaskReseeders(connected))),
 		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.Params) {
 			madeEpochProgress = true
 			latestParams = params
@@ -335,7 +356,7 @@ func run(args []string) error {
 			recordNetworkHealth(health)
 			if health.dead() {
 				deadEpochs++
-				log.Printf("  WARNING: policy network looks dead (layer2 %.0f%% active, logit std %.4f), %d of %d epochs before aborting", health.Layer2Active*100, health.LogitStd, deadEpochs, deadEpochsBeforeAbort)
+				log.Printf("  WARNING: policy network looks dead (%s active, logit std %.4f), %d of %d epochs before aborting", formatLayerActive(health.LayerActive), health.LogitStd, deadEpochs, deadEpochsBeforeAbort)
 				if deadEpochs >= deadEpochsBeforeAbort && !networkDead {
 					networkDead = true
 					stop()
@@ -344,6 +365,7 @@ func run(args []string) error {
 				deadEpochs = 0
 			}
 			metricCurrentEpoch.Set(float64(stats.Epoch))
+			metricEpochTrajectoriesStarted.Set(0)
 			metricEpochAvgReturn.Set(float64(stats.AverageReturn))
 			metricEpochsTotal.Inc()
 			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
@@ -365,7 +387,7 @@ func run(args []string) error {
 				// the next win. Found live: an accidental `rm` of the whole
 				// checkpoint dir, mid-round, with the next restart's fate
 				// resting entirely on the round finishing first.
-				if err := lineage.Save(f.checkpointDir, teacherParams, rec); err != nil {
+				if err := lineage.Save(f.checkpointDir, teacherParams, rec, lineage.PlainCodec); err != nil {
 					log.Printf("  re-saving generation %d checkpoint: %v", rec.Generation, err)
 				}
 			}
@@ -376,8 +398,37 @@ func run(args []string) error {
 		cfg.ResumeStudent = resumedParams
 		cfg.ResumeStudentStartEpoch = resumedEpoch + 1
 		progress = resumedMetadata
+		// progress was already set from rec.Metadata (the last *promoted*
+		// generation's record) above, and metricBestReturnAllTime set from
+		// that stale value - a round that's lost one or more times since its
+		// own promotion keeps improving via the interim checkpoint without
+		// ever updating rec.Metadata on disk (only a win does that), so
+		// without this the gauge visibly regresses to the older, lower
+		// number on every restart until training organically exceeds it
+		// again. Found live 2026-10-03: restarted for a config-only change,
+		// unrelated metric read 38.218 right after, though this same log
+		// line's own best return (41.992) was already correct.
+		metricBestReturnAllTime.Set(float64(progress.BestReturn))
 		log.Printf("resuming round 1's student training from interim checkpoint: epoch %d, generation %d, best return %.3f, total updates %d",
 			resumedEpoch, rec.Generation, resumedMetadata.BestReturn, resumedMetadata.TotalUpdates)
+	}
+
+	// Restores the "Teacher vs. Student reward per round" / "Student
+	// advantage vs. promotion threshold" dashboard panels' gauges, which
+	// otherwise sit at a misleading 0 from process start until whenever the
+	// in-progress round next completes - possibly hours, since training
+	// resumes mid-round rather than restarting it. See roundeval.go's own
+	// doc comment.
+	if state, ok := loadRoundEvalState(interimDir); ok {
+		recordRoundEvaluation(leapfrog.Result[*actorcritic.Params]{
+			TeacherReward: state.TeacherReward,
+			StudentReward: state.StudentReward,
+			EvalEpisodes:  state.EvalEpisodes,
+			TeacherStd:    state.TeacherStd,
+			StudentStd:    state.StudentStd,
+			MeanDiff:      state.MeanDiff,
+			DiffStdErr:    state.DiffStdErr,
+		})
 	}
 
 	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
@@ -410,7 +461,7 @@ func run(args []string) error {
 				// and Student evaluation episodes wouldn't be paired to
 				// the same task sequence (see pairedEvalTaskReseeder's own
 				// doc comment for why that pairing matters).
-				cfg.OnBeforeEvaluation = pairedEvalTaskReseeder(evalTaskReseeders(connected))
+				cfg.OnBeforeEvaluation = markEvaluationInProgress(pairedEvalTaskReseeder(evalTaskReseeders(connected)))
 				metricParallelEnvs.Set(float64(len(connected)))
 				envConfirmer.scheduleConfirm(len(connected))
 				log.Printf("round %d: scaled to %d parallel envs", round, len(connected))
@@ -419,9 +470,14 @@ func run(args []string) error {
 
 		metricCurrentRound.Set(float64(round))
 		metricCurrentEpoch.Set(-1)
+		metricEpochTrajectoriesStarted.Set(0)
 
 		start := time.Now()
-		result, err := leapfrog.Round(ctx, envs, teacherParams, cfg, rng)
+		result, err := leapfrog.Round(ctx, envs, teacherParams, cfg, leapfrog.PlainSeams, rng)
+		// leapfrog.Round has no "evaluation ended" hook to clear this from
+		// inside (only OnBeforeEvaluation, which sets it) - Round returning,
+		// successfully or not, is the one point every path converges on.
+		evaluationInProgress.Store(false)
 		// cfg.ResumeStudent only ever applies to the very first round a
 		// resumed process runs — every later round's Student is always a
 		// fresh clone of *that* round's own teacherParams (which only
@@ -441,6 +497,9 @@ func run(args []string) error {
 		elapsed := time.Since(start).Round(time.Second)
 		metricRoundDurationSeconds.Observe(elapsed.Seconds())
 		recordRoundEvaluation(result)
+		if err := saveRoundEvalState(interimDir, result); err != nil {
+			log.Printf("round %d: persisting round-eval state for dashboard restart-survival: %v", round, err)
+		}
 
 		if result.StudentWon {
 			rec = lineage.Record{
@@ -452,7 +511,7 @@ func run(args []string) error {
 				EnvironmentID:        environmentID,
 				Metadata:             progress,
 			}
-			if err := lineage.Save(f.checkpointDir, result.StudentParams, rec); err != nil {
+			if err := lineage.Save(f.checkpointDir, result.StudentParams, rec, lineage.PlainCodec); err != nil {
 				return fmt.Errorf("round %d: saving generation %d: %w", round, rec.Generation, err)
 			}
 			teacherParams = result.StudentParams
@@ -869,10 +928,12 @@ func pairedEvalTaskReseeder(reseeds []func(seed1, seed2 uint64)) func(leapfrog.E
 // against). observationSize/actionSpace shape the fresh network when
 // initializing; deliberately plain ints rather than an *rlenv.Environment
 // parameter, since that's all this function actually needs from one —
-// keeps it testable without a live bot session.
-func loadOrInitTeacher(checkpointDir, environmentID string, observationSize, hiddenSize, actionSpace int) (*actorcritic.Params, lineage.Record, error) {
+// keeps it testable without a live bot session. numHiddenLayers (see
+// -hidden-layers) likewise only applies when initializing fresh: an
+// existing checkpoint's own depth always wins, whatever this says.
+func loadOrInitTeacher(checkpointDir, environmentID string, observationSize, hiddenSize, actionSpace, numHiddenLayers int) (*actorcritic.Params, lineage.Record, error) {
 	if latest, err := lineage.Latest(checkpointDir); err == nil {
-		params, rec, err := lineage.Load(checkpointDir, latest.Generation, environmentID)
+		params, rec, err := lineage.Load(checkpointDir, latest.Generation, environmentID, lineage.PlainCodec)
 		if err != nil {
 			return nil, lineage.Record{}, fmt.Errorf("loading latest generation %d: %w", latest.Generation, err)
 		}
@@ -880,7 +941,7 @@ func loadOrInitTeacher(checkpointDir, environmentID string, observationSize, hid
 	}
 
 	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 1))
-	params := actorcritic.NewParams(rng, observationSize, hiddenSize, actionSpace)
+	params := actorcritic.NewParams(rng, observationSize, hiddenSize, actionSpace, numHiddenLayers)
 	rec := lineage.Record{
 		Generation:           0,
 		ParentGeneration:     -1,
@@ -889,10 +950,228 @@ func loadOrInitTeacher(checkpointDir, environmentID string, observationSize, hid
 		CreatedAt:            time.Now(),
 		EnvironmentID:        environmentID,
 	}
-	if err := lineage.Save(checkpointDir, params, rec); err != nil {
+	if err := lineage.Save(checkpointDir, params, rec, lineage.PlainCodec); err != nil {
 		return nil, lineage.Record{}, fmt.Errorf("saving fresh generation 0: %w", err)
 	}
 	return params, rec, nil
+}
+
+// loadOrInitTeacherRecurrent mirrors loadOrInitTeacher's own contract
+// (see its doc comment) for a recurrent-configured run
+// (config.Settings.RecurrentChunkLen > 0 - see runRecurrentRounds), with
+// one added branch: an existing latest generation that is *not* already
+// recurrent (lineage.Record.Recurrent false) is warm-started
+// (actorcritic.WarmStartRecurrentParams) into a fresh recurrent
+// generation instead of being resumed or re-initialized from scratch -
+// see lineage.ProvenanceWarmStarted's own doc comment for why this is a
+// warm start, not an exact conversion. The warm-started generation is
+// saved as the source generation's number plus one, never overwriting
+// the source generation in place - the same "never touch the source"
+// convention cmd/widen-checkpoint/cmd/deepen-checkpoint use, just
+// triggered automatically here (the sole trigger is
+// config.Settings.RecurrentChunkLen > 0 - there is no separate opt-in
+// flag for this) rather than via a separate manual tool. The warm-started
+// generation starts with fresh progress counters (checkpoint.Metadata{}),
+// matching that same widened/deepened convention: a fresh LSTM changes
+// the network's behavior enough that counting epochs/updates/best-return
+// from before the warm start would be misleading.
+func loadOrInitTeacherRecurrent(checkpointDir, environmentID string, observationSize, hiddenSize, actionSpace, numHiddenLayers int) (*actorcritic.RecurrentParams, lineage.Record, error) {
+	if latest, err := lineage.Latest(checkpointDir); err == nil {
+		if latest.Recurrent {
+			params, rec, err := lineage.Load(checkpointDir, latest.Generation, environmentID, lineage.RecurrentCodec)
+			if err != nil {
+				return nil, lineage.Record{}, fmt.Errorf("loading latest generation %d: %w", latest.Generation, err)
+			}
+			return params, rec, nil
+		}
+
+		plain, plainRec, err := lineage.Load(checkpointDir, latest.Generation, environmentID, lineage.PlainCodec)
+		if err != nil {
+			return nil, lineage.Record{}, fmt.Errorf("loading latest (non-recurrent) generation %d to warm-start: %w", latest.Generation, err)
+		}
+		rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 1))
+		warmStarted := actorcritic.WarmStartRecurrentParams(plain, rng)
+		rec := lineage.Record{
+			Generation:           plainRec.Generation + 1,
+			ParentGeneration:     plainRec.Generation,
+			Provenance:           lineage.ProvenanceWarmStarted,
+			SeededFromGeneration: -1,
+			CreatedAt:            time.Now(),
+			EnvironmentID:        environmentID,
+			Metadata:             checkpoint.Metadata{},
+			Recurrent:            true,
+		}
+		if err := lineage.Save(checkpointDir, warmStarted, rec, lineage.RecurrentCodec); err != nil {
+			return nil, lineage.Record{}, fmt.Errorf("saving warm-started generation %d: %w", rec.Generation, err)
+		}
+		log.Printf("warm-started generation %d (recurrent) from non-recurrent generation %d", rec.Generation, plainRec.Generation)
+		return warmStarted, rec, nil
+	}
+
+	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 1))
+	params := actorcritic.NewRecurrentParams(rng, observationSize, hiddenSize, actionSpace, numHiddenLayers)
+	rec := lineage.Record{
+		Generation:           0,
+		ParentGeneration:     -1,
+		Provenance:           lineage.ProvenanceLeapfrog,
+		SeededFromGeneration: -1,
+		CreatedAt:            time.Now(),
+		EnvironmentID:        environmentID,
+		Recurrent:            true,
+	}
+	if err := lineage.Save(checkpointDir, params, rec, lineage.RecurrentCodec); err != nil {
+		return nil, lineage.Record{}, fmt.Errorf("saving fresh generation 0: %w", err)
+	}
+	return params, rec, nil
+}
+
+// runRecurrentRounds is run()'s own round loop (see that function's doc
+// comment, and leapfrog.Round), mirrored for a RecurrentChunkLen > 0
+// trainer config: trains and evaluates *actorcritic.RecurrentParams via
+// leapfrog.RecurrentSeams instead of *actorcritic.Params via
+// leapfrog.PlainSeams. Entered automatically from run() once connected,
+// envs and environmentID are already built — see run()'s own branch
+// point for why everything up to there is shared unchanged by both
+// paths.
+//
+// Deliberately narrower than run()'s own loop for now (see the
+// warm-start plan this was built from, docs/plans - "Explicitly
+// deferred"): no interim checkpoint save/resume (-checkpoint-interval is
+// logged as ignored here, not silently broken), no manual checkpoint
+// export endpoint (cmd/rsi-train/export.go's checkpointExporter is
+// *actorcritic.Params-only), and no live -parallel-envs rescaling
+// mid-run. Each is real, separate future work for the recurrent path,
+// not an oversight - a restart of a recurrent run always resumes from
+// the latest generation lineage.Save actually wrote (same as a plain run
+// that hasn't completed even one epoch yet), never from a mid-round
+// student.
+func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, trainerSettings crlconfig.Settings, connected []connectedEnvironment, envs []rl.Environment, environmentID string) error {
+	if f.checkpointInterval > 0 {
+		log.Printf("recurrent mode: -checkpoint-interval is not yet supported; interim checkpoints will not be saved")
+	}
+	if f.metricsAddr != "" {
+		log.Printf("recurrent mode: the /checkpoint/export endpoint is not yet supported and will always report not-ready")
+	}
+	log.Printf("recurrent mode: live -parallel-envs rescaling is not yet supported; running with %d environments for the whole run", len(envs))
+
+	teacherParams, rec, err := loadOrInitTeacherRecurrent(f.checkpointDir, environmentID, envs[0].ObservationSize(), trainerSettings.HiddenSize, envs[0].ActionSpace(), f.hiddenLayers)
+	if err != nil {
+		return err
+	}
+	log.Printf("starting from generation %d (provenance=%s, recurrent)", rec.Generation, rec.Provenance)
+	startHealth := measureNetworkHealth(teacherParams.Trunk)
+	recordNetworkHealth(startHealth)
+	log.Printf("policy network health: %s active, logit std %.3f", formatLayerActive(startHealth.LayerActive), startHealth.LogitStd)
+	if startHealth.dead() {
+		return fmt.Errorf("generation %d: %w; start from a fresh network instead (move the checkpoint directory aside)", rec.Generation, errNetworkDead)
+	}
+	metricGeneration.Set(float64(rec.Generation))
+	metricEvalWinZThreshold.Set(f.winZScore)
+	metricRewardTimePenalty.Set(effectiveTimePenalty(f.timePenalty))
+	metricCurrentRound.Set(0)
+	metricCurrentEpoch.Set(-1)
+	metricEpochRolloutSize.Set(float64(trainerSettings.RolloutSize))
+	metricEpochsPerGeneration.Set(float64(f.epochsPerGeneration))
+	metricEpochTrajectoriesStarted.Set(0)
+	progress := rec.Metadata
+	metricBestReturnAllTime.Set(float64(progress.BestReturn))
+
+	networkDead := false
+	deadEpochs := 0
+
+	cfg := leapfrog.Config[*actorcritic.RecurrentParams]{
+		Trainer:             trainerSettings,
+		EpochsPerGeneration: f.epochsPerGeneration,
+		EvalEpisodes:        f.evalEpisodes,
+		EvalEpisodeLen:      f.evalEpisodeLen,
+		WinZScore:           float32(f.winZScore),
+		MinWinMargin:        float32(f.minWinMargin),
+		EvalGreedy:          f.evalGreedy,
+		OnBeforeEvaluation:  markEvaluationInProgress(pairedEvalTaskReseeder(evalTaskReseeders(connected))),
+		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.RecurrentParams) {
+			progress.Epoch = stats.Epoch
+			progress.TotalUpdates += stats.UpdateCount
+			if stats.AverageReturn > progress.BestReturn {
+				progress.BestReturn = stats.AverageReturn
+			}
+			metricBestReturnAllTime.Set(float64(progress.BestReturn))
+			log.Printf("  epoch %d: average return %.3f, samples %d", stats.Epoch, stats.AverageReturn, stats.SampleCount)
+			health := measureNetworkHealth(params.Trunk)
+			recordNetworkHealth(health)
+			if health.dead() {
+				deadEpochs++
+				log.Printf("  WARNING: policy network looks dead (%s active, logit std %.4f), %d of %d epochs before aborting", formatLayerActive(health.LayerActive), health.LogitStd, deadEpochs, deadEpochsBeforeAbort)
+				if deadEpochs >= deadEpochsBeforeAbort && !networkDead {
+					networkDead = true
+					stop()
+				}
+			} else {
+				deadEpochs = 0
+			}
+			metricCurrentEpoch.Set(float64(stats.Epoch))
+			metricEpochTrajectoriesStarted.Set(0)
+			metricEpochAvgReturn.Set(float64(stats.AverageReturn))
+			metricEpochsTotal.Inc()
+			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
+			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
+		},
+	}
+
+	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
+
+	for round := 1; f.maxRounds == 0 || round <= f.maxRounds; round++ {
+		if err := ctx.Err(); err != nil {
+			log.Printf("stopping before round %d: %v", round, err)
+			break
+		}
+
+		metricCurrentRound.Set(float64(round))
+		metricCurrentEpoch.Set(-1)
+		metricEpochTrajectoriesStarted.Set(0)
+
+		start := time.Now()
+		result, err := leapfrog.Round(ctx, envs, teacherParams, cfg, leapfrog.RecurrentSeams, rng)
+		evaluationInProgress.Store(false)
+		if err != nil {
+			if ctx.Err() != nil {
+				log.Printf("round %d interrupted: %v", round, err)
+				break
+			}
+			return fmt.Errorf("round %d: %w", round, err)
+		}
+		elapsed := time.Since(start).Round(time.Second)
+		metricRoundDurationSeconds.Observe(elapsed.Seconds())
+		recordRoundEvaluation(result)
+
+		if result.StudentWon {
+			rec = lineage.Record{
+				Generation:           rec.Generation + 1,
+				ParentGeneration:     rec.Generation,
+				Provenance:           lineage.ProvenanceLeapfrog,
+				SeededFromGeneration: -1,
+				CreatedAt:            time.Now(),
+				EnvironmentID:        environmentID,
+				Metadata:             progress,
+				Recurrent:            true,
+			}
+			if err := lineage.Save(f.checkpointDir, result.StudentParams, rec, lineage.RecurrentCodec); err != nil {
+				return fmt.Errorf("round %d: saving generation %d: %w", round, rec.Generation, err)
+			}
+			teacherParams = result.StudentParams
+			metricRoundsTotal.WithLabelValues("won").Inc()
+			metricGeneration.Set(float64(rec.Generation))
+		} else {
+			metricRoundsTotal.WithLabelValues("lost").Inc()
+		}
+
+		log.Printf("round %d (%s): teacher=%.3f student=%.3f studentWon=%v generation=%d (n=%d/side, std teacher=%.2f student=%.2f, paired diff=%+.3f ± %.3f)",
+			round, elapsed, result.TeacherReward, result.StudentReward, result.StudentWon, rec.Generation,
+			result.EvalEpisodes, result.TeacherStd, result.StudentStd, result.MeanDiff, result.DiffStdErr)
+	}
+	if networkDead {
+		return errNetworkDead
+	}
+	return nil
 }
 
 // saveInterimCheckpoint saves params to dir as a plain cRL-go checkpoint

@@ -117,6 +117,44 @@ your own queries.
 - **`rsi_reset_failures_total{task}`** / **`rsi_step_errors_total{task}`** — environment reset and
   step errors surfaced by the live environment wrapper. These are useful for spotting server or
   network health problems that may otherwise look like poor training.
+- **`rsi_episode_length_steps{task,outcome,phase}`** — histogram of how many environment steps an
+  episode actually ran before ending, by task, outcome, and `phase` (`"training"` | `"eval"`, via
+  `evaluationInProgress` - the same flag `rsi_epoch_trajectories_started` uses). `truncated` lands
+  at (or just under) whichever step cap was active almost by definition (100 for a training
+  episode, 200 for evaluation's `-eval-episode-len`). The useful read is `success`/`failure`'s own
+  distribution: short with a thin tail near the cap means episodes that don't finish are getting
+  stuck early, not merely running a little long; a tail that hugs the cap means some near-misses
+  really would finish with a bit more room. Added 2026-10-03 specifically to settle that question
+  for `chain_place`/`chain_use` before changing any step-budget lever - see docs/plans/13's
+  step-budget investigation. **The `phase` label was added later the same day**, after the metric's
+  original 2-label version (no phase) made a success/truncated episode past 100 steps look
+  impossible on the dashboard - it was actually an evaluation episode, legitimately using its own
+  200-step budget, not a training one. The main dashboard's "Episode length by outcome" panel
+  filters to `phase="training"` for exactly this reason.
+- **`rsi_epoch_rollout_size`** / **`rsi_epoch_trajectories_started`** — the current epoch's target
+  trajectory count (`config.Settings.RolloutSize`, set once at startup) and how many trajectories
+  have started toward it so far (reset to 0 whenever `rsi_current_epoch` advances). cRL-go has no
+  mid-epoch callback, so the latter is inferred from `instrumentedEnvironment.Reset` firing once per
+  trajectory in real time, regardless of which cRL-go collection function is driving it.
+  `100 * rsi_epoch_trajectories_started / rsi_epoch_rollout_size` is a true in-progress-epoch
+  completion percentage, not just "which epoch index is running" (that's all `rsi_current_epoch`
+  tells you). Added 2026-10-03. Pairs with `rsi_task_episodes_total`'s rate (already live
+  throughout an epoch, not just at boundaries) for which task is actively running right now.
+  **Bug found and fixed the same day:** `instrumentedEnvironment.Reset` fires for every episode on
+  the shared connected environments, training rollout collection *and* each round's Teacher+Student
+  evaluation alike - without a gate, a round's evaluation episodes (`EvalEpisodes * len(envs)` per
+  side, entirely unrelated to `RolloutSize`) also counted toward `rsi_epoch_trajectories_started`
+  after the last training epoch's own reset, pushing the progress bar past 100% during evaluation
+  (caught live at 312%: 200 eval-episode resets / 64 rollout size, exactly 2 sides × 10
+  eval-episodes × ~10 envs). Fixed with an `evaluationInProgress` flag
+  (`cmd/rsi-train/metrics.go`), set by wrapping `leapfrog.Config.OnBeforeEvaluation` via
+  `markEvaluationInProgress` and cleared once `leapfrog.Round` returns - `Reset` only increments the
+  gauge while the flag is clear.
+- **`rsi_epochs_per_generation`** — how many epochs make up one round (`-epochs-per-generation`,
+  default `50`), set once at startup. `100 * (rsi_current_epoch + 1) / rsi_epochs_per_generation`
+  is round progress - how far through its own epoch budget the current round is, distinct from
+  `rsi_epoch_rollout_size`'s within-epoch progress (one is "how far through this epoch", the other
+  is "how far through this round's epochs"). Added 2026-10-03 alongside the epoch-progress gauges.
 - **`rsi_task_episodes_total{task="goto"|"mine"|"craft"}`** — how many episodes the curriculum has
   posed of each task type so far. Only present when `rsi-train` was started with
   `-curriculum-config` (see **Curriculum / task generator**, above) — without one, there's no
@@ -149,11 +187,33 @@ your own queries.
   endpoint succeeded (the process is alive and reachable); `0` means it didn't (crashed, still
   starting up, or `-metrics-addr` is unreachable).
 
-**A known gap:** `mc-agent`'s Mine/Craft actions log occasional confirmation-timeout errors (a
-fixed 2-second window that a busy shared server can miss under load) straight to the training log;
-the new step-error counter only sees errors returned by `rlenv.Environment.Step`, not every logged
-action warning. Watch the log (`grep -c "Mine error\|Craft error"`) for that specific rate today;
-exposing it as a real metric would need a small `mc-agent` change first.
+### Metrics and trainer restarts
+
+Restarting `rsi-train` (for any reason — a code change, a config edit, a crash) resets its
+in-process Prometheus state, but what that looks like on the dashboard differs by metric *type*,
+which can look inconsistent until you know which kind you're looking at:
+
+- **Gauges restored from an external source of truth** (`rsi_best_return_alltime`,
+  `rsi_epoch_rollout_size`, `rsi_epochs_per_generation`, `rsi_teacher_reward`/`rsi_student_reward`
+  and the rest of the per-round evaluation gauges) — these are explicitly re-`Set()` at startup from
+  the checkpoint or a small persisted sidecar file (`<checkpoint-dir>/interim/round-eval.json`, see
+  `cmd/rsi-train/roundeval.go`), so they read correctly immediately on resume, not just once the
+  next epoch/round completes.
+- **Counters and histograms** (`rsi_episodes_total`, `rsi_task_episodes_total`,
+  `rsi_rounds_total`, `rsi_round_duration_seconds`, `rsi_episode_length_steps`, etc.) — these
+  genuinely do reset to 0 in the exporter's memory on every restart; the Prometheus client library
+  has no built-in way to persist them, and trying to hand-roll that would just duplicate what
+  Prometheus's own server already does correctly. **The fix is in how you query them, not the
+  metric itself**: Prometheus's own scrape history hasn't lost anything, and `increase()`/`rate()`
+  already detect and correctly bridge a counter reset. Read the raw `/metrics` value directly (e.g.
+  via `curl`) and you'll only see the total since the last restart; wrap the same metric in
+  `increase(metric[30d])` (or `rate(metric[5m])` for a live/recent view) and you get the true
+  cumulative total across every restart. Every dashboard panel showing a cumulative total ("Rounds
+  won/lost", "Win rate", "Task mix", "Average round duration") uses `increase()` for exactly this
+  reason — a raw instant-value query on any of these would misleadingly show 0 right after a
+  restart. A short-window `rate()` panel (e.g. "Episode outcomes/sec", "Episode length by outcome")
+  will still show a brief, expected gap immediately after a restart — not a bug, just that window
+  not having refilled with fresh data yet.
 
 ## Where these terms come from
 

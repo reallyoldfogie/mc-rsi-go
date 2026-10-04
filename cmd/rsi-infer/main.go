@@ -144,7 +144,7 @@ func run(args []string) error {
 		}
 		generation = rec.Generation
 	}
-	params, rec, err := lineage.Load(f.checkpointDir, generation, environmentID)
+	params, rec, err := lineage.Load(f.checkpointDir, generation, environmentID, lineage.PlainCodec)
 	if err != nil {
 		return fmt.Errorf("loading generation %d: %w", generation, err)
 	}

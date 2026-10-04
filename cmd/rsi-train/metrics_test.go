@@ -110,6 +110,95 @@ func TestInstrumentedEnvironmentCountsChosenActionsByTask(t *testing.T) {
 	assert.Equal(t, "unknown", actionName(rl.Action(99)))
 }
 
+// TestEpisodeLengthStepsTagsPhaseCorrectly guards the confusion found live
+// 2026-10-03: without a phase label, a success/truncated episode past the
+// 100-step training cap looked impossible on the dashboard, when it was
+// actually from a 200-step evaluation episode (-eval-episode-len).
+func TestEpisodeLengthStepsTagsPhaseCorrectly(t *testing.T) {
+	evaluationInProgress.Store(false)
+	defer evaluationInProgress.Store(false)
+
+	taggedTask := "metrics-test-phase-training"
+	env := &instrumentedEnvironment{
+		env:  &metricsTestEnvironment{stepResult: rl.StepResult{Reward: 10, Done: true}},
+		task: taggedTask,
+	}
+	_, err := env.Reset(context.Background())
+	require.NoError(t, err)
+	_, err = env.Step(context.Background(), 0)
+	require.NoError(t, err)
+	require.Contains(t, gatherMetrics(t),
+		`rsi_episode_length_steps_bucket{outcome="success",phase="training",task="`+taggedTask+`",le="1"} 1`)
+
+	evaluationInProgress.Store(true)
+	taggedTask = "metrics-test-phase-eval"
+	env = &instrumentedEnvironment{
+		env:  &metricsTestEnvironment{stepResult: rl.StepResult{Reward: 10, Done: true}},
+		task: taggedTask,
+	}
+	_, err = env.Reset(context.Background())
+	require.NoError(t, err)
+	_, err = env.Step(context.Background(), 0)
+	require.NoError(t, err)
+	require.Contains(t, gatherMetrics(t),
+		`rsi_episode_length_steps_bucket{outcome="success",phase="eval",task="`+taggedTask+`",le="1"} 1`)
+}
+
+// TestInstrumentedEnvironmentSkipsEpochTrajectoriesStartedDuringEvaluation
+// guards the bug found live 2026-10-03: a round's Teacher+Student
+// evaluation episodes run through the same instrumentedEnvironment.Reset as
+// training rollout collection, so without this gate they counted toward
+// rsi_epoch_trajectories_started too, pushing the "epoch progress"
+// dashboard bar (rsi_epoch_trajectories_started / rsi_epoch_rollout_size)
+// past 100% once evaluation ran after the last training epoch's own reset.
+func TestInstrumentedEnvironmentSkipsEpochTrajectoriesStartedDuringEvaluation(t *testing.T) {
+	metricEpochTrajectoriesStarted.Set(0)
+	evaluationInProgress.Store(false)
+	defer evaluationInProgress.Store(false)
+
+	env := &instrumentedEnvironment{
+		env:  &metricsTestEnvironment{stepResult: rl.StepResult{Reward: 10, Done: true}},
+		task: "metrics-test-eval-gate",
+	}
+
+	_, err := env.Reset(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, gatherMetrics(t), "rsi_epoch_trajectories_started 1")
+
+	evaluationInProgress.Store(true)
+	_, err = env.Reset(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, gatherMetrics(t), "rsi_epoch_trajectories_started 1",
+		"an evaluation-episode Reset must not count toward epoch rollout progress")
+
+	evaluationInProgress.Store(false)
+	_, err = env.Reset(context.Background())
+	require.NoError(t, err)
+	require.Contains(t, gatherMetrics(t), "rsi_epoch_trajectories_started 2",
+		"a training-episode Reset after evaluation ends must resume counting")
+}
+
+func TestMarkEvaluationInProgressSetsFlagAndCallsWrapped(t *testing.T) {
+	evaluationInProgress.Store(false)
+	defer evaluationInProgress.Store(false)
+
+	var calledWith leapfrog.EvalSide
+	wrapped := markEvaluationInProgress(func(side leapfrog.EvalSide) { calledWith = side })
+
+	wrapped(leapfrog.EvalStudent)
+	assert.True(t, evaluationInProgress.Load())
+	assert.Equal(t, leapfrog.EvalStudent, calledWith)
+}
+
+func TestMarkEvaluationInProgressToleratesNilWrapped(t *testing.T) {
+	evaluationInProgress.Store(false)
+	defer evaluationInProgress.Store(false)
+
+	wrapped := markEvaluationInProgress(nil)
+	assert.NotPanics(t, func() { wrapped(leapfrog.EvalTeacher) })
+	assert.True(t, evaluationInProgress.Load())
+}
+
 func TestInstrumentedEnvironmentUsesTaskSelectedDuringReset(t *testing.T) {
 	selectedTask := "goto"
 	env := &instrumentedEnvironment{
@@ -177,7 +266,7 @@ func TestInstrumentedEnvironmentResetGivesUpAfterExhaustingRetries(t *testing.T)
 
 func TestSaveFinalCheckpointPreservesMetadata(t *testing.T) {
 	dir := t.TempDir()
-	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1)
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1, 2)
 	metadata := checkpoint.Metadata{Epoch: 11, BestReturn: 4.5, TotalUpdates: 37}
 
 	require.NoError(t, saveFinalCheckpoint(dir, params, "test-env", metadata, 7))
@@ -196,7 +285,7 @@ func TestSaveFinalCheckpointPreservesMetadata(t *testing.T) {
 // about to train against, must be returned.
 func TestLoadResumableStudent_AcceptsAMatchingFinalCheckpoint(t *testing.T) {
 	dir := t.TempDir()
-	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1)
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1, 2)
 	metadata := checkpoint.Metadata{Epoch: 18, BestReturn: 12.19, TotalUpdates: 900}
 	require.NoError(t, saveFinalCheckpoint(dir, params, "test-env", metadata, 7))
 
@@ -223,12 +312,12 @@ func TestLoadResumableStudent_PrefersTheMostRecentlyModifiedFile(t *testing.T) {
 	old := time.Now().Add(-24 * time.Hour)
 	recent := time.Now()
 
-	staleHighEpochParams := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1)
+	staleHighEpochParams := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1, 2)
 	require.NoError(t, saveInterimCheckpoint(dir, staleHighEpochParams, "test-env", 49, checkpoint.Metadata{Epoch: 49, BestReturn: 17.16, TotalUpdates: 4812}, 7))
 	stalePath := filepath.Join(dir, "interim-epoch-000000049.json")
 	require.NoError(t, os.Chtimes(stalePath, old, old))
 
-	recentLowEpochParams := actorcritic.NewParams(rand.New(rand.NewPCG(3, 4)), 1, 2, 1)
+	recentLowEpochParams := actorcritic.NewParams(rand.New(rand.NewPCG(3, 4)), 1, 2, 1, 2)
 	require.NoError(t, saveFinalCheckpoint(dir, recentLowEpochParams, "test-env", checkpoint.Metadata{Epoch: 18, BestReturn: 12.19, TotalUpdates: 900}, 7))
 	require.NoError(t, os.Chtimes(filepath.Join(dir, "final.json"), recent, recent))
 
@@ -244,7 +333,7 @@ func TestLoadResumableStudent_PrefersTheMostRecentlyModifiedFile(t *testing.T) {
 // though it's otherwise perfectly valid.
 func TestLoadResumableStudent_RejectsAParentGenerationMismatch(t *testing.T) {
 	dir := t.TempDir()
-	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1)
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1, 2)
 	require.NoError(t, saveFinalCheckpoint(dir, params, "test-env", checkpoint.Metadata{Epoch: 18}, 7))
 
 	resumed, epoch, _ := loadResumableStudent(dir, "test-env", 8)
@@ -269,7 +358,7 @@ func TestLoadResumableStudent_NoOpsOnAFreshCheckpointDirectory(t *testing.T) {
 // the next round must not find the finished student's checkpoints.
 func TestClearInterimCheckpointsPreventsResumingAFinishedRound(t *testing.T) {
 	dir := t.TempDir()
-	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1)
+	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 2, 1, 2)
 	require.NoError(t, saveInterimCheckpoint(dir, params, "test-env", 99, checkpoint.Metadata{Epoch: 99}, 7))
 	require.NoError(t, saveFinalCheckpoint(dir, params, "test-env", checkpoint.Metadata{Epoch: 101}, 7))
 	resumed, _, _ := loadResumableStudent(dir, "test-env", 7)
@@ -288,7 +377,7 @@ func TestClearInterimCheckpointsPreventsResumingAFinishedRound(t *testing.T) {
 }
 
 func TestRecordRoundEvaluationPublishesTheStatisticsThePromotionRestsOn(t *testing.T) {
-	recordRoundEvaluation(leapfrog.Result{
+	recordRoundEvaluation(leapfrog.Result[*actorcritic.Params]{
 		TeacherReward: 9.5, StudentReward: 11.0, EvalEpisodes: 35,
 		TeacherStd: 3.25, StudentStd: 2.75, MeanDiff: 1.5, DiffStdErr: 0.75,
 	})
@@ -303,7 +392,7 @@ func TestRecordRoundEvaluationPublishesTheStatisticsThePromotionRestsOn(t *testi
 	require.Contains(t, body, "rsi_eval_paired_diff_zscore 2", "1.5 / 0.75")
 
 	// A zero standard error must not produce +Inf/NaN.
-	recordRoundEvaluation(leapfrog.Result{MeanDiff: 1, DiffStdErr: 0})
+	recordRoundEvaluation(leapfrog.Result[*actorcritic.Params]{MeanDiff: 1, DiffStdErr: 0})
 	require.Contains(t, gatherMetrics(t), "rsi_eval_paired_diff_zscore 0")
 }
 

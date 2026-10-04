@@ -44,6 +44,14 @@ func TestValidateAcceptsWellFormedRecords(t *testing.T) {
 			Generation: 0, ParentGeneration: -1, Provenance: ProvenanceWidened,
 			SeededFromGeneration: -1, EnvironmentID: "mc:teleport-v1",
 		}},
+		{"deepened", Record{
+			Generation: 0, ParentGeneration: -1, Provenance: ProvenanceDeepened,
+			SeededFromGeneration: -1, EnvironmentID: "mc:teleport-v1",
+		}},
+		{"warm-started", Record{
+			Generation: 1, ParentGeneration: 0, Provenance: ProvenanceWarmStarted,
+			SeededFromGeneration: -1, EnvironmentID: "mc:teleport-v1", Recurrent: true,
+		}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,6 +71,8 @@ func TestValidateRejectsMalformedRecords(t *testing.T) {
 		{"leapfrog with seeded-from set", Record{Generation: 1, ParentGeneration: 0, Provenance: ProvenanceLeapfrog, SeededFromGeneration: 0, EnvironmentID: "e"}},
 		{"seeded-live with no seeded-from", Record{Generation: 1, ParentGeneration: 0, Provenance: ProvenanceSeededLive, SeededFromGeneration: -1, EnvironmentID: "e"}},
 		{"widened with seeded-from set", Record{Generation: 0, ParentGeneration: -1, Provenance: ProvenanceWidened, SeededFromGeneration: 0, EnvironmentID: "e"}},
+		{"deepened with seeded-from set", Record{Generation: 0, ParentGeneration: -1, Provenance: ProvenanceDeepened, SeededFromGeneration: 0, EnvironmentID: "e"}},
+		{"warm-started with seeded-from set", Record{Generation: 1, ParentGeneration: 0, Provenance: ProvenanceWarmStarted, SeededFromGeneration: 0, EnvironmentID: "e"}},
 		{"unknown provenance", Record{Generation: 0, ParentGeneration: -1, Provenance: "mystery", SeededFromGeneration: -1, EnvironmentID: "e"}},
 		{"empty environment ID", Record{Generation: 0, ParentGeneration: -1, Provenance: ProvenanceLeapfrog, SeededFromGeneration: -1, EnvironmentID: ""}},
 	}
@@ -76,20 +86,77 @@ func TestValidateRejectsMalformedRecords(t *testing.T) {
 func TestSaveLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	rng := rand.New(rand.NewPCG(1, 2))
-	params := actorcritic.NewParams(rng, 12, 8, 5)
+	params := actorcritic.NewParams(rng, 12, 8, 5, 2)
 	rec := rootRecord("mc:teleport-v1")
 
-	require.NoError(t, Save(dir, params, rec))
+	require.NoError(t, Save(dir, params, rec, PlainCodec))
 
-	loadedParams, loadedRec, err := Load(dir, 0, "mc:teleport-v1")
+	loadedParams, loadedRec, err := Load(dir, 0, "mc:teleport-v1", PlainCodec)
 	require.NoError(t, err)
 
-	assert.Equal(t, params.W0.Data, loadedParams.W0.Data)
+	assert.Equal(t, params.Hidden[0].W.Data, loadedParams.Hidden[0].W.Data)
 	assert.Equal(t, params.Wpi.Data, loadedParams.Wpi.Data)
 	assert.Equal(t, rec.Generation, loadedRec.Generation)
 	assert.Equal(t, rec.Provenance, loadedRec.Provenance)
 	assert.Equal(t, rec.Metadata, loadedRec.Metadata)
 	assert.WithinDuration(t, rec.CreatedAt, loadedRec.CreatedAt, time.Second)
+}
+
+// TestSaveLoadRoundTripRecurrent mirrors TestSaveLoadRoundTrip, using
+// RecurrentCodec instead of PlainCodec - confirming the generic Save/Load
+// core works identically for *actorcritic.RecurrentParams, not just the
+// *actorcritic.Params shape every other test here exercises.
+func TestSaveLoadRoundTripRecurrent(t *testing.T) {
+	dir := t.TempDir()
+	rng := rand.New(rand.NewPCG(1, 2))
+	params := actorcritic.NewRecurrentParams(rng, 12, 8, 5, 2)
+	rec := rootRecord("mc:teleport-v1")
+	rec.Recurrent = true
+
+	require.NoError(t, Save(dir, params, rec, RecurrentCodec))
+
+	loadedParams, loadedRec, err := Load(dir, 0, "mc:teleport-v1", RecurrentCodec)
+	require.NoError(t, err)
+
+	assert.Equal(t, params.Trunk.Hidden[0].W.Data, loadedParams.Trunk.Hidden[0].W.Data)
+	assert.Equal(t, params.LSTM.WhF.Data, loadedParams.LSTM.WhF.Data)
+	assert.True(t, loadedRec.Recurrent)
+	assert.Equal(t, rec.Generation, loadedRec.Generation)
+}
+
+// TestPlainAndRecurrentCodecsCoexistInOneDirectory confirms a plain
+// generation 0 and a recurrent generation 1 (the exact shape
+// loadOrInitTeacherRecurrent's warm-start path produces) can live in the
+// same lineage directory without their params files colliding - Latest
+// only reads the small Record JSON, and Record.Recurrent then tells the
+// caller which Codec to Load each one with.
+func TestPlainAndRecurrentCodecsCoexistInOneDirectory(t *testing.T) {
+	dir := t.TempDir()
+	rng := rand.New(rand.NewPCG(1, 2))
+
+	plainParams := actorcritic.NewParams(rng, 12, 8, 5, 2)
+	require.NoError(t, Save(dir, plainParams, rootRecord("mc:teleport-v1"), PlainCodec))
+
+	recurrentParams := actorcritic.NewRecurrentParams(rng, 12, 8, 5, 2)
+	recurrentRec := Record{
+		Generation: 1, ParentGeneration: 0, Provenance: ProvenanceWarmStarted,
+		SeededFromGeneration: -1, EnvironmentID: "mc:teleport-v1", Recurrent: true,
+	}
+	require.NoError(t, Save(dir, recurrentParams, recurrentRec, RecurrentCodec))
+
+	latest, err := Latest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, 1, latest.Generation)
+	assert.True(t, latest.Recurrent)
+
+	loadedRecurrent, _, err := Load(dir, 1, "mc:teleport-v1", RecurrentCodec)
+	require.NoError(t, err)
+	assert.Equal(t, recurrentParams.Trunk.Hidden[0].W.Data, loadedRecurrent.Trunk.Hidden[0].W.Data)
+
+	loadedPlain, plainRec, err := Load(dir, 0, "mc:teleport-v1", PlainCodec)
+	require.NoError(t, err)
+	assert.False(t, plainRec.Recurrent)
+	assert.Equal(t, plainParams.Hidden[0].W.Data, loadedPlain.Hidden[0].W.Data)
 }
 
 // TestSaveLeavesNoTempFileBehind verifies Save's record write goes
@@ -99,7 +166,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 func TestSaveLeavesNoTempFileBehind(t *testing.T) {
 	dir := t.TempDir()
 	rng := rand.New(rand.NewPCG(1, 2))
-	require.NoError(t, Save(dir, actorcritic.NewParams(rng, 4, 4, 2), rootRecord("mc:teleport-v1")))
+	require.NoError(t, Save(dir, actorcritic.NewParams(rng, 4, 4, 2, 2), rootRecord("mc:teleport-v1"), PlainCodec))
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
@@ -131,31 +198,31 @@ func TestWriteRecordAtomicallyNeverLeavesAPartialFileAtTheFinalPath(t *testing.T
 func TestSaveRejectsInvalidRecord(t *testing.T) {
 	dir := t.TempDir()
 	rng := rand.New(rand.NewPCG(1, 2))
-	params := actorcritic.NewParams(rng, 4, 4, 2)
+	params := actorcritic.NewParams(rng, 4, 4, 2, 2)
 
 	invalid := rootRecord("mc:teleport-v1")
 	invalid.Generation = 1 // root generation must be 0 when ParentGeneration is -1
 
-	assert.Error(t, Save(dir, params, invalid))
+	assert.Error(t, Save(dir, params, invalid, PlainCodec))
 }
 
 func TestLoadRejectsGenerationMismatch(t *testing.T) {
 	dir := t.TempDir()
 	rng := rand.New(rand.NewPCG(1, 2))
-	params := actorcritic.NewParams(rng, 4, 4, 2)
-	require.NoError(t, Save(dir, params, rootRecord("mc:teleport-v1")))
+	params := actorcritic.NewParams(rng, 4, 4, 2, 2)
+	require.NoError(t, Save(dir, params, rootRecord("mc:teleport-v1"), PlainCodec))
 
-	_, _, err := Load(dir, 1, "mc:teleport-v1")
+	_, _, err := Load(dir, 1, "mc:teleport-v1", PlainCodec)
 	assert.Error(t, err)
 }
 
 func TestLoadRejectsEnvironmentMismatch(t *testing.T) {
 	dir := t.TempDir()
 	rng := rand.New(rand.NewPCG(1, 2))
-	params := actorcritic.NewParams(rng, 4, 4, 2)
-	require.NoError(t, Save(dir, params, rootRecord("mc:teleport-v1")))
+	params := actorcritic.NewParams(rng, 4, 4, 2, 2)
+	require.NoError(t, Save(dir, params, rootRecord("mc:teleport-v1"), PlainCodec))
 
-	_, _, err := Load(dir, 0, "mc:other-env")
+	_, _, err := Load(dir, 0, "mc:other-env", PlainCodec)
 	assert.Error(t, err)
 }
 
@@ -164,7 +231,7 @@ func TestLatestReturnsHighestGeneration(t *testing.T) {
 	rng := rand.New(rand.NewPCG(1, 2))
 
 	for gen := 0; gen <= 11; gen++ {
-		params := actorcritic.NewParams(rng, 4, 4, 2)
+		params := actorcritic.NewParams(rng, 4, 4, 2, 2)
 		rec := Record{
 			Generation:           gen,
 			ParentGeneration:     gen - 1,
@@ -172,7 +239,7 @@ func TestLatestReturnsHighestGeneration(t *testing.T) {
 			SeededFromGeneration: -1,
 			EnvironmentID:        "mc:teleport-v1",
 		}
-		require.NoError(t, Save(dir, params, rec))
+		require.NoError(t, Save(dir, params, rec, PlainCodec))
 	}
 
 	latest, err := Latest(dir)
@@ -189,7 +256,7 @@ func TestLatestFailsOnEmptyDir(t *testing.T) {
 func TestLatestIgnoresUnrelatedFiles(t *testing.T) {
 	dir := t.TempDir()
 	rng := rand.New(rand.NewPCG(1, 2))
-	require.NoError(t, Save(dir, actorcritic.NewParams(rng, 4, 4, 2), rootRecord("mc:teleport-v1")))
+	require.NoError(t, Save(dir, actorcritic.NewParams(rng, 4, 4, 2, 2), rootRecord("mc:teleport-v1"), PlainCodec))
 
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a checkpoint"), 0o644))
 
