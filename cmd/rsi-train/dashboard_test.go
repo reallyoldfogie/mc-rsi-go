@@ -6,9 +6,18 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/reallyoldfogie/mc-bot-go/bot/screen"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// fakeItemManager resolves item IDs to names from a fixed map, the one
+// piece of models.ItemManager summarizeInventory actually needs - a small,
+// honest fake, unlike a whole models.Agent (see this file's own doc
+// comment just above).
+type fakeItemManager map[int32]string
+
+func (f fakeItemManager) GetItemNameByID(id int32) string { return f[id] }
 
 // pollOnce (and anything else that calls a models.Agent method) is
 // deliberately not unit-tested here, consistent with reconcileEnvCount's
@@ -119,4 +128,30 @@ func TestServeDashboardPageServesEmbeddedHTML(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
 	assert.Contains(t, w.Body.String(), "<!doctype html>")
+}
+
+func TestSummarizeInventorySumsAcrossSlotGroups(t *testing.T) {
+	itemMgr := fakeItemManager{1: "minecraft:oak_log", 2: "minecraft:stick"}
+	main := []screen.Slot{{ID: 1, Count: 3}, {ID: 2, Count: 1}}
+	hotbar := []screen.Slot{{ID: 1, Count: 2}}
+
+	got := summarizeInventory(itemMgr, main, hotbar)
+
+	assert.Equal(t, []inventoryEntry{{Name: "oak_log", Count: 5}, {Name: "stick", Count: 1}}, got)
+}
+
+func TestSummarizeInventorySkipsEmptyAndAirSlots(t *testing.T) {
+	itemMgr := fakeItemManager{0: "minecraft:air", 1: "minecraft:stick"}
+	slots := []screen.Slot{{ID: 0, Count: 0}, {ID: 0, Count: 1}, {ID: 1, Count: 0}, {ID: 1, Count: 4}}
+
+	got := summarizeInventory(itemMgr, slots)
+
+	assert.Equal(t, []inventoryEntry{{Name: "stick", Count: 4}}, got)
+}
+
+func TestSummarizeInventoryEmptyInventoryReturnsEmptyNotNil(t *testing.T) {
+	got := summarizeInventory(fakeItemManager{}, nil)
+
+	assert.NotNil(t, got, "an empty inventory must still report zero items, not be mistaken for a 'not ready yet' nil")
+	assert.Empty(t, got)
 }

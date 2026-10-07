@@ -64,6 +64,39 @@
   }
   #stats .stat .val { font-size: 16px; font-weight: 600; }
   #empty { padding: 18px; color: #8a8f99; }
+  #inventory {
+    padding: 0 18px 12px;
+    border-bottom: 1px solid #2a2d35;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .item-chip {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: #1b1e25;
+    border: 1px solid #2a2d35;
+    border-radius: 4px;
+    padding: 3px 7px 3px 3px;
+    font-size: 12px;
+  }
+  .item-chip img, .item-chip .badge {
+    width: 20px;
+    height: 20px;
+    image-rendering: pixelated;
+  }
+  .item-chip .badge {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: #2a2d35;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .item-chip .count { color: #c7cad1; }
   /* #plot-wrap (an ordinary block element) absorbs the flex sizing;
      #plot itself just fills it via plain percentages. A canvas given
      flex:1 directly, with no explicit width/height CSS, can get sized
@@ -80,6 +113,7 @@
 </div>
 <div id="main">
   <div id="stats"></div>
+  <div id="inventory"></div>
   <div id="plot-wrap">
     <canvas id="plot"></canvas>
   </div>
@@ -128,13 +162,22 @@
     return "<div class='stat'><label>" + label + "</label><div class='val'>" + value + "</div></div>";
   }
 
-  function renderStats() {
+  // resolveSelected returns the currently selected agent's latest
+  // snapshot, or null if nothing is selected or the selected agent is no
+  // longer connected - the single source of truth renderStats,
+  // renderInventory, and renderPlot's zoomed branch all key off.
+  function resolveSelected() {
+    if (selected === null) return null;
+    var a = latest.find(function (x) { return x.index === selected; });
+    return a || null;
+  }
+
+  function renderStats(a) {
     var el = document.getElementById("stats");
     if (selected === null) {
       el.innerHTML = "<div id='empty'>Viewing all agents - select one to zoom in.</div>";
       return;
     }
-    var a = latest.find(function (x) { return x.index === selected; });
     if (!a) {
       el.innerHTML = "<div id='empty'>Agent " + selected + " is no longer connected.</div>";
       return;
@@ -150,6 +193,38 @@
       stat("Health", a.health.toFixed(1) + " / 20") +
       stat("Food", a.food + " / 20") +
       stat("Updated", new Date(a.updated_at).toLocaleTimeString());
+  }
+
+  function renderInventory(a) {
+    var el = document.getElementById("inventory");
+    el.innerHTML = "";
+    var items = a && a.inventory || [];
+    el.style.display = items.length === 0 ? "none" : "flex";
+    items.forEach(function (it) {
+      var chip = document.createElement("div");
+      chip.className = "item-chip";
+      chip.title = it.name + " ×" + it.count;
+
+      var img = document.createElement("img");
+      img.src = "/icons/" + encodeURIComponent(it.name) + ".png";
+      img.alt = it.name;
+      var badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = it.name.charAt(0).toUpperCase();
+      img.onerror = function () {
+        img.style.display = "none";
+        badge.style.display = "flex";
+      };
+
+      var count = document.createElement("span");
+      count.className = "count";
+      count.textContent = "×" + it.count;
+
+      chip.appendChild(img);
+      chip.appendChild(badge);
+      chip.appendChild(count);
+      el.appendChild(chip);
+    });
   }
 
   // ZOOM_RADIUS is half the window width/height (in blocks) the per-agent
@@ -171,7 +246,7 @@
     if (latest.length === 0) return;
 
     var pad = 30;
-    var sel = selected === null ? null : latest.find(function (a) { return a.index === selected; });
+    var sel = resolveSelected();
     var centerX, centerZ, scale, visible;
 
     if (sel) {
@@ -221,8 +296,10 @@
   }
 
   function render() {
+    var a = resolveSelected();
     renderSidebar();
-    renderStats();
+    renderStats(a);
+    renderInventory(a);
     renderPlot();
   }
 
