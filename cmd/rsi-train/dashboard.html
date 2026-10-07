@@ -39,6 +39,7 @@
   }
   .agent-row:hover { background: #22252d; }
   .agent-row.selected { background: #262a33; border-left-color: #5b9dff; }
+  .agent-row.all-row { font-weight: 600; border-bottom: 1px solid #2a2d35; }
   .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
   .dot.ok { background: #3ddc84; }
   .dot.fail { background: #ff5c5c; }
@@ -101,6 +102,13 @@
   function renderSidebar() {
     var rows = document.getElementById("rows");
     rows.innerHTML = "";
+
+    var allRow = document.createElement("div");
+    allRow.className = "agent-row all-row" + (selected === null ? " selected" : "");
+    allRow.onclick = function () { selected = null; render(); };
+    allRow.textContent = "All agents";
+    rows.appendChild(allRow);
+
     latest.forEach(function (a) {
       var row = document.createElement("div");
       row.className = "agent-row" + (a.index === selected ? " selected" : "");
@@ -122,9 +130,13 @@
 
   function renderStats() {
     var el = document.getElementById("stats");
+    if (selected === null) {
+      el.innerHTML = "<div id='empty'>Viewing all agents - select one to zoom in.</div>";
+      return;
+    }
     var a = latest.find(function (x) { return x.index === selected; });
     if (!a) {
-      el.innerHTML = "<div id='empty'>Select an agent.</div>";
+      el.innerHTML = "<div id='empty'>Agent " + selected + " is no longer connected.</div>";
       return;
     }
     el.innerHTML =
@@ -140,6 +152,12 @@
       stat("Updated", new Date(a.updated_at).toLocaleTimeString());
   }
 
+  // ZOOM_RADIUS is half the window width/height (in blocks) the per-agent
+  // zoomed view centers on its selected bot - comfortably larger than
+  // -clear-area-radius's own default (16) so the bot's whole working area
+  // stays in view as it moves.
+  var ZOOM_RADIUS = 24;
+
   function renderPlot() {
     var canvas = document.getElementById("plot");
     var dpr = window.devicePixelRatio || 1;
@@ -153,22 +171,36 @@
     if (latest.length === 0) return;
 
     var pad = 30;
-    var minX = Math.min.apply(null, latest.map(function (a) { return a.x; }));
-    var maxX = Math.max.apply(null, latest.map(function (a) { return a.x; }));
-    var minZ = Math.min.apply(null, latest.map(function (a) { return a.z; }));
-    var maxZ = Math.max.apply(null, latest.map(function (a) { return a.z; }));
-    var spanX = Math.max(maxX - minX, 1);
-    var spanZ = Math.max(maxZ - minZ, 1);
-    var scale = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanZ);
+    var sel = selected === null ? null : latest.find(function (a) { return a.index === selected; });
+    var centerX, centerZ, scale, visible;
 
-    function toCanvas(a) {
-      return [
-        pad + (a.x - minX) * scale + (w - 2 * pad - spanX * scale) / 2,
-        pad + (a.z - minZ) * scale + (h - 2 * pad - spanZ * scale) / 2
-      ];
+    if (sel) {
+      // Single-agent zoomed view - the view a future 3D camera feed
+      // would replace/sit alongside.
+      centerX = sel.x;
+      centerZ = sel.z;
+      scale = Math.min(w - 2 * pad, h - 2 * pad) / (2 * ZOOM_RADIUS);
+      visible = latest.filter(function (a) {
+        return Math.abs(a.x - centerX) <= ZOOM_RADIUS && Math.abs(a.z - centerZ) <= ZOOM_RADIUS;
+      });
+    } else {
+      var minX = Math.min.apply(null, latest.map(function (a) { return a.x; }));
+      var maxX = Math.max.apply(null, latest.map(function (a) { return a.x; }));
+      var minZ = Math.min.apply(null, latest.map(function (a) { return a.z; }));
+      var maxZ = Math.max.apply(null, latest.map(function (a) { return a.z; }));
+      var spanX = Math.max(maxX - minX, 1);
+      var spanZ = Math.max(maxZ - minZ, 1);
+      centerX = (minX + maxX) / 2;
+      centerZ = (minZ + maxZ) / 2;
+      scale = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanZ);
+      visible = latest;
     }
 
-    latest.forEach(function (a) {
+    function toCanvas(a) {
+      return [w / 2 + (a.x - centerX) * scale, h / 2 + (a.z - centerZ) * scale];
+    }
+
+    visible.forEach(function (a) {
       var p = toCanvas(a);
       var isSel = a.index === selected;
       ctx.beginPath();
@@ -197,7 +229,6 @@
   function poll() {
     fetch("/agents").then(function (r) { return r.json(); }).then(function (data) {
       latest = data || [];
-      if (selected === null && latest.length > 0) selected = latest[0].index;
       render();
     }).catch(function () { /* transient fetch error; try again next tick */ });
   }
