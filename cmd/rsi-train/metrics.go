@@ -114,6 +114,19 @@ var (
 		Help: "Trajectories (episodes) started so far toward the current epoch's rsi_epoch_rollout_size target. Reset to 0 whenever rsi_current_epoch advances to a new epoch - there is no mid-epoch callback in cRL-go to hook directly, so this is inferred from instrumentedEnvironment.Reset, which already fires once per trajectory in real time regardless of which cRL-go collection function is driving it.",
 	})
 
+	// Buckets are scaled for one epoch (rsi_epoch_rollout_size trajectories
+	// collected, then one minibatch-Adam pass over them), not a whole round
+	// like metricRoundDurationSeconds - deliberately distinct, smaller
+	// buckets. Measured as wall-clock time between consecutive OnEpoch
+	// callback firings (see run()/runRecurrentRounds's own lastEpochEnd),
+	// so the very first epoch of a round is timed from the round's own
+	// start, not from whatever the prior round's last epoch happened to be.
+	metricEpochDurationSeconds = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rsi_epoch_duration_seconds",
+		Help:    "Wall-clock duration of each completed Student-training epoch (rsi_epoch_rollout_size trajectories collected plus the PPO update over them) - rsi_round_duration_seconds divided roughly by rsi_epochs_per_generation, but measured directly rather than inferred, since task-mix variance across an epoch's trajectories (see rsi_episode_length_steps) means epochs are not actually uniform in length.",
+		Buckets: []float64{10, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200},
+	})
+
 	metricParallelEnvs = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "rsi_parallel_envs",
 		Help: "The number of parallel bot sessions currently connected. Can change mid-run via POST /config/parallel-envs, applied at the next round boundary.",

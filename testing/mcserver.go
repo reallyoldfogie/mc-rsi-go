@@ -170,6 +170,23 @@ func WithViewDistance(chunks int) ServerOption {
 	}
 }
 
+// WithDataDir sets a launched server's container DataDir to an absolute
+// host path, bind-mounting /data there instead of leaving it on Docker's
+// own anonymous, opaque-named volume storage (EnsureServer/launchServer's
+// own zero-value default - "empty => ephemeral" per testenv.ServerConfig's
+// own doc comment). Only meaningful for a server meant to actually
+// persist (a long-running production training run, not a disposable
+// per-test server) - added 2026-10-05 after exactly that went wrong: a
+// production server's container and its anonymous volume were both
+// removed together in one operation, with the world gone and no
+// record anywhere of how the container had originally been created
+// (see testing's own production server launcher for the fix).
+func WithDataDir(path string) ServerOption {
+	return func(cfg *testenv.ServerConfig) {
+		cfg.DataDir = path
+	}
+}
+
 // WithNamePrefix overrides a launched server's container NamePrefix
 // (default "mc-rsi-trainer-"), applied after this file's own default —
 // so it always wins over whatever opts a caller passed before it. Added

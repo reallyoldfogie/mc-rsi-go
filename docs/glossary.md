@@ -91,6 +91,14 @@ your own queries.
   whether the Student won (was promoted) or the Teacher held. `won / (won + lost)` is the win rate.
 - **`rsi_round_duration_seconds`** — a histogram of how long each completed round took,
   wall-clock. `rsi_round_duration_seconds_sum / rsi_round_duration_seconds_count` gives the mean.
+- **`rsi_epoch_duration_seconds`** — a histogram of how long each completed Student-training epoch
+  took, wall-clock (measured as the time between consecutive `OnEpoch` firings, or since the
+  round's own start for that round's first epoch). Not simply
+  `rsi_round_duration_seconds / rsi_epochs_per_generation`: task-mix variance across an epoch's
+  trajectories (see `rsi_episode_length_steps`) means epochs within the same round aren't actually
+  uniform in length, so this is measured directly rather than inferred — useful for telling apart
+  "this round was slow because of fewer parallel envs or harder tasks" from "this round was slow
+  because something stalled" (see the "Average epoch duration" dashboard panel).
 - **`rsi_teacher_reward`** / **`rsi_student_reward`** — each side's mean evaluation reward from the
   most recently completed round (see **Reward**, above — these aren't normalized across task
   types, so compare Teacher vs. Student within one round rather than across rounds with a

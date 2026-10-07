@@ -6,13 +6,23 @@
   "editable": true,
   "timezone": "browser",
   "refresh": "10s",
-  "time": { "from": "now-24h", "to": "now" },
-  "tags": ["mc-rsi-trainer"],
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "tags": [
+    "mc-rsi-trainer"
+  ],
   "panels": [
     {
       "type": "row",
       "title": "Current state",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "id": 100,
       "collapsed": false,
       "panels": []
@@ -22,107 +32,398 @@
       "title": "Process",
       "description": "Whether Prometheus's last scrape of rsi-train's /metrics endpoint succeeded. 1 = reachable, 0 = the process is down or the metrics server can't be reached.",
       "id": 1,
-      "gridPos": { "h": 4, "w": 3, "x": 0, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "up{job=\"rsi-train\"}", "refId": "A" }],
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "up{job=\"rsi-train\"}",
+          "refId": "A"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
           "mappings": [
-            { "type": "value", "options": { "1": { "text": "LIVE", "color": "green" } } },
-            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" } } }
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "LIVE",
+                  "color": "green"
+                }
+              }
+            },
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "DOWN",
+                  "color": "red"
+                }
+              }
+            }
           ],
-          "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 1, "color": "green" }] }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "red"
+              },
+              {
+                "value": 1,
+                "color": "green"
+              }
+            ]
+          }
         }
       },
-      "options": { "textMode": "value", "colorMode": "background", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "options": {
+        "textMode": "value",
+        "colorMode": "background",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Generation",
       "description": "Current Teacher generation number. Increases by one every time a Student beats its Teacher and gets promoted (pkg/lineage).",
       "id": 2,
-      "gridPos": { "h": 4, "w": 3, "x": 3, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "rsi_generation", "refId": "A" }],
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] } } },
-      "options": { "textMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "gridPos": {
+        "h": 4,
+        "w": 3,
+        "x": 3,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "rsi_generation",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Current round / epoch",
       "description": "The round and Student-training epoch currently in progress. Epoch shows -1 between rounds, before the new round's first epoch completes.",
       "id": 3,
-      "gridPos": { "h": 4, "w": 4, "x": 6, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 6,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "rsi_current_round", "refId": "A", "legendFormat": "round" },
-        { "expr": "rsi_current_epoch", "refId": "B", "legendFormat": "epoch" }
+        {
+          "expr": "rsi_current_round",
+          "refId": "A",
+          "legendFormat": "round"
+        },
+        {
+          "expr": "rsi_current_epoch",
+          "refId": "B",
+          "legendFormat": "epoch"
+        }
       ],
-      "options": { "textMode": "value_and_name", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "horizontal" }
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "horizontal"
+      }
     },
     {
       "type": "bargauge",
       "title": "Epoch / round progress",
       "description": "Two bars, both 0-100%, pairing with 'Current round / epoch' to the left: 'epoch progress' is 100 * rsi_epoch_trajectories_started / rsi_epoch_rollout_size (how far the in-progress epoch's rollout collection has gotten toward its trajectory target, resetting to 0 whenever the epoch count advances); 'round progress' is 100 * (rsi_current_epoch + 1) / rsi_epochs_per_generation (how far through the round's own epoch budget that epoch count is, resetting to 0 at the next round's start, when rsi_current_epoch resets to -1).",
       "id": 114,
-      "gridPos": { "h": 4, "w": 4, "x": 10, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 10,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "100 * rsi_epoch_trajectories_started / rsi_epoch_rollout_size", "refId": "A", "legendFormat": "epoch progress" },
-        { "expr": "100 * (rsi_current_epoch + 1) / rsi_epochs_per_generation", "refId": "B", "legendFormat": "round progress" }
+        {
+          "expr": "100 * rsi_epoch_trajectories_started / rsi_epoch_rollout_size",
+          "refId": "A",
+          "legendFormat": "epoch progress"
+        },
+        {
+          "expr": "100 * (rsi_current_epoch + 1) / rsi_epochs_per_generation",
+          "refId": "B",
+          "legendFormat": "round progress"
+        }
       ],
-      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] } } },
-      "options": { "displayMode": "gradient", "orientation": "horizontal", "showUnfilled": true, "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Parallel envs",
-      "description": "rsi_parallel_envs — the number of parallel bot sessions currently connected. Changeable mid-run via POST /config/parallel-envs?n=N (rsi-train's metrics port), applied at the next round boundary rather than instantly.",
+      "description": "rsi_parallel_envs \u2014 the number of parallel bot sessions currently connected. Changeable mid-run via POST /config/parallel-envs?n=N (rsi-train's metrics port), applied at the next round boundary rather than instantly.",
       "id": 7,
-      "gridPos": { "h": 4, "w": 2, "x": 14, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "rsi_parallel_envs", "refId": "A" }],
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] } } },
-      "options": { "textMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 14,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "rsi_parallel_envs",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Rounds won",
       "description": "Total completed rounds where the Student beat the Teacher. Uses increase() over the \"Cumulative window\" variable above rather than the raw counter value, which would read 0 right after any trainer restart - the counter itself resets in the exporter's memory on every restart, but Prometheus's own scrape history hasn't lost anything, so increase() correctly reconstructs the true total across every restart (as long as the window it looks back over is long enough to not itself start partway through this run's history - the default, All-time, is).",
       "id": 4,
-      "gridPos": { "h": 4, "w": 2, "x": 16, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "sum(increase(rsi_rounds_total{outcome=\"won\"}[$lookback]))", "refId": "A" }],
-      "fieldConfig": { "defaults": { "color": { "fixedColor": "green", "mode": "fixed" } } },
-      "options": { "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 16,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(rsi_rounds_total{outcome=\"won\"}[$lookback]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "green",
+            "mode": "fixed"
+          }
+        }
+      },
+      "options": {
+        "textMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Rounds lost",
-      "description": "Total completed rounds where the Teacher held. Not wasted work — the Student's updates are simply discarded and the next round tries again from the same Teacher. Uses increase() over the \"Cumulative window\" variable for the same restart-survival reason as the \"Rounds won\" panel next to it.",
+      "description": "Total completed rounds where the Teacher held. Not wasted work \u2014 the Student's updates are simply discarded and the next round tries again from the same Teacher. Uses increase() over the \"Cumulative window\" variable for the same restart-survival reason as the \"Rounds won\" panel next to it.",
       "id": 5,
-      "gridPos": { "h": 4, "w": 2, "x": 18, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "sum(increase(rsi_rounds_total{outcome=\"lost\"}[$lookback]))", "refId": "A" }],
-      "fieldConfig": { "defaults": { "color": { "fixedColor": "orange", "mode": "fixed" } } },
-      "options": { "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "gridPos": {
+        "h": 4,
+        "w": 2,
+        "x": 18,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(rsi_rounds_total{outcome=\"lost\"}[$lookback]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          }
+        }
+      },
+      "options": {
+        "textMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Win rate",
       "description": "Share of completed rounds the Student has won. Uses increase() over the \"Cumulative window\" variable for the same restart-survival reason as \"Rounds won\"/\"Rounds lost\".",
       "id": 6,
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "100 * sum(increase(rsi_rounds_total{outcome=\"won\"}[$lookback])) / sum(increase(rsi_rounds_total[$lookback]))", "refId": "A" }],
-      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "red" }, { "value": 30, "color": "orange" }, { "value": 50, "color": "green" }] } } },
-      "options": { "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 20,
+        "y": 1
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "100 * sum(increase(rsi_rounds_total{outcome=\"won\"}[$lookback])) / sum(increase(rsi_rounds_total[$lookback]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "red"
+              },
+              {
+                "value": 30,
+                "color": "orange"
+              },
+              {
+                "value": 50,
+                "color": "green"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Training rate",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "id": 101,
       "collapsed": false,
       "panels": []
@@ -130,30 +431,95 @@
     {
       "type": "timeseries",
       "title": "Average return per epoch",
-      "description": "rsi_epoch_avg_return — the mean total reward per rollout episode in the batch that produced each Student-training epoch. This is the core \"is it learning\" signal: within a round it should trend up (or at least not collapse) as epochs progress; compare its level across rounds only loosely, since the curriculum's task mix varies episode to episode.",
+      "description": "rsi_epoch_avg_return \u2014 the mean total reward per rollout episode in the batch that produced each Student-training epoch. This is the core \"is it learning\" signal: within a round it should trend up (or at least not collapse) as epochs progress; compare its level across rounds only loosely, since the curriculum's task mix varies episode to episode.",
       "id": 10,
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 6 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "rsi_epoch_avg_return", "refId": "A", "legendFormat": "avg return" }],
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "spanNulls": true } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "rsi_epoch_avg_return",
+          "refId": "A",
+          "legendFormat": "avg return"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Training throughput (samples/sec)",
-      "description": "rate(rsi_epoch_samples_total[5m]) — how many rollout steps (samples) Student training is consuming per second. A sustained drop usually means the live Minecraft session has slowed down (server load, network), not that PPO itself changed.",
+      "description": "rate(rsi_epoch_samples_total[5m]) \u2014 how many rollout steps (samples) Student training is consuming per second. A sustained drop usually means the live Minecraft session has slowed down (server load, network), not that PPO itself changed.",
       "id": 11,
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 6 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "rate(rsi_epoch_samples_total[5m])", "refId": "A", "legendFormat": "samples/sec" }],
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "rate(rsi_epoch_samples_total[5m])",
+          "refId": "A",
+          "legendFormat": "samples/sec"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Rounds",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 15 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
       "id": 102,
       "collapsed": false,
       "panels": []
@@ -161,73 +527,274 @@
     {
       "type": "timeseries",
       "title": "Teacher vs. Student reward per round",
-      "description": "rsi_teacher_reward / rsi_student_reward — each side's mean evaluation reward from the most recently completed round. A Student point above its Teacher point at the same round means it won and was promoted (see Generation above).",
+      "description": "rsi_teacher_reward / rsi_student_reward \u2014 each side's mean evaluation reward from the most recently completed round. A Student point above its Teacher point at the same round means it won and was promoted (see Generation above).",
       "id": 20,
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "rsi_teacher_reward", "refId": "A", "legendFormat": "teacher" },
-        { "expr": "rsi_student_reward", "refId": "B", "legendFormat": "student" }
+        {
+          "expr": "rsi_teacher_reward",
+          "refId": "A",
+          "legendFormat": "teacher"
+        },
+        {
+          "expr": "rsi_student_reward",
+          "refId": "B",
+          "legendFormat": "student"
+        }
       ],
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "pointSize": 6, "showPoints": "always" } }, "overrides": [{ "matcher": { "id": "byName", "options": "teacher" }, "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }] }, { "matcher": { "id": "byName", "options": "student" }, "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }] }] },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "pointSize": 6,
+            "showPoints": "always"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "teacher"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "student"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "blue",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Average round duration",
       "description": "Mean wall-clock time per completed round (all epochs of Student training plus both sides' evaluation episodes). Uses increase() over the \"Cumulative window\" variable on both the sum and count rather than their raw values, for the same restart-survival reason as \"Rounds won\"/\"Rounds lost\".",
       "id": 21,
-      "gridPos": { "h": 9, "w": 6, "x": 12, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "sum(increase(rsi_round_duration_seconds_sum[$lookback])) / sum(increase(rsi_round_duration_seconds_count[$lookback]))", "refId": "A" }],
-      "fieldConfig": { "defaults": { "unit": "s" } },
-      "options": { "textMode": "value", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 12,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(rsi_round_duration_seconds_sum[$lookback])) / sum(increase(rsi_round_duration_seconds_count[$lookback]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "options": {
+        "textMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "bargauge",
       "title": "Task mix",
       "description": "How the curriculum's random per-episode task selection has actually split across tasks, over the \"Cumulative window\" variable above (All-time by default - cumulative counts over that window only ever grow; compare shapes, not absolute size). Only present when rsi-train was started with -curriculum-config. See \"Task mix balance\" below for whether the split is actually even. Uses increase() rather than the raw counter value, for the same restart-survival reason as \"Rounds won\"/\"Rounds lost\" - switch the variable to \"Selected time range\" to see task selection over just the dashboard's visible window instead (undercounts across a restart inside that window, same as any raw counter would).",
       "id": 22,
-      "gridPos": { "h": 9, "w": 6, "x": 18, "y": 16 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "sum by (task) (increase(rsi_task_episodes_total[$lookback]))", "legendFormat": "{{task}}", "refId": "A" }],
-      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "blue" }] } } },
-      "options": { "displayMode": "gradient", "orientation": "horizontal", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 18,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum by (task) (increase(rsi_task_episodes_total[$lookback]))",
+          "legendFormat": "{{task}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "blue"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
-
     {
       "type": "timeseries",
       "title": "Student advantage vs. promotion threshold",
       "description": "rsi_eval_paired_diff (Student minus Teacher mean evaluation reward, same tasks on each side) against the advantage a Student needs to be promoted: rsi_eval_win_zscore_threshold standard errors (rsi_eval_paired_diff_stderr). The advantage line must sit above the threshold line for a win; when the two policies are equally good it should hover around zero, well below it. Values are the most recently completed round's.",
       "id": 38,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 25 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "rsi_eval_paired_diff", "refId": "A", "legendFormat": "student advantage" },
-        { "expr": "rsi_eval_win_zscore_threshold * rsi_eval_paired_diff_stderr", "refId": "B", "legendFormat": "needed to promote" }
+        {
+          "expr": "rsi_eval_paired_diff",
+          "refId": "A",
+          "legendFormat": "student advantage"
+        },
+        {
+          "expr": "rsi_eval_win_zscore_threshold * rsi_eval_paired_diff_stderr",
+          "refId": "B",
+          "legendFormat": "needed to promote"
+        }
       ],
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "pointSize": 6, "showPoints": "always" } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "pointSize": 6,
+            "showPoints": "always"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Evaluation spread and sample size",
       "description": "rsi_eval_reward_std by side (per-episode evaluation reward spread) and rsi_eval_episodes (episodes per side, summed over every environment) for the most recently completed round. A large spread with a small sample is why a single round's teacher/student comparison can't be trusted on its own.",
       "id": 39,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 25 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "rsi_eval_reward_std{side=\"teacher\"}", "refId": "A", "legendFormat": "teacher std" },
-        { "expr": "rsi_eval_reward_std{side=\"student\"}", "refId": "B", "legendFormat": "student std" },
-        { "expr": "rsi_eval_episodes", "refId": "C", "legendFormat": "episodes per side" }
+        {
+          "expr": "rsi_eval_reward_std{side=\"teacher\"}",
+          "refId": "A",
+          "legendFormat": "teacher std"
+        },
+        {
+          "expr": "rsi_eval_reward_std{side=\"student\"}",
+          "refId": "B",
+          "legendFormat": "student std"
+        },
+        {
+          "expr": "rsi_eval_episodes",
+          "refId": "C",
+          "legendFormat": "episodes per side"
+        }
       ],
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "pointSize": 6, "showPoints": "always" } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "pointSize": 6,
+            "showPoints": "always"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "row",
       "title": "Episode health and activity",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 33 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
       "id": 103,
       "collapsed": false,
       "panels": []
@@ -235,52 +802,165 @@
     {
       "type": "timeseries",
       "title": "Episode outcomes/sec",
-      "description": "sum(rate(rsi_episodes_total[5m])) by outcome — completed episode success, failure, and truncation rates. A truncation means a new reset began before the prior episode reported Done.",
+      "description": "sum(rate(rsi_episodes_total[5m])) by outcome \u2014 completed episode success, failure, and truncation rates. A truncation means a new reset began before the prior episode reported Done.",
       "id": 30,
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 34 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "sum(rate(rsi_episodes_total{outcome=\"success\"}[5m]))", "refId": "A", "legendFormat": "success" },
-        { "expr": "sum(rate(rsi_episodes_total{outcome=\"failure\"}[5m]))", "refId": "B", "legendFormat": "failure" },
-        { "expr": "sum(rate(rsi_episodes_total{outcome=\"truncated\"}[5m]))", "refId": "C", "legendFormat": "truncated" }
+        {
+          "expr": "sum(rate(rsi_episodes_total{outcome=\"success\"}[5m]))",
+          "refId": "A",
+          "legendFormat": "success"
+        },
+        {
+          "expr": "sum(rate(rsi_episodes_total{outcome=\"failure\"}[5m]))",
+          "refId": "B",
+          "legendFormat": "failure"
+        },
+        {
+          "expr": "sum(rate(rsi_episodes_total{outcome=\"truncated\"}[5m]))",
+          "refId": "C",
+          "legendFormat": "truncated"
+        }
       ],
-      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Episode starts and steps/sec",
-      "description": "rates of rsi_episodes_started_total and rsi_episode_steps_total — live environment activity. In curriculum runs, task labels identify the selected goto, mine, or craft episode.",
+      "description": "rates of rsi_episodes_started_total and rsi_episode_steps_total \u2014 live environment activity. In curriculum runs, task labels identify the selected goto, mine, or craft episode.",
       "id": 31,
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 34 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "sum(rate(rsi_episodes_started_total[5m]))", "refId": "A", "legendFormat": "episodes started/sec" },
-        { "expr": "sum(rate(rsi_episode_steps_total[5m]))", "refId": "B", "legendFormat": "environment steps/sec" }
+        {
+          "expr": "sum(rate(rsi_episodes_started_total[5m]))",
+          "refId": "A",
+          "legendFormat": "episodes started/sec"
+        },
+        {
+          "expr": "sum(rate(rsi_episode_steps_total[5m]))",
+          "refId": "B",
+          "legendFormat": "environment steps/sec"
+        }
       ],
-      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Step duration by task (p50/p95/p99)",
-      "description": "histogram_quantile over rsi_step_duration_seconds by task — per-environment-step wall-clock time (network round-trip plus in-game action wait, e.g. a mine/craft tick). Meant to surface slow steps (a stuck retry loop, a blocking sleep) directly, rather than requiring manual log-timestamp correlation.",
+      "description": "histogram_quantile over rsi_step_duration_seconds by task \u2014 per-environment-step wall-clock time (network round-trip plus in-game action wait, e.g. a mine/craft tick). Meant to surface slow steps (a stuck retry loop, a blocking sleep) directly, rather than requiring manual log-timestamp correlation.",
       "id": 37,
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 43 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.5, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))", "refId": "A", "legendFormat": "p50 {{task}}" },
-        { "expr": "histogram_quantile(0.95, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))", "refId": "B", "legendFormat": "p95 {{task}}" },
-        { "expr": "histogram_quantile(0.99, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))", "refId": "C", "legendFormat": "p99 {{task}}" }
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))",
+          "refId": "A",
+          "legendFormat": "p50 {{task}}"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))",
+          "refId": "B",
+          "legendFormat": "p95 {{task}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(rsi_step_duration_seconds_bucket[5m])) by (le, task))",
+          "refId": "C",
+          "legendFormat": "p99 {{task}}"
+        }
       ],
-      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "pointSize": 4, "showPoints": "never" } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "pointSize": 4,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Training health",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 52 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 52
+      },
       "id": 104,
       "collapsed": false,
       "panels": []
@@ -288,41 +968,164 @@
     {
       "type": "timeseries",
       "title": "Gradient updates/sec",
-      "description": "rate(rsi_gradient_updates_total[5m]) — optimizer update throughput during Student training.",
+      "description": "rate(rsi_gradient_updates_total[5m]) \u2014 optimizer update throughput during Student training.",
       "id": 32,
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 53 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "rate(rsi_gradient_updates_total[5m])", "refId": "A", "legendFormat": "updates/sec" }],
-      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 53
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "rate(rsi_gradient_updates_total[5m])",
+          "refId": "A",
+          "legendFormat": "updates/sec"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Reset failures",
-      "description": "sum(increase(rsi_reset_failures_total[$__range])) — environment reset failures during the selected dashboard range.",
+      "description": "sum(increase(rsi_reset_failures_total[$__range])) \u2014 environment reset failures during the selected dashboard range.",
       "id": 33,
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 53 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "sum(increase(rsi_reset_failures_total[$__range]))", "refId": "A" }],
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "orange" }, { "value": 10, "color": "red" }] } } },
-      "options": { "textMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 53
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(rsi_reset_failures_total[$__range]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 1,
+                "color": "orange"
+              },
+              {
+                "value": 10,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
     {
       "type": "stat",
       "title": "Step errors",
-      "description": "sum(increase(rsi_step_errors_total[$__range])) — environment step failures during the selected dashboard range.",
+      "description": "sum(increase(rsi_step_errors_total[$__range])) \u2014 environment step failures during the selected dashboard range.",
       "id": 34,
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 53 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "sum(increase(rsi_step_errors_total[$__range]))", "refId": "A" }],
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "value": null, "color": "green" }, { "value": 1, "color": "orange" }, { "value": 10, "color": "red" }] } } },
-      "options": { "textMode": "value", "graphMode": "area", "reduceOptions": { "calcs": ["lastNotNull"] } }
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 53
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(rsi_step_errors_total[$__range]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "green"
+              },
+              {
+                "value": 1,
+                "color": "orange"
+              },
+              {
+                "value": 10,
+                "color": "red"
+              }
+            ]
+          }
+        }
+      },
+      "options": {
+        "textMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Completion rates",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 61 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 61
+      },
       "id": 105,
       "collapsed": false,
       "panels": []
@@ -332,41 +1135,142 @@
       "title": "Cumulative completion rate",
       "description": "Cumulative successful episode completions divided by all cumulative episode attempts (success + failure + truncated). Truncated episodes count against the rate, same as failure, since the task was never actually completed - a truncation just means a new reset began before the prior episode reported Done, rather than the episode reporting Done itself. Success is the reward-based completion proxy used by rsi-train.",
       "id": 35,
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 62 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "100 * sum(rsi_episodes_total{outcome=\"success\"}) / sum(rsi_episodes_total{outcome=~\"success|failure|truncated\"})", "refId": "A", "legendFormat": "all tasks" }],
-      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 62
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "100 * sum(rsi_episodes_total{outcome=\"success\"}) / sum(rsi_episodes_total{outcome=~\"success|failure|truncated\"})",
+          "refId": "A",
+          "legendFormat": "all tasks"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Completion rate by task",
       "description": "Cumulative successful episode completions divided by all cumulative episode attempts (success + failure + truncated) for each selected task type. Truncated episodes count against the rate, same as failure - see 'Cumulative completion rate' panel's description. The task label is assigned when the curriculum poses the episode.",
       "id": 36,
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 62 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "100 * sum by (task) (rsi_episodes_total{outcome=\"success\"}) / sum by (task) (rsi_episodes_total{outcome=~\"success|failure|truncated\"})", "refId": "A", "legendFormat": "{{task}}" }],
-      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 62
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "100 * sum by (task) (rsi_episodes_total{outcome=\"success\"}) / sum by (task) (rsi_episodes_total{outcome=~\"success|failure|truncated\"})",
+          "refId": "A",
+          "legendFormat": "{{task}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Chosen actions by task (share of steps)",
-      "description": "rsi_actions_total — which action the policy picked, as a share of each task's steps over 10 minutes. Read with the step-duration histogram: for mine_far, most steps finish instantly because the policy picked an action that did nothing (Mine before the block is in view, GoToTarget after arriving, Wait). A policy that has learned the sequence spends its steps on goto until the block appears and then mine.",
+      "description": "rsi_actions_total \u2014 which action the policy picked, as a share of each task's steps over 10 minutes. Read with the step-duration histogram: for mine_far, most steps finish instantly because the policy picked an action that did nothing (Mine before the block is in view, GoToTarget after arriving, Wait). A policy that has learned the sequence spends its steps on goto until the block appears and then mine.",
       "id": 40,
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 71 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "100 * sum by (task, action) (rate(rsi_actions_total[10m])) / on(task) group_left sum by (task) (rate(rsi_actions_total[10m]))", "refId": "A", "legendFormat": "{{task}} / {{action}}" }
+        {
+          "expr": "100 * sum by (task, action) (rate(rsi_actions_total[10m])) / on(task) group_left sum by (task) (rate(rsi_actions_total[10m]))",
+          "refId": "A",
+          "legendFormat": "{{task}} / {{action}}"
+        }
       ],
-      "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0 } } },
-      "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Process resources",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 80 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      },
       "id": 106,
       "collapsed": false,
       "panels": []
@@ -374,44 +1278,141 @@
     {
       "type": "timeseries",
       "title": "Process CPU usage",
-      "description": "rate(process_cpu_seconds_total[1m]) — CPU cores in use by the trainer process itself (1.0 = one full core saturated; this process is multi-threaded, so it can exceed 1.0). Exposed automatically by the Prometheus client library, not a custom rsi_* metric. Found live (2026-10): a busy-wait bug and an uncached per-call lookup in mc-agent's pathfinding together held this at 3-4 the whole run; both are fixed as of mc-agent v0.0.36/v0.0.37, after which it should sit low except during real bursts of PPO gradient computation.",
+      "description": "rate(process_cpu_seconds_total[1m]) \u2014 CPU cores in use by the trainer process itself (1.0 = one full core saturated; this process is multi-threaded, so it can exceed 1.0). Exposed automatically by the Prometheus client library, not a custom rsi_* metric. Found live (2026-10): a busy-wait bug and an uncached per-call lookup in mc-agent's pathfinding together held this at 3-4 the whole run; both are fixed as of mc-agent v0.0.36/v0.0.37, after which it should sit low except during real bursts of PPO gradient computation.",
       "id": 41,
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 81 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "rate(process_cpu_seconds_total{job=\"rsi-train\"}[1m])", "refId": "A", "legendFormat": "CPU cores" }],
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 81
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "rate(process_cpu_seconds_total{job=\"rsi-train\"}[1m])",
+          "refId": "A",
+          "legendFormat": "CPU cores"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Process memory usage",
       "description": "process_resident_memory_bytes (RSS, the OS-level view) and go_memstats_heap_alloc_bytes (what Go's own heap thinks is live) for the trainer process. RSS normally sits above heap-in-use; a sustained, growing gap between them is itself worth noticing, not just a rising RSS alone.",
       "id": 42,
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 81 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 81
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "process_resident_memory_bytes{job=\"rsi-train\"}", "refId": "A", "legendFormat": "RSS" },
-        { "expr": "go_memstats_heap_alloc_bytes{job=\"rsi-train\"}", "refId": "B", "legendFormat": "heap in use" }
+        {
+          "expr": "process_resident_memory_bytes{job=\"rsi-train\"}",
+          "refId": "A",
+          "legendFormat": "RSS"
+        },
+        {
+          "expr": "go_memstats_heap_alloc_bytes{job=\"rsi-train\"}",
+          "refId": "B",
+          "legendFormat": "heap in use"
+        }
       ],
-      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
     {
       "type": "timeseries",
       "title": "Goroutines",
-      "description": "go_goroutines — live goroutine count. A steady climb (rather than a bounded, roughly-flat count tracking rsi_parallel_envs) is the signature a prior live incident had: a busy-wait bug left dozens of goroutines stuck runnable, visible here before it was diagnosed via a SIGQUIT stack dump.",
+      "description": "go_goroutines \u2014 live goroutine count. A steady climb (rather than a bounded, roughly-flat count tracking rsi_parallel_envs) is the signature a prior live incident had: a busy-wait bug left dozens of goroutines stuck runnable, visible here before it was diagnosed via a SIGQUIT stack dump.",
       "id": 43,
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 81 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "go_goroutines{job=\"rsi-train\"}", "refId": "A", "legendFormat": "goroutines" }],
-      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } }
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 81
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "go_goroutines{job=\"rsi-train\"}",
+          "refId": "A",
+          "legendFormat": "goroutines"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Curriculum balance",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 89 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 89
+      },
       "id": 107,
       "collapsed": false,
       "panels": []
@@ -419,10 +1420,18 @@
     {
       "type": "barchart",
       "title": "Task mix balance (% deviation from other tasks' average)",
-      "description": "For each task, 100 * (its count - the average of every OTHER task's count) / that average - i.e. how far above or below the rest of the curriculum's tasks it currently sits, as a percentage. A perfectly even split sits at 0% for every task; the thresholds flag a task that's meaningfully over- or under-represented relative to the others, not an arbitrary absolute count. ±15% green, ±15-30% orange, beyond ±30% red. Uses barchart rather than bargauge specifically so bars are centered on zero (extending left for a negative deviation, right for a positive one) - bargauge has no such mode, it always fills from its configured min toward the value, which floored every negative bar at the min edge instead of showing it relative to zero. axisSoftMin/Max keep the ±30 threshold band visually legible without clipping anything further out. The organize transform drops Time/instance/job - Prometheus's table format turns every label into its own column, and barchart's auto-detected category axis otherwise grabs whichever string column sorts first (instance), not task. Every rsi_task_episodes_total reference is wrapped in increase(...[$lookback]) rather than read raw, for the same restart-survival reason as \"Rounds won\"/\"Rounds lost\" - this panel was missed in that original pass (found live when asked whether it was all-time or since-the-last-restart; it was reading the raw, restart-reset counter). Uses the dashboard's \"Cumulative window\" variable, same as \"Task mix\" above - switch it to see the balance over just the visible time range instead of the whole run.",
+      "description": "For each task, 100 * (its count - the average of every OTHER task's count) / that average - i.e. how far above or below the rest of the curriculum's tasks it currently sits, as a percentage. A perfectly even split sits at 0% for every task; the thresholds flag a task that's meaningfully over- or under-represented relative to the others, not an arbitrary absolute count. \u00b115% green, \u00b115-30% orange, beyond \u00b130% red. Uses barchart rather than bargauge specifically so bars are centered on zero (extending left for a negative deviation, right for a positive one) - bargauge has no such mode, it always fills from its configured min toward the value, which floored every negative bar at the min edge instead of showing it relative to zero. axisSoftMin/Max keep the \u00b130 threshold band visually legible without clipping anything further out. The organize transform drops Time/instance/job - Prometheus's table format turns every label into its own column, and barchart's auto-detected category axis otherwise grabs whichever string column sorts first (instance), not task. Every rsi_task_episodes_total reference is wrapped in increase(...[$lookback]) rather than read raw, for the same restart-survival reason as \"Rounds won\"/\"Rounds lost\" - this panel was missed in that original pass (found live when asked whether it was all-time or since-the-last-restart; it was reading the raw, restart-reset counter). Uses the dashboard's \"Cumulative window\" variable, same as \"Task mix\" above - switch it to see the balance over just the visible time range instead of the whole run.",
       "id": 44,
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 90 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 90
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
         {
           "expr": "100 * (sum by (task) (increase(rsi_task_episodes_total[$lookback])) - (scalar(sum(increase(rsi_task_episodes_total[$lookback]))) - sum by (task) (increase(rsi_task_episodes_total[$lookback]))) / (scalar(count(sum by (task) (increase(rsi_task_episodes_total[$lookback])))) - 1)) / ((scalar(sum(increase(rsi_task_episodes_total[$lookback]))) - sum by (task) (increase(rsi_task_episodes_total[$lookback]))) / (scalar(count(sum by (task) (increase(rsi_task_episodes_total[$lookback])))) - 1))",
@@ -433,20 +1442,47 @@
         }
       ],
       "transformations": [
-        { "id": "organize", "options": { "excludeByName": { "Time": true, "instance": true, "job": true } } }
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "instance": true,
+              "job": true
+            }
+          }
+        }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
-          "custom": { "axisSoftMin": -50, "axisSoftMax": 50 },
+          "custom": {
+            "axisSoftMin": -50,
+            "axisSoftMax": 50
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "value": null, "color": "red" },
-              { "value": -30, "color": "orange" },
-              { "value": -15, "color": "green" },
-              { "value": 15, "color": "orange" },
-              { "value": 30, "color": "red" }
+              {
+                "value": null,
+                "color": "red"
+              },
+              {
+                "value": -30,
+                "color": "orange"
+              },
+              {
+                "value": -15,
+                "color": "green"
+              },
+              {
+                "value": 15,
+                "color": "orange"
+              },
+              {
+                "value": 30,
+                "color": "red"
+              }
             ]
           }
         }
@@ -455,15 +1491,24 @@
         "orientation": "horizontal",
         "showValue": "always",
         "xTickLabelRotation": 0,
-        "legend": { "displayMode": "list", "placement": "bottom" },
-        "tooltip": { "mode": "single" }
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single"
+        }
       }
     },
-
     {
       "type": "row",
       "title": "Step-budget investigation (chain_place / chain_use)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 99 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 99
+      },
       "id": 108,
       "collapsed": false,
       "panels": []
@@ -473,21 +1518,67 @@
       "title": "Episode length by outcome (p50/p90/p99, training only)",
       "description": "histogram_quantile over rsi_episode_length_steps by task and outcome, scoped to chain_place/chain_use (the only tasks with persistently elevated truncation after the mc-agent client-sync timeout fix - see docs/plans/13) and filtered to phase=\"training\". truncated lands at the active step cap almost by definition; the question this answers is where success/failure fall relative to it: short with a thin tail near the cap means episodes that don't finish are getting stuck early, not merely running a little long - a tail hugging the cap would instead mean some near-misses really would finish with a larger step-len budget. The training filter matters: a round's Teacher/Student evaluation episodes share this metric too, with a 200-step cap (-eval-episode-len) instead of training's 100 - without it, an eval episode's longer length looked like an impossible training outlier (found live 2026-10-03: p99 chain_use/truncated reading 200).",
       "id": 109,
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 100 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 100
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "histogram_quantile(0.5, sum(rate(rsi_episode_length_steps_bucket{task=~\"chain_place|chain_use\",phase=\"training\"}[10m])) by (le, task, outcome))", "refId": "A", "legendFormat": "p50 {{task}}/{{outcome}}" },
-        { "expr": "histogram_quantile(0.9, sum(rate(rsi_episode_length_steps_bucket{task=~\"chain_place|chain_use\",phase=\"training\"}[10m])) by (le, task, outcome))", "refId": "B", "legendFormat": "p90 {{task}}/{{outcome}}" },
-        { "expr": "histogram_quantile(0.99, sum(rate(rsi_episode_length_steps_bucket{task=~\"chain_place|chain_use\",phase=\"training\"}[10m])) by (le, task, outcome))", "refId": "C", "legendFormat": "p99 {{task}}/{{outcome}}" }
+        {
+          "expr": "histogram_quantile(0.5, sum(rate(rsi_episode_length_steps_bucket{task=~\"chain_place|chain_use\",phase=\"training\"}[10m])) by (le, task, outcome))",
+          "refId": "A",
+          "legendFormat": "p50 {{task}}/{{outcome}}"
+        },
+        {
+          "expr": "histogram_quantile(0.9, sum(rate(rsi_episode_length_steps_bucket{task=~\"chain_place|chain_use\",phase=\"training\"}[10m])) by (le, task, outcome))",
+          "refId": "B",
+          "legendFormat": "p90 {{task}}/{{outcome}}"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(rsi_episode_length_steps_bucket{task=~\"chain_place|chain_use\",phase=\"training\"}[10m])) by (le, task, outcome))",
+          "refId": "C",
+          "legendFormat": "p99 {{task}}/{{outcome}}"
+        }
       ],
-      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "pointSize": 4, "showPoints": "never" } } },
-      "options": { "legend": { "displayMode": "table", "placement": "right", "sortBy": "Last", "sortDesc": true }, "tooltip": { "mode": "multi" } }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "pointSize": 4,
+            "showPoints": "never"
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "sortBy": "Last",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     },
-
     {
       "type": "row",
       "title": "Epoch progress",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 109 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 109
+      },
       "id": 110,
       "collapsed": false,
       "panels": []
@@ -497,24 +1588,117 @@
       "title": "Trajectories started this epoch",
       "description": "rsi_epoch_trajectories_started vs. its target, rsi_epoch_rollout_size - the raw counts behind the 'Current round / epoch' panel's epoch-progress bar near the top of the dashboard.",
       "id": 112,
-      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 110 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 110
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
       "targets": [
-        { "expr": "rsi_epoch_trajectories_started", "refId": "A", "legendFormat": "started" },
-        { "expr": "rsi_epoch_rollout_size", "refId": "B", "legendFormat": "target" }
+        {
+          "expr": "rsi_epoch_trajectories_started",
+          "refId": "A",
+          "legendFormat": "started"
+        },
+        {
+          "expr": "rsi_epoch_rollout_size",
+          "refId": "B",
+          "legendFormat": "target"
+        }
       ],
-      "options": { "textMode": "value_and_name", "graphMode": "none", "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "horizontal" }
+      "options": {
+        "textMode": "value_and_name",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "horizontal"
+      }
     },
     {
       "type": "timeseries",
       "title": "Which task is active right now (episode starts/min, by task)",
       "description": "rate(rsi_task_episodes_total[1m]) by task - updates live during an epoch's ongoing rollout collection (not just at epoch boundaries), so this is the closest thing to 'what is each parallel env working on right now' without per-env task labels. Only emitted when -curriculum-config is set.",
       "id": 113,
-      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 110 },
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "targets": [{ "expr": "60 * sum by (task) (rate(rsi_task_episodes_total[1m]))", "refId": "A", "legendFormat": "{{task}}" }],
-      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10 } } },
-      "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi" } }
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 110
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "60 * sum by (task) (rate(rsi_task_episodes_total[1m]))",
+          "refId": "A",
+          "legendFormat": "{{task}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Average epoch duration",
+      "description": "Mean wall-clock time per completed Student-training epoch (rsi_epoch_rollout_size trajectories collected plus one PPO update over them). Uses increase() over the \"Cumulative window\" variable on both the sum and count, same restart-survival reason as \"Average round duration\".",
+      "id": 115,
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 0,
+        "y": 119
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(rsi_epoch_duration_seconds_sum[$lookback])) / sum(increase(rsi_epoch_duration_seconds_count[$lookback]))",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "options": {
+        "textMode": "value",
+        "graphMode": "none",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        }
+      }
     }
   ],
   "templating": {
@@ -530,12 +1714,23 @@
         "name": "lookback",
         "type": "custom",
         "label": "Cumulative window",
-        "description": "Every \"since the start of the run\" panel (Rounds won/lost, Win rate, Average round duration, Task mix, Task mix balance) uses this instead of its own fixed lookback, so one dropdown switches all of them together between the true all-time total (30d, comfortably covering this run's history) and whatever window the time picker above is set to (which undercounts across a trainer restart, same restart-sensitivity every raw counter has - see the glossary's \"Metrics and trainer restarts\" section).",
+        "description": "Every \"since the start of the run\" panel (Rounds won/lost, Win rate, Average round duration, Average epoch duration, Task mix, Task mix balance) uses this instead of its own fixed lookback, so one dropdown switches all of them together between the true all-time total (30d, comfortably covering this run's history) and whatever window the time picker above is set to (which undercounts across a trainer restart, same restart-sensitivity every raw counter has - see the glossary's \"Metrics and trainer restarts\" section).",
         "query": "All-time : 30d,Selected time range : $__range",
-        "current": { "text": "All-time", "value": "30d" },
+        "current": {
+          "text": "All-time",
+          "value": "30d"
+        },
         "options": [
-          { "text": "All-time", "value": "30d", "selected": true },
-          { "text": "Selected time range", "value": "$__range", "selected": false }
+          {
+            "text": "All-time",
+            "value": "30d",
+            "selected": true
+          },
+          {
+            "text": "Selected time range",
+            "value": "$__range",
+            "selected": false
+          }
         ],
         "hide": 0
       }

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -41,6 +43,9 @@ func TestParseFlagsRejectsMissingOrInvalidInput(t *testing.T) {
 		{"negative min-win-margin", validArgs("-min-win-margin", "-1")},
 		{"negative clear-area-radius", validArgs("-clear-area-radius", "-1")},
 		{"clear-area-radius over the fill limit", validArgs("-clear-area-radius", "40")},
+		{"malformed clone-area-from", validArgs("-clone-area-from", "not,a,point")},
+		{"clone-area-from with too few coordinates", validArgs("-clone-area-from", "1,2")},
+		{"clone-area-radius over the clone limit", validArgs("-clone-area-from", "0,-61,5000", "-clone-area-radius", "40")},
 		{"zero parallel-envs", validArgs("-parallel-envs", "0")},
 		{"negative parallel-envs", validArgs("-parallel-envs", "-1")},
 		{"zero shared-server-separation-chunks with -shared-server", validArgs("-shared-server", "-shared-server-separation-chunks", "0")},
@@ -613,6 +618,51 @@ func TestApplyEpisodeLimitsFillsUnsetFieldsAndLeavesOperatorValuesAlone(t *testi
 	assert.Zero(t, cfg.MaxConsecutiveStepTimeouts)
 	assert.Zero(t, cfg.ClearAreaRadius)
 	assert.Zero(t, cfg.ClearAreaHeight, "clearing stays fully off when the flag is 0")
+	assert.Nil(t, cfg.CloneAreaFrom, "cloning stays fully off when -clone-area-from is unset")
+
+	cfg = rlenv.Config{}
+	from := [3]float64{0, -61, 5000}
+	applyEpisodeLimits(&cfg, episodeLimits{cloneAreaFrom: &from, cloneAreaRadius: 16, cloneAreaHeight: 4, cloneAreaDepth: 3})
+	require.NotNil(t, cfg.CloneAreaFrom)
+	assert.Equal(t, from, *cfg.CloneAreaFrom)
+	assert.Equal(t, 16, cfg.CloneAreaRadius)
+	assert.Equal(t, 4, cfg.CloneAreaHeight)
+	assert.Equal(t, 3, cfg.CloneAreaDepth)
+
+	operatorFrom := [3]float64{1, 2, 3}
+	cfg = rlenv.Config{CloneAreaFrom: &operatorFrom, CloneAreaRadius: 5}
+	applyEpisodeLimits(&cfg, episodeLimits{cloneAreaFrom: &from, cloneAreaRadius: 16})
+	assert.Equal(t, operatorFrom, *cfg.CloneAreaFrom, "an operator-configured CloneAreaFrom must win")
+	assert.Equal(t, 5, cfg.CloneAreaRadius)
+}
+
+func TestParseXYZ(t *testing.T) {
+	v, err := parseXYZ("0,-61,5000")
+	require.NoError(t, err)
+	assert.Equal(t, [3]float64{0, -61, 5000}, v)
+
+	v, err = parseXYZ(" 1.5 , -2 , 3 ")
+	require.NoError(t, err)
+	assert.Equal(t, [3]float64{1.5, -2, 3}, v)
+
+	_, err = parseXYZ("1,2")
+	assert.Error(t, err)
+	_, err = parseXYZ("1,2,3,4")
+	assert.Error(t, err)
+	_, err = parseXYZ("a,b,c")
+	assert.Error(t, err)
+}
+
+func TestFlagsEpisodeLimitsOmitsCloneAreaFromWhenUnset(t *testing.T) {
+	f, err := parseFlags([]string{"-checkpoint-dir", "/tmp/ckpt", "-mc-agent-config", "/tmp/config.json"})
+	require.NoError(t, err)
+	assert.Nil(t, f.episodeLimits().cloneAreaFrom)
+
+	f, err = parseFlags([]string{"-checkpoint-dir", "/tmp/ckpt", "-mc-agent-config", "/tmp/config.json", "-clone-area-from", "0,-61,5000"})
+	require.NoError(t, err)
+	limits := f.episodeLimits()
+	require.NotNil(t, limits.cloneAreaFrom)
+	assert.Equal(t, [3]float64{0, -61, 5000}, *limits.cloneAreaFrom)
 }
 
 func TestPairedEvalTaskReseederPinsEachEnvironmentToTheSameSeedsForBothSidesAndVariesAcrossEnvironments(t *testing.T) {
@@ -711,4 +761,64 @@ func TestLoadCurriculumPoolReadsTheChainKeys(t *testing.T) {
 
 func TestActionNamesIncludePlace(t *testing.T) {
 	assert.Equal(t, "place", actionName(rlenv.ActionPlace))
+}
+
+// fakeSeedAgent is the minimum rlenv.SeedAgent (plus an optional
+// ClearInventory, like the real agent type has via ChainSeedAgent) for
+// craftIngredientSeeder's own tests: tracking calls rather than touching a
+// live bot.
+type fakeSeedAgent struct {
+	clearInventoryCalls     int
+	clearInventoryErr       error
+	seedCraftIngredients    []string // every itemName SeedCraftIngredients was called with
+	seedCraftIngredientsErr error
+	seedNearbyBlockCalls    int
+}
+
+func (f *fakeSeedAgent) ClearInventory(ctx context.Context) error {
+	f.clearInventoryCalls++
+	return f.clearInventoryErr
+}
+
+func (f *fakeSeedAgent) SeedCraftIngredients(ctx context.Context, itemName string) error {
+	f.seedCraftIngredients = append(f.seedCraftIngredients, itemName)
+	return f.seedCraftIngredientsErr
+}
+
+func (f *fakeSeedAgent) SeedNearbyBlock(ctx context.Context, blockName string, radius int) error {
+	f.seedNearbyBlockCalls++
+	return nil
+}
+
+func TestCraftIngredientSeederNoOpsWhenNoCraftTargetItem(t *testing.T) {
+	// The seedAtGoal/chain path (craft_far, chain_*) arrives here with
+	// CraftTargetItem already blanked by Reset itself - see this
+	// function's own doc comment - so this covers both "plain goto/mine"
+	// and "far/chain, already handled elsewhere" in one case.
+	agent := &fakeSeedAgent{}
+	err := craftIngredientSeeder(context.Background(), agent, rlenv.Config{})
+	require.NoError(t, err)
+	assert.Zero(t, agent.clearInventoryCalls)
+	assert.Empty(t, agent.seedCraftIngredients)
+}
+
+func TestCraftIngredientSeederClearsThenSeedsForAPlainCraftTask(t *testing.T) {
+	agent := &fakeSeedAgent{}
+	err := craftIngredientSeeder(context.Background(), agent, rlenv.Config{CraftTargetItem: "minecraft:stick"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, agent.clearInventoryCalls)
+	assert.Equal(t, []string{"minecraft:stick"}, agent.seedCraftIngredients)
+}
+
+func TestCraftIngredientSeederPropagatesAClearInventoryFailure(t *testing.T) {
+	agent := &fakeSeedAgent{clearInventoryErr: errors.New("rcon down")}
+	err := craftIngredientSeeder(context.Background(), agent, rlenv.Config{CraftTargetItem: "minecraft:stick"})
+	require.Error(t, err)
+	assert.Empty(t, agent.seedCraftIngredients, "must not seed ingredients on top of a clear that failed")
+}
+
+func TestCraftIngredientSeederPropagatesASeedCraftIngredientsFailure(t *testing.T) {
+	agent := &fakeSeedAgent{seedCraftIngredientsErr: errors.New("no crafting table within range")}
+	err := craftIngredientSeeder(context.Background(), agent, rlenv.Config{CraftTargetItem: "minecraft:chest"})
+	require.Error(t, err)
 }

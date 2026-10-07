@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -89,6 +90,11 @@ type flags struct {
 	winZScore                    float64
 	minWinMargin                 float64
 	clearAreaRadius              int
+	cloneAreaFrom                string
+	cloneAreaFromParsed          [3]float64
+	cloneAreaRadius              int
+	cloneAreaHeight              int
+	cloneAreaDepth               int
 	autoResetOrigin              bool
 	parallelEnvs                 int
 	sharedServer                 bool
@@ -116,7 +122,11 @@ func parseFlags(args []string) (flags, error) {
 	fs.BoolVar(&f.normalizeObservation, "normalize-observation", false, "scale every observation feature to about [-1, 1] (rlenv.Config.NormalizeObservation). Raw blocks and degrees saturate the policy's first layer and, with a learning rate that isn't tiny, kill its ReLU units for good (found live). Changes what the policy sees, so it is part of the checkpoint's environment ID: a checkpoint trained one way is rejected by the other. Ignored for an environment whose -mc-agent-config already sets it")
 	fs.BoolVar(&f.evalGreedy, "eval-greedy", false, "evaluate each side by its highest-probability action instead of sampling from its policy. Off by default: the trained policy is stochastic, and a greedy read of it can be a much worse policy (found live: goto 0.8 vs mine 0.19 at the target made greedy evaluation stand still for 200 steps at -40 while sampling mined within a few steps, so a fine Student looked collapsed round after round)")
 	fs.Float64Var(&f.timePenalty, "time-penalty", 0, "reward subtracted every step (rlenv.Config.TimePenalty); 0 keeps rlenv's built-in 0.01, which is negligible next to the +10 success bonus - a policy that wastes ten steps loses 0.1, so nothing makes it efficient (found live: the Wait action took 38-70% of all steps and mine_far episodes averaged ~10.7 steps where ~3 suffice). Around 0.2 makes a wasted step cost about 2% of the bonus. Changes the reward scale, so returns before and after aren't comparable. Ignored for an environment whose -mc-agent-config already sets its own")
-	fs.IntVar(&f.clearAreaRadius, "clear-area-radius", 0, "each Reset, fill with air the box this many blocks either side of the reset origin in X and Z, from the origin's own Y up 4 blocks - wipes seeded blocks and crafting tables that pile up into obstacles over a run. FLAT WORLDS ONLY (it would delete trees and hills); needs -auto-reset-origin and RCON; 0 (the default) disables. Keep (2r+1)^2*5 under 32768")
+	fs.IntVar(&f.clearAreaRadius, "clear-area-radius", 0, "each Reset, fill with air the box this many blocks either side of the reset origin in X and Z, from the origin's own Y up 4 blocks - wipes seeded blocks and crafting tables that pile up into obstacles over a run. FLAT WORLDS ONLY (it would delete trees and hills); needs -auto-reset-origin and RCON; 0 (the default) disables. Keep (2r+1)^2*5 under 32768. Ignored if -clone-area-from is also set.")
+	fs.StringVar(&f.cloneAreaFrom, "clone-area-from", "", "\"x,y,z\" of a pristine template region's own ground-top block (rlenv.Config.CloneAreaFrom) - each Reset clones this template (ground layers and the air above them) onto the reset origin's working area via RCON /clone, instead of -clear-area-radius's fill-air-above-a-computed-boundary: this also heals ground damage, and never derives the ground/air boundary from a live, possibly-imprecise bot position the way -clear-area-radius does (docs/plans/13). FLAT WORLDS ONLY, same as -clear-area-radius; needs -auto-reset-origin and RCON; empty (the default) disables. The template location must be one no working area (now or after a future -parallel-envs increase) will ever reach - e.g. for -shared-server, pkg/parallelenv.WorkingAreaOffset only ever moves along X, so anywhere on the Z axis is safe.")
+	fs.IntVar(&f.cloneAreaRadius, "clone-area-radius", 0, "half-width/depth in blocks of both the template and every destination working area; 0 (the default) falls back to -clear-area-radius if that's set too, otherwise disables cloning even if -clone-area-from is set")
+	fs.IntVar(&f.cloneAreaHeight, "clone-area-height", 0, "blocks above -clone-area-from's own Y to include (the air-clearing portion); 0 (the default) uses 4, same as -clear-area-radius's own default")
+	fs.IntVar(&f.cloneAreaDepth, "clone-area-depth", 0, "blocks below -clone-area-from's own Y to include (the ground-healing portion -clear-area-radius never had); 0 (the default) uses 3")
 	fs.BoolVar(&f.autoResetOrigin, "auto-reset-origin", false, "if RCON is configured and -mc-agent-config didn't already set env.use_reset_origin, teleport back to the bot's actual spawn position every episode (via a captured Config.ResetOrigin) plus a small default Config.Jitter, instead of letting the goto task's target drift from wherever the previous episode ended — see run's own doc comment for why this exists. Opt-in: false preserves every existing config's behavior unchanged.")
 	fs.IntVar(&f.parallelEnvs, "parallel-envs", 1, "number of concurrent live Minecraft environments to train against (see docs/plans/08-parallel-environments-and-scaling.md); each needs its own already-running server — addresses/RCON/bot usernames beyond the first are derived from -mc-agent-config via pkg/parallelenv.DeriveSettings. 1 (the default) preserves single-environment behavior exactly.")
 	fs.BoolVar(&f.sharedServer, "shared-server", false, "run all -parallel-envs bots against ONE already-running server instead of one server each, each confined to its own working area (see -shared-server-separation-chunks). Requires RCON to be configured. The operator is responsible for launching that server with a reduced VIEW_DISTANCE/SIMULATION_DISTANCE (e.g. 4-6) small enough not to overlap adjacent bots' working areas.")
@@ -162,6 +172,28 @@ func parseFlags(args []string) (flags, error) {
 	}
 	if f.clearAreaRadius < 0 || (2*f.clearAreaRadius+1)*(2*f.clearAreaRadius+1)*(clearAreaHeightBlocks+1) > 32768 {
 		return flags{}, fmt.Errorf("rsi-train: -clear-area-radius must be between 0 and %d (vanilla's fill command caps at 32768 blocks), got %d", maxClearAreaRadius, f.clearAreaRadius)
+	}
+	if f.cloneAreaFrom != "" {
+		parsed, err := parseXYZ(f.cloneAreaFrom)
+		if err != nil {
+			return flags{}, fmt.Errorf("rsi-train: -clone-area-from: %w", err)
+		}
+		f.cloneAreaFromParsed = parsed
+		r := f.cloneAreaRadius
+		if r <= 0 {
+			r = f.clearAreaRadius
+		}
+		height := f.cloneAreaHeight
+		if height <= 0 {
+			height = clearAreaHeightBlocks
+		}
+		depth := f.cloneAreaDepth
+		if depth <= 0 {
+			depth = defaultCloneAreaDepthBlocks
+		}
+		if r < 0 || (2*r+1)*(2*r+1)*(height+depth+1) > 32768 {
+			return flags{}, fmt.Errorf("rsi-train: -clone-area-radius/-clone-area-height/-clone-area-depth combination is too large (vanilla's clone command caps at 32768 blocks): radius %d, height %d, depth %d", r, height, depth)
+		}
 	}
 	if f.parallelEnvs <= 0 {
 		return flags{}, fmt.Errorf("rsi-train: -parallel-envs must be positive, got %d", f.parallelEnvs)
@@ -229,7 +261,7 @@ func run(args []string) error {
 		initialParallelEnvs = persisted
 	}
 
-	connected, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.packetLogDir(), episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius, timePenalty: float32(f.timePenalty), normalizeObservation: f.normalizeObservation})
+	connected, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.packetLogDir(), f.episodeLimits())
 	if err != nil {
 		return err
 	}
@@ -331,6 +363,13 @@ func run(args []string) error {
 	networkDead := false
 	deadEpochs := 0
 
+	// lastEpochEnd feeds metricEpochDurationSeconds: reset to the round's
+	// own start time at the top of the round loop below, then to time.Now()
+	// after every OnEpoch firing, so each epoch's observed duration is the
+	// wall-clock time since the previous epoch ended (or since the round
+	// started, for that round's first epoch).
+	var lastEpochEnd time.Time
+
 	interimDir := filepath.Join(f.checkpointDir, "interim")
 	cfg := leapfrog.Config[*actorcritic.Params]{
 		Trainer:             trainerSettings,
@@ -370,6 +409,8 @@ func run(args []string) error {
 			metricEpochsTotal.Inc()
 			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
 			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
+			metricEpochDurationSeconds.Observe(time.Since(lastEpochEnd).Seconds())
+			lastEpochEnd = time.Now()
 			if f.checkpointInterval > 0 && (stats.Epoch+1)%f.checkpointInterval == 0 {
 				if err := saveInterimCheckpoint(interimDir, params, environmentID, stats.Epoch, progress, rec.Generation); err != nil {
 					log.Printf("  saving interim checkpoint: %v", err)
@@ -447,7 +488,7 @@ func run(args []string) error {
 			newConnected, newEnvs, rcErr := reconcileEnvCount(ctx, stop, connected, envs, n,
 				mcSettings, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks,
 				curriculumGen, f.packetLogDir(),
-				episodeLimits{maxStepTimeouts: f.maxStepTimeouts, clearAreaRadius: f.clearAreaRadius, timePenalty: float32(f.timePenalty), normalizeObservation: f.normalizeObservation},
+				f.episodeLimits(),
 				episodeTask)
 			if rcErr != nil {
 				log.Printf("round %d: scaling to %d parallel envs failed, continuing with %d: %v", round, n, len(connected), rcErr)
@@ -473,6 +514,7 @@ func run(args []string) error {
 		metricEpochTrajectoriesStarted.Set(0)
 
 		start := time.Now()
+		lastEpochEnd = start
 		result, err := leapfrog.Round(ctx, envs, teacherParams, cfg, leapfrog.PlainSeams, rng)
 		// leapfrog.Round has no "evaluation ended" hook to clear this from
 		// inside (only OnBeforeEvaluation, which sets it) - Round returning,
@@ -621,7 +663,31 @@ func isGoodSpawnPosition(world models.World, shapeMgr models.BlockShapeManager, 
 const (
 	clearAreaHeightBlocks = 4
 	maxClearAreaRadius    = 39 // (2*39+1)^2 * 5 = 31,205; radius 40 would be 32,805, over the limit
+	// defaultCloneAreaDepthBlocks is -clone-area-depth's default (this
+	// run's own soil depth - stop short of bedrock, which never needs
+	// healing since it never changes), mirroring rlenv's own
+	// defaultCloneAreaDepth so -clone-area-radius's size validation
+	// matches what rlenv.Config actually ends up using.
+	defaultCloneAreaDepthBlocks = 3
 )
+
+// parseXYZ parses "x,y,z" (as -clone-area-from takes it) into a [3]float64,
+// rejecting anything that isn't exactly three comma-separated numbers.
+func parseXYZ(s string) ([3]float64, error) {
+	parts := strings.Split(s, ",")
+	if len(parts) != 3 {
+		return [3]float64{}, fmt.Errorf("want \"x,y,z\", got %q", s)
+	}
+	var v [3]float64
+	for i, p := range parts {
+		f, err := strconv.ParseFloat(strings.TrimSpace(p), 64)
+		if err != nil {
+			return [3]float64{}, fmt.Errorf("want \"x,y,z\", got %q: %w", s, err)
+		}
+		v[i] = f
+	}
+	return v, nil
+}
 
 // episodeLimits are the per-episode safety nets applied to every
 // environment; see the -max-step-timeouts and -clear-area-radius flags.
@@ -631,6 +697,33 @@ type episodeLimits struct {
 	timePenalty     float32
 
 	normalizeObservation bool
+
+	cloneAreaFrom   *[3]float64
+	cloneAreaRadius int
+	cloneAreaHeight int
+	cloneAreaDepth  int
+}
+
+// episodeLimits builds the episodeLimits every connected environment shares
+// from f, the one place -clone-area-from's already-validated
+// cloneAreaFromParsed becomes the *[3]float64 episodeLimits/rlenv.Config
+// actually want (nil when -clone-area-from was never set, rather than a
+// pointer to a meaningless zero value).
+func (f flags) episodeLimits() episodeLimits {
+	limits := episodeLimits{
+		maxStepTimeouts:      f.maxStepTimeouts,
+		clearAreaRadius:      f.clearAreaRadius,
+		timePenalty:          float32(f.timePenalty),
+		normalizeObservation: f.normalizeObservation,
+		cloneAreaRadius:      f.cloneAreaRadius,
+		cloneAreaHeight:      f.cloneAreaHeight,
+		cloneAreaDepth:       f.cloneAreaDepth,
+	}
+	if f.cloneAreaFrom != "" {
+		from := f.cloneAreaFromParsed
+		limits.cloneAreaFrom = &from
+	}
+	return limits
 }
 
 // applyEpisodeLimits sets cfg's episode safety nets from limits, leaving any
@@ -648,6 +741,12 @@ func applyEpisodeLimits(cfg *rlenv.Config, limits episodeLimits) {
 	if cfg.ClearAreaRadius == 0 && limits.clearAreaRadius > 0 {
 		cfg.ClearAreaRadius = limits.clearAreaRadius
 		cfg.ClearAreaHeight = clearAreaHeightBlocks
+	}
+	if cfg.CloneAreaFrom == nil && limits.cloneAreaFrom != nil {
+		cfg.CloneAreaFrom = limits.cloneAreaFrom
+		cfg.CloneAreaRadius = limits.cloneAreaRadius
+		cfg.CloneAreaHeight = limits.cloneAreaHeight
+		cfg.CloneAreaDepth = limits.cloneAreaDepth
 	}
 }
 
@@ -1079,6 +1178,9 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 	networkDead := false
 	deadEpochs := 0
 
+	// See run()'s own lastEpochEnd for what this feeds and why.
+	var lastEpochEnd time.Time
+
 	cfg := leapfrog.Config[*actorcritic.RecurrentParams]{
 		Trainer:             trainerSettings,
 		EpochsPerGeneration: f.epochsPerGeneration,
@@ -1114,6 +1216,8 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 			metricEpochsTotal.Inc()
 			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
 			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
+			metricEpochDurationSeconds.Observe(time.Since(lastEpochEnd).Seconds())
+			lastEpochEnd = time.Now()
 		},
 	}
 
@@ -1130,6 +1234,7 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 		metricEpochTrajectoriesStarted.Set(0)
 
 		start := time.Now()
+		lastEpochEnd = start
 		result, err := leapfrog.Round(ctx, envs, teacherParams, cfg, leapfrog.RecurrentSeams, rng)
 		evaluationInProgress.Store(false)
 		if err != nil {
@@ -1403,6 +1508,98 @@ func taskNameForOverride(override rlenv.TaskOverride) string {
 	}
 }
 
+// craftEconomyItems are the items behind every craft_target_item/
+// chain_goal_item this run's curriculum can pose (see curriculum.json):
+// minecraft:oak_log -> oak_planks -> stick/crafting_table/chest/bowl, with
+// coal feeding torch. Logged as a group (not just the episode's own single
+// target) because a bot's craft economy is shared across every
+// craft-involving episode it draws, in curriculum-selection order, not
+// scoped per task - a "stick" episode's leftover surplus is exactly what a
+// later unrelated "chain_table" episode on the same bot depends on finding
+// already in inventory, and a shortfall shows up as 0 across the board,
+// not just on whichever item happened to be asked for.
+var craftEconomyItems = []string{
+	"minecraft:oak_log",
+	"minecraft:oak_planks",
+	"minecraft:stick",
+	"minecraft:coal",
+	"minecraft:crafting_table",
+}
+
+// logCraftEconomyInventory makes the "does this bot actually have what it
+// needs" question answerable from train.log directly, instead of having to
+// infer it after the fact from actions_total/episode_length_steps patterns
+// (see the 2026-10-06 generation-1 round-1 collapse: craft-dependent tasks
+// truncated at ~100% for ~20 epochs with zero step errors, and the only way
+// to confirm "ran out of held ingredients, not an infra failure" was to
+// reconstruct it indirectly from rsi_actions_total's wait/craft split and
+// rsi_step_errors_total staying at zero - there was no direct record of
+// what the bot was actually holding at the time).
+//
+// Called once per episode, only when the drawn task actually needs craft
+// materials (plain craft/craft_far, or any chain stage - chain_gather's own
+// "mine a tree" step feeds every later stage's inventory, so it counts
+// too), right after TaskSelector draws it and before Reset acts on it.
+// liveAgent.InventoryCount/Craftable read already-tracked client-side
+// state synchronously - no RCON round-trip, safe to call from here.
+func logCraftEconomyInventory(envName string, liveAgent rlenv.LiveAgent, selectedTask string, override rlenv.TaskOverride) {
+	if override.CraftTargetItem == "" && override.ChainStage == 0 {
+		return
+	}
+	counts := make([]string, len(craftEconomyItems))
+	for i, item := range craftEconomyItems {
+		counts[i] = fmt.Sprintf("%s=%d", item, liveAgent.InventoryCount(item))
+	}
+	readyNote := ""
+	if override.CraftTargetItem != "" {
+		readyNote = fmt.Sprintf(" craftReady(%s)=%v", override.CraftTargetItem, liveAgent.Craftable(override.CraftTargetItem))
+	}
+	log.Printf("[%s] episode task=%s craft economy: %s%s", envName, selectedTask, strings.Join(counts, " "), readyNote)
+}
+
+// craftIngredientSeeder is rlenv.Config.Seeder's implementation for
+// curriculum-driven runs — without it (the state this run was in through
+// 2026-10-06, see logCraftEconomyInventory's own doc comment), nothing
+// ever gives a bot the ingredients a plain craft/craft_far episode's
+// target item needs, or a chain episode's tree/table: every one of those
+// task types is left depending entirely on whatever the bot happens to
+// already be holding from earlier, unrelated episodes, with no
+// guaranteed source. That's not merely "sometimes fails" — it's
+// structurally unlearnable the moment the bot's held materials run out,
+// however briefly, until it happens to pick more up.
+//
+// Setting Config.Seeder to this also activates environment.go's own
+// seedFarTargets/seedChain path for every "go there, then X" and chain
+// episode (gated on Config.Seeder != nil, not on this function doing
+// anything itself for those - see Reset's own seeding block): a
+// craft_far/mine_far/chain_* episode arrives here with
+// cfg.CraftTargetItem/MineTargetBlock already blanked out by Reset
+// (seedAtGoal's own convention, so this function doesn't double-seed
+// beside the bot AND at the goal), so this only ever actually acts for a
+// plain (non-far, non-chain) craft task.
+//
+// ClearInventory first, rather than giving on top of whatever's already
+// held: agent.SeedCraftIngredients' own doc comment documents a real
+// incident (testing/rl_train_test.go) where an uncleared give-every-
+// episode policy filled all 36 inventory slots with accumulated surplus
+// after ~200-230 successful craft episodes, after which every further
+// craft failed its own inventory-increase confirmation indefinitely -
+// clearing first keeps every plain craft episode self-contained instead
+// of accumulating state across hundreds of them.
+func craftIngredientSeeder(ctx context.Context, seedAgent rlenv.SeedAgent, cfg rlenv.Config) error {
+	if cfg.CraftTargetItem == "" {
+		return nil
+	}
+	if clearer, ok := seedAgent.(interface {
+		ClearInventory(ctx context.Context) error
+	}); ok {
+		if err := clearer.ClearInventory(ctx); err != nil {
+			return fmt.Errorf("clearing inventory before seeding craft ingredients: %w", err)
+		}
+	}
+	return seedAgent.SeedCraftIngredients(ctx, cfg.CraftTargetItem)
+}
+
 // connectAgent establishes one live bot session from settings — auth
 // resolution, version auto-detect, RCON dial, replay-recording wiring,
 // agent.New/Init/Start — mirroring mc-agent's own cmd/rl-train/main.go
@@ -1546,6 +1743,12 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			}
 		}
 		if curriculumGen != nil {
+			// See craftIngredientSeeder's own doc comment: this is also what
+			// turns on mc-agent's own seedFarTargets/seedChain path for
+			// every craft_far/mine_far/chain_* episode (gated on
+			// Config.Seeder != nil there, not on this function doing
+			// anything itself for those).
+			envCfg.Seeder = craftIngredientSeeder
 			var taskMu sync.RWMutex
 			selectedTask := taskName(settings.Env)
 			// Each environment gets its own rng, not a shared one: N
@@ -1571,6 +1774,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 				selectedTask = taskNameForOverride(override)
 				taskMu.Unlock()
 				recordTaskSelection(override)
+				logCraftEconomyInventory(settings.Connection.Name, liveAgent, selectedTask, override)
 				return override
 			}
 			// rlenv calls TaskSelector during the wrapped environment's Reset;
