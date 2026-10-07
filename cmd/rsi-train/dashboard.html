@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>rsi-train agents</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #15171c;
+    color: #e4e6eb;
+    display: flex;
+    height: 100vh;
+  }
+  #sidebar {
+    width: 260px;
+    flex: none;
+    overflow-y: auto;
+    border-right: 1px solid #2a2d35;
+    background: #1b1e25;
+  }
+  #sidebar h1 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: #8a8f99;
+    padding: 12px 14px 8px;
+    margin: 0;
+  }
+  .agent-row {
+    padding: 8px 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-left: 3px solid transparent;
+  }
+  .agent-row:hover { background: #22252d; }
+  .agent-row.selected { background: #262a33; border-left-color: #5b9dff; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .dot.ok { background: #3ddc84; }
+  .dot.fail { background: #ff5c5c; }
+  .dot.live { background: #5b9dff; }
+  .dot.stale { background: #5a5f6b; }
+  .agent-row .name { font-weight: 600; }
+  .agent-row .task { color: #8a8f99; font-size: 12px; }
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #stats {
+    padding: 14px 18px;
+    border-bottom: 1px solid #2a2d35;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px 20px;
+  }
+  #stats .stat label {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #8a8f99;
+  }
+  #stats .stat .val { font-size: 16px; font-weight: 600; }
+  #empty { padding: 18px; color: #8a8f99; }
+  canvas { flex: 1; display: block; }
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <h1>Agents</h1>
+  <div id="rows"></div>
+</div>
+<div id="main">
+  <div id="stats"></div>
+  <canvas id="plot"></canvas>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  var selected = null;
+  var latest = [];
+
+  function statusDot(a) {
+    var ageMs = Date.now() - new Date(a.updated_at).getTime();
+    if (ageMs > 5000) return "stale";
+    if (a.last_outcome === "success") return "ok";
+    if (a.last_outcome === "failure") return "fail";
+    return "live";
+  }
+
+  function renderSidebar() {
+    var rows = document.getElementById("rows");
+    rows.innerHTML = "";
+    latest.forEach(function (a) {
+      var row = document.createElement("div");
+      row.className = "agent-row" + (a.index === selected ? " selected" : "");
+      row.onclick = function () { selected = a.index; render(); };
+      var dot = document.createElement("div");
+      dot.className = "dot " + statusDot(a);
+      var text = document.createElement("div");
+      text.innerHTML = "<div class='name'>" + (a.username || ("agent-" + a.index)) + "</div>" +
+        "<div class='task'>" + (a.task || "-") + "</div>";
+      row.appendChild(dot);
+      row.appendChild(text);
+      rows.appendChild(row);
+    });
+  }
+
+  function stat(label, value) {
+    return "<div class='stat'><label>" + label + "</label><div class='val'>" + value + "</div></div>";
+  }
+
+  function renderStats() {
+    var el = document.getElementById("stats");
+    var a = latest.find(function (x) { return x.index === selected; });
+    if (!a) {
+      el.innerHTML = "<div id='empty'>Select an agent.</div>";
+      return;
+    }
+    el.innerHTML =
+      stat("Agent", a.username || ("agent-" + a.index)) +
+      stat("Task", a.task || "-") +
+      stat("Last action", a.last_action || "-") +
+      stat("Episode step", a.episode_step) +
+      stat("Last outcome", a.last_outcome || "in progress") +
+      stat("Position", a.x.toFixed(1) + ", " + a.y.toFixed(1) + ", " + a.z.toFixed(1)) +
+      stat("Yaw / pitch", a.yaw.toFixed(0) + "° / " + a.pitch.toFixed(0) + "°") +
+      stat("Health", a.health.toFixed(1) + " / 20") +
+      stat("Food", a.food + " / 20") +
+      stat("Updated", new Date(a.updated_at).toLocaleTimeString());
+  }
+
+  function renderPlot() {
+    var canvas = document.getElementById("plot");
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    if (latest.length === 0) return;
+
+    var pad = 30;
+    var minX = Math.min.apply(null, latest.map(function (a) { return a.x; }));
+    var maxX = Math.max.apply(null, latest.map(function (a) { return a.x; }));
+    var minZ = Math.min.apply(null, latest.map(function (a) { return a.z; }));
+    var maxZ = Math.max.apply(null, latest.map(function (a) { return a.z; }));
+    var spanX = Math.max(maxX - minX, 1);
+    var spanZ = Math.max(maxZ - minZ, 1);
+    var scale = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanZ);
+
+    function toCanvas(a) {
+      return [
+        pad + (a.x - minX) * scale + (w - 2 * pad - spanX * scale) / 2,
+        pad + (a.z - minZ) * scale + (h - 2 * pad - spanZ * scale) / 2
+      ];
+    }
+
+    latest.forEach(function (a) {
+      var p = toCanvas(a);
+      var isSel = a.index === selected;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], isSel ? 8 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = isSel ? "#5b9dff" : "#8a8f99";
+      ctx.fill();
+      if (isSel) {
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], 13, 0, Math.PI * 2);
+        ctx.strokeStyle = "#5b9dff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#c7cad1";
+      ctx.font = "11px sans-serif";
+      ctx.fillText(a.username || ("agent-" + a.index), p[0] + 10, p[1] - 10);
+    });
+  }
+
+  function render() {
+    renderSidebar();
+    renderStats();
+    renderPlot();
+  }
+
+  function poll() {
+    fetch("/agents").then(function (r) { return r.json(); }).then(function (data) {
+      latest = data || [];
+      if (selected === null && latest.length > 0) selected = latest[0].index;
+      render();
+    }).catch(function () { /* transient fetch error; try again next tick */ });
+  }
+
+  window.addEventListener("resize", renderPlot);
+  poll();
+  setInterval(poll, 1000);
+})();
+</script>
+</body>
+</html>

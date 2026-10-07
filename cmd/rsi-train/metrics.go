@@ -321,19 +321,21 @@ func recordRoundEvaluation[P leapfrog.RecurrentOrNot](result leapfrog.Result[P])
 // in the background. Errors (e.g. the port is already taken) are logged,
 // not fatal — this server going down is an observability problem, not a
 // reason to stop an otherwise-healthy training run.
-func startMetricsServer(addr string, exporter *checkpointExporter, envCount *envCountRequest, restart *restartRequest) {
+func startMetricsServer(addr string, exporter *checkpointExporter, envCount *envCountRequest, restart *restartRequest, agents *agentRegistry) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.Handle("/checkpoint/export", exporter)
 	mux.Handle("/config/parallel-envs", envCount)
 	mux.Handle("/control/restart-at-epoch-boundary", restart)
+	mux.Handle("/agents", agents)
+	mux.HandleFunc("/dashboard", serveDashboardPage)
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	go func() {
-		log.Printf("metrics: serving /metrics, POST /checkpoint/export, POST /config/parallel-envs, POST /control/restart-at-epoch-boundary, and /debug/pprof/ on %s", addr)
+		log.Printf("metrics: serving /metrics, POST /checkpoint/export, POST /config/parallel-envs, POST /control/restart-at-epoch-boundary, GET /agents, /dashboard, and /debug/pprof/ on %s", addr)
 		if err := http.ListenAndServe(addr, mux); err != nil {
 			log.Printf("metrics: server error: %v", err)
 		}
@@ -350,6 +352,14 @@ type instrumentedEnvironment struct {
 	taskForEpisode func() string
 	started        bool
 	steps          int // steps taken so far in the in-progress episode; see metricEpisodeLengthSteps
+
+	// registry and index are the dashboard's agentRegistry and this env's
+	// index within it (matching connected/envs — see agentRegistry's own
+	// doc comment). registry is always non-nil (run always constructs one,
+	// whether or not -metrics-addr ends up serving it), so these updates
+	// never need a nil check.
+	registry *agentRegistry
+	index    int
 }
 
 func (e *instrumentedEnvironment) currentTask() string {
@@ -435,6 +445,12 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 	if !evaluationInProgress.Load() {
 		metricEpochTrajectoriesStarted.Inc()
 	}
+	e.registry.updateEpisode(e.index, func(s *agentSnapshot) {
+		s.Task = task
+		s.LastAction = ""
+		s.EpisodeStep = 0
+		s.LastOutcome = ""
+	})
 	return obs, nil
 }
 
@@ -450,8 +466,9 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 	}
 	metricEpisodeStepsTotal.WithLabelValues(task).Inc()
 	e.steps++
+	outcome := ""
 	if result.Done {
-		outcome := "failure"
+		outcome = "failure"
 		if result.Reward >= episodeSuccessRewardThreshold {
 			outcome = "success"
 		}
@@ -460,6 +477,14 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 		e.started = false
 		e.steps = 0
 	}
+	e.registry.updateEpisode(e.index, func(s *agentSnapshot) {
+		s.Task = task
+		s.LastAction = actionName(action)
+		s.EpisodeStep = e.steps
+		if outcome != "" {
+			s.LastOutcome = outcome
+		}
+	})
 	return result, nil
 }
 

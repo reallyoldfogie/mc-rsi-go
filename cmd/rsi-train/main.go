@@ -243,12 +243,20 @@ func run(args []string) error {
 	envCountReq := newEnvCountRequest()
 	restartReq := newRestartRequest()
 	envConfirmer := newParallelEnvsConfirmer(f.checkpointDir)
+	// Always constructed, even with -metrics-addr="" (nothing to serve it),
+	// so instrumentedEnvironment never needs a nil check when recording
+	// into it — see that type's own doc comment.
+	agents := newAgentRegistry()
 	if f.metricsAddr != "" {
-		startMetricsServer(f.metricsAddr, exporter, envCountReq, restartReq)
+		startMetricsServer(f.metricsAddr, exporter, envCountReq, restartReq, agents)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// Safe to start before any bot is registered — pollOnce on zero bots
+	// is a no-op (see agentRegistry.runPoller's own doc comment) — and
+	// stops with the same ctx everything else in run() stops with.
+	go agents.runPoller(ctx)
 
 	// A live scale (POST /config/parallel-envs) only ever overrides this
 	// startup count once it's survived parallelEnvsStabilityWindow without
@@ -286,7 +294,8 @@ func run(args []string) error {
 		episodeTask = taskName(mcSettings.Env)
 	}
 	for i, c := range connected {
-		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode}
+		agents.add(c.username, c.agent)
+		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, registry: agents, index: i}
 	}
 	metricParallelEnvs.Set(float64(len(connected)))
 
@@ -494,7 +503,7 @@ func run(args []string) error {
 				mcSettings, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks,
 				curriculumGen, f.packetLogDir(),
 				f.episodeLimits(),
-				episodeTask)
+				episodeTask, agents)
 			if rcErr != nil {
 				log.Printf("round %d: scaling to %d parallel envs failed, continuing with %d: %v", round, n, len(connected), rcErr)
 			} else {
@@ -1624,7 +1633,11 @@ func craftIngredientSeeder(ctx context.Context, seedAgent rlenv.SeedAgent, cfg r
 // models.Agent backing it, so run's shutdown path can Close every agent
 // it opened regardless of how many -parallel-envs were requested.
 type connectedEnvironment struct {
-	agent          models.Agent
+	agent models.Agent
+	// username is this bot's connection name (settings.Connection.Name),
+	// kept alongside agent purely for agentRegistry's dashboard identity —
+	// nothing about training itself needs it off of settings.
+	username       string
 	env            rl.Environment
 	taskForEpisode func() string
 	// reseedEvalTasks, when curriculum task selection is active, reseeds
@@ -1802,6 +1815,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			}
 			connected = append(connected, connectedEnvironment{
 				agent:           a,
+				username:        settings.Connection.Name,
 				env:             env,
 				taskForEpisode:  taskForEpisode,
 				reseedEvalTasks: taskPCG.Seed,
@@ -1816,7 +1830,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
 		}
 
-		connected = append(connected, connectedEnvironment{agent: a, env: env, taskForEpisode: func() string { return taskName(settings.Env) }, stopWatch: make(chan struct{})})
+		connected = append(connected, connectedEnvironment{agent: a, username: settings.Connection.Name, env: env, taskForEpisode: func() string { return taskName(settings.Env) }, stopWatch: make(chan struct{})})
 	}
 	return connected, nil
 }
@@ -1835,7 +1849,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 // field's own doc comment) so watchForUnexpectedExit's watcher for it
 // exits quietly instead of treating the close as an unexpected session
 // end and stopping the whole run.
-func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected []connectedEnvironment, envs []rl.Environment, n int, base mcconfig.Settings, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string, limits episodeLimits, episodeTask string) ([]connectedEnvironment, []rl.Environment, error) {
+func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected []connectedEnvironment, envs []rl.Environment, n int, base mcconfig.Settings, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string, limits episodeLimits, episodeTask string, agents *agentRegistry) ([]connectedEnvironment, []rl.Environment, error) {
 	current := len(connected)
 	if n == current {
 		return connected, envs, nil
@@ -1849,6 +1863,7 @@ func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected [
 			close(connected[i].stopWatch)
 			closeConnectedAgent(connected[i].agent)
 		}
+		agents.truncate(n)
 		return connected[:n], envs[:n], nil
 	}
 
@@ -1858,8 +1873,10 @@ func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected [
 	}
 	for _, c := range added {
 		watchForUnexpectedExit(ctx, stop, c)
+		index := len(connected)
+		agents.add(c.username, c.agent)
 		connected = append(connected, c)
-		envs = append(envs, &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode})
+		envs = append(envs, &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, registry: agents, index: index})
 	}
 	return connected, envs, nil
 }
