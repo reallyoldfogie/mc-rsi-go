@@ -690,15 +690,6 @@ func TestPairedEvalTaskReseederPinsEachEnvironmentToTheSameSeedsForBothSidesAndV
 	assert.Nil(t, pairedEvalTaskReseeder(nil), "no curriculum means no reseeding hook")
 }
 
-func TestTaskNameForOverrideDistinguishesTheFarComposites(t *testing.T) {
-	assert.Equal(t, "goto", taskNameForOverride(rlenv.TaskOverride{}))
-	assert.Equal(t, "mine", taskNameForOverride(rlenv.TaskOverride{GoToTargetDisabled: true, MineTargetBlock: "minecraft:dirt"}))
-	assert.Equal(t, "craft", taskNameForOverride(rlenv.TaskOverride{GoToTargetDisabled: true, CraftTargetItem: "minecraft:stick"}))
-	assert.Equal(t, "mine_far", taskNameForOverride(rlenv.TaskOverride{MineTargetBlock: "minecraft:sand", SeedAtGoal: true}))
-	assert.Equal(t, "craft_far", taskNameForOverride(rlenv.TaskOverride{CraftTargetItem: "minecraft:chest", SeedAtGoal: true}))
-	assert.Equal(t, "unknown", taskNameForOverride(rlenv.TaskOverride{GoToTargetDisabled: true}))
-}
-
 func TestLoadCurriculumPoolReadsTheFarFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "curriculum.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{
@@ -735,54 +726,13 @@ func TestApplyEpisodeLimitsTurnsOnObservationNormalization(t *testing.T) {
 	assert.True(t, cfg.NormalizeObservation)
 }
 
-func TestTaskNameForOverrideNamesTheChainStages(t *testing.T) {
-	for stage, want := range map[int]string{
-		rlenv.ChainGather: "chain_gather", rlenv.ChainTable: "chain_table",
-		rlenv.ChainPlace: "chain_place", rlenv.ChainUse: "chain_use",
-	} {
-		ov := rlenv.TaskOverride{ChainStage: stage, MineTargetBlock: "minecraft:oak_log", CraftTargetItem: "minecraft:bowl", SeedAtGoal: true}
-		assert.Equal(t, want, taskNameForOverride(ov), "a chain episode must not be counted as mine_far/craft_far")
-	}
-}
-
-func TestGoalDescriptionNamesTheActualSuccessCondition(t *testing.T) {
-	assert.Equal(t, "goto (+5, +0, +0) from spawn", goalDescription(rlenv.TaskOverride{TargetOffset: [3]float64{5, 0, 0}}))
-	assert.Equal(t, "mine dirt", goalDescription(rlenv.TaskOverride{GoToTargetDisabled: true, MineTargetBlock: "minecraft:dirt"}))
-	assert.Equal(t, "craft stick", goalDescription(rlenv.TaskOverride{GoToTargetDisabled: true, CraftTargetItem: "minecraft:stick"}))
-	assert.Equal(t, "mine sand", goalDescription(rlenv.TaskOverride{MineTargetBlock: "minecraft:sand", SeedAtGoal: true}))
-	assert.Equal(t, "craft chest", goalDescription(rlenv.TaskOverride{CraftTargetItem: "minecraft:chest", SeedAtGoal: true}))
-	assert.Equal(t, "", goalDescription(rlenv.TaskOverride{GoToTargetDisabled: true}), "no active task has no goal to show")
-}
-
-func TestGoalDescriptionNamesTheChainsUltimateGoalRegardlessOfStage(t *testing.T) {
-	for stage := range map[int]bool{rlenv.ChainGather: true, rlenv.ChainTable: true, rlenv.ChainPlace: true, rlenv.ChainUse: true} {
-		ov := rlenv.TaskOverride{ChainStage: stage, MineTargetBlock: "minecraft:oak_log", CraftTargetItem: "minecraft:bowl", SeedAtGoal: true}
-		assert.Equal(t, "craft bowl", goalDescription(ov), "every chain stage shares the same ultimate craft goal")
-	}
-}
-
-// TestTaskKindForOverrideIsTheSingleSourceForNameAndGoal guards the
-// refactor taskNameForOverride/goalDescription are both now thin wrappers
-// over: every case has to set both labels together, so this would catch a
-// future case that sets one but not the other.
-func TestTaskKindForOverrideIsTheSingleSourceForNameAndGoal(t *testing.T) {
-	ov := rlenv.TaskOverride{GoToTargetDisabled: true, MineTargetBlock: "minecraft:dirt"}
-	kind := taskKindForOverride(ov)
-	assert.Equal(t, kind.name, taskNameForOverride(ov))
-	assert.Equal(t, kind.goal, goalDescription(ov))
-}
-
-// TestTaskKindForOverrideUnknownChainStageFallsBackRatherThanPanicking
-// covers chainStageNames missing an entry (an rlenv version bump adding a
-// stage this map hasn't been updated for yet) - the one remaining
-// hand-maintained piece of the task-kind classification.
-func TestTaskKindForOverrideUnknownChainStageFallsBackRatherThanPanicking(t *testing.T) {
-	kind := taskKindForOverride(rlenv.TaskOverride{ChainStage: 99, CraftTargetItem: "minecraft:bowl"})
-	assert.Equal(t, "chain_unknown", kind.name)
-	assert.Equal(t, "craft bowl", kind.goal)
-}
-
-func TestGoalForSettingsMirrorsGoalDescriptionForAStaticEnv(t *testing.T) {
+// TestGoalForSettingsMirrorsCurriculumsGoalDescriptionForAStaticEnv checks
+// goalForSettings against the same cases curriculum.TaskSpec.
+// GoalDescription's own tests cover, now that goalForSettings is the only
+// task-kind-to-goal switch left in this package — see that method's own
+// doc comment for where the curriculum-driven path's equivalent logic
+// moved to.
+func TestGoalForSettingsMirrorsCurriculumsGoalDescriptionForAStaticEnv(t *testing.T) {
 	assert.Equal(t, "mine dirt", goalForSettings(mcconfig.EnvSettings{MineTargetBlock: "minecraft:dirt"}))
 	assert.Equal(t, "craft stick", goalForSettings(mcconfig.EnvSettings{CraftTargetItem: "minecraft:stick"}))
 	assert.Equal(t, "goto (+5, +0, +0) from spawn", goalForSettings(mcconfig.EnvSettings{TargetOffset: [3]float64{5, 0, 0}}))

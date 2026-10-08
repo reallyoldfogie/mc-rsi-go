@@ -272,3 +272,18 @@ func TestPoolWithoutAChainSelectsExactlyAsBefore(t *testing.T) {
 		assert.Equal(t, before.Next(0, a), after.Next(0, b))
 	}
 }
+
+func TestGoalDescriptionNamesTheActualSuccessCondition(t *testing.T) {
+	assert.Equal(t, "goto (+5, +0, +0) from spawn", TaskSpec{Type: TaskGoto, TargetOffset: [3]float64{5, 0, 0}}.GoalDescription())
+	assert.Equal(t, "mine dirt", TaskSpec{Type: TaskMine, MineTargetBlock: "minecraft:dirt"}.GoalDescription())
+	assert.Equal(t, "craft stick", TaskSpec{Type: TaskCraft, CraftTargetItem: "minecraft:stick"}.GoalDescription())
+	assert.Equal(t, "mine sand", TaskSpec{Type: TaskMineFar, MineTargetBlock: "minecraft:sand"}.GoalDescription())
+	assert.Equal(t, "craft chest", TaskSpec{Type: TaskCraftFar, CraftTargetItem: "minecraft:chest"}.GoalDescription())
+}
+
+func TestGoalDescriptionNamesTheChainsUltimateGoalRegardlessOfStage(t *testing.T) {
+	for _, typ := range []TaskType{TaskChainGather, TaskChainTable, TaskChainPlace, TaskChainUse} {
+		spec := TaskSpec{Type: typ, MineTargetBlock: ChainTreeBlock, CraftTargetItem: "minecraft:bowl"}
+		assert.Equal(t, "craft bowl", spec.GoalDescription(), "every chain stage shares the same ultimate craft goal")
+	}
+}

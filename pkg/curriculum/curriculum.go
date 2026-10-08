@@ -19,7 +19,9 @@ package curriculum
 
 import (
 	"errors"
+	"fmt"
 	"math/rand/v2"
+	"strings"
 )
 
 // TaskType is which of rlenv's three tasks a TaskSpec poses.
@@ -93,6 +95,42 @@ func (t TaskType) String() string {
 		return "chain_use"
 	default:
 		return "unknown"
+	}
+}
+
+// GoalDescription renders s's actual success condition in plain language
+// ("mine dirt", "craft stick", "goto (+5, +0, +0) from spawn") — String's
+// own counterpart, naming WHAT the episode ends by achieving rather than
+// which task type it is. Any caller that wants this (a dashboard, a log
+// line, ...) gets it from here, the one place that already knows what
+// each TaskType's fields mean, instead of re-deriving it downstream from
+// rlenv.TaskOverride's raw field combination (fragile: Convert's own
+// switch and a downstream one have to be kept in sync by hand). Adding a
+// new TaskType constant means a case here alongside the one String
+// already needs — the same file, the same switch-per-type shape work
+// already requires, not an extra one living somewhere else entirely.
+//
+// TargetOffset is relative to wherever the episode's Reset finds the bot,
+// not an absolute world coordinate (rlenv.Environment's own resolved
+// target position is unexported) — the honest version of "goto <loc>"
+// available without an upstream mc-agent change.
+func (s TaskSpec) GoalDescription() string {
+	short := func(id string) string { return strings.TrimPrefix(id, "minecraft:") }
+	switch s.Type {
+	case TaskGoto:
+		return fmt.Sprintf("goto (%+.0f, %+.0f, %+.0f) from spawn", s.TargetOffset[0], s.TargetOffset[1], s.TargetOffset[2])
+	case TaskMine, TaskMineFar:
+		return "mine " + short(s.MineTargetBlock)
+	case TaskCraft, TaskCraftFar:
+		return "craft " + short(s.CraftTargetItem)
+	case TaskChainGather, TaskChainTable, TaskChainPlace, TaskChainUse:
+		// Every stage of one chain episode shares the same ultimate
+		// CraftTargetItem (see the chain case in Convert), so the goal is
+		// the same regardless of which stage is active; String already
+		// conveys the stage.
+		return "craft " + short(s.CraftTargetItem)
+	default:
+		return ""
 	}
 }
 

@@ -20,6 +20,20 @@ type fixedGenerator struct {
 
 func (f fixedGenerator) Next(int, *rand.Rand) curriculum.TaskSpec { return f.spec }
 
+// TestConvertMatchesTaskSelectorForTheSameSpec guards Convert staying in
+// sync with TaskSelector now that TaskSelector is just gen.Next+Convert:
+// a caller drawing its own spec via gen.Next and calling Convert directly
+// (to also get spec.Type.String()/spec.GoalDescription() — see Convert's
+// own doc comment for why) must get the exact same override TaskSelector
+// itself would have produced from the identical spec.
+func TestConvertMatchesTaskSelectorForTheSameSpec(t *testing.T) {
+	spec := curriculum.TaskSpec{Type: curriculum.TaskMineFar, TargetOffset: [3]float64{18, 0, 0}, MineTargetBlock: "minecraft:sand", MineSearchRadius: 6}
+	gen := fixedGenerator{spec: spec}
+	selector := TaskSelector(gen, rand.New(rand.NewPCG(1, 2)))
+
+	assert.Equal(t, selector(0, nil), Convert(spec))
+}
+
 func TestTaskSelectorGotoSpecEnablesOnlyGoto(t *testing.T) {
 	gen := fixedGenerator{spec: curriculum.TaskSpec{Type: curriculum.TaskGoto, TargetOffset: [3]float64{5, 1, -2}}}
 	selector := TaskSelector(gen, rand.New(rand.NewPCG(1, 2)))

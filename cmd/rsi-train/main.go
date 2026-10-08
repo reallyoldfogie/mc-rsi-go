@@ -1501,78 +1501,12 @@ func taskName(settings mcconfig.EnvSettings) string {
 	}
 }
 
-// chainStageNames names each rlenv chain stage for taskKindForOverride -
-// the one place that needs updating when rlenv ever adds a stage, instead
-// of a whole extra switch case duplicated across every task-kind consumer.
-var chainStageNames = map[int]string{
-	rlenv.ChainGather: "chain_gather",
-	rlenv.ChainTable:  "chain_table",
-	rlenv.ChainPlace:  "chain_place",
-	rlenv.ChainUse:    "chain_use",
-}
-
-// taskKind is one episode's classification: name labels the task type
-// (used for metric labels and the dashboard's Task stat), goal describes
-// its actual success condition in plain language (the dashboard's Goal
-// stat). taskKindForOverride is the single switch every one of those
-// labels is derived from — before this, taskNameForOverride and
-// goalDescription were two independent switches over the same
-// rlenv.TaskOverride fields, which had to be kept in sync by hand; a new
-// task type now only means one new case, in one place, setting both
-// labels together where neither can be forgotten.
-type taskKind struct {
-	name string
-	goal string
-}
-
-func taskKindForOverride(override rlenv.TaskOverride) taskKind {
-	short := func(s string) string { return strings.TrimPrefix(s, "minecraft:") }
-	switch {
-	case override.ChainStage != 0:
-		name := chainStageNames[override.ChainStage]
-		if name == "" {
-			name = "chain_unknown"
-		}
-		// Every stage of one chain episode shares the same ultimate
-		// CraftTargetItem (the chain's goal item — see
-		// rlenvadapter.TaskSelector), so the goal is the same regardless
-		// of which stage is currently active; name already conveys the
-		// stage.
-		return taskKind{name: name, goal: "craft " + short(override.CraftTargetItem)}
-	case !override.GoToTargetDisabled && override.MineTargetBlock != "":
-		return taskKind{name: "mine_far", goal: "mine " + short(override.MineTargetBlock)}
-	case !override.GoToTargetDisabled && override.CraftTargetItem != "":
-		return taskKind{name: "craft_far", goal: "craft " + short(override.CraftTargetItem)}
-	case !override.GoToTargetDisabled:
-		return taskKind{name: "goto", goal: gotoGoalDescription(override.TargetOffset)}
-	case override.MineTargetBlock != "":
-		return taskKind{name: "mine", goal: "mine " + short(override.MineTargetBlock)}
-	case override.CraftTargetItem != "":
-		return taskKind{name: "craft", goal: "craft " + short(override.CraftTargetItem)}
-	default:
-		return taskKind{name: "unknown"}
-	}
-}
-
-func taskNameForOverride(override rlenv.TaskOverride) string {
-	return taskKindForOverride(override).name
-}
-
-// goalDescription renders override's actual success condition in plain
-// language ("mine dirt", "craft stick", "goto (+5, +0, +0) from spawn")
-// for the dashboard's Goal stat — taskNameForOverride's own counterpart,
-// naming WHAT the episode ends by achieving rather than which task type
-// it is (see taskKindForOverride, which both derive from).
-//
-// TargetOffset is relative to wherever Reset found the bot that episode,
-// not an absolute world coordinate — rlenv.Environment's own resolved
-// targetX/Y/Z are unexported, so this is the closest honest equivalent to
-// "goto <loc>" without an upstream mc-agent change.
-func goalDescription(override rlenv.TaskOverride) string { return taskKindForOverride(override).goal }
-
-// goalForSettings is goalDescription's counterpart for a run with no
-// curriculum (-curriculum-config unset): the same episode goal every
-// episode, straight from -mc-agent-config's static env.* settings.
+// goalForSettings is curriculum.TaskSpec.GoalDescription's counterpart for
+// a run with no curriculum (-curriculum-config unset): the same episode
+// goal every episode, straight from -mc-agent-config's static env.*
+// settings, which (unlike curriculum.TaskSpec) has no Type tag or far/
+// chain variants to begin with — just mine, craft, or goto — so there is
+// no switch here worth consolidating further.
 func goalForSettings(settings mcconfig.EnvSettings) string {
 	switch {
 	case settings.MineTargetBlock != "":
@@ -1580,12 +1514,8 @@ func goalForSettings(settings mcconfig.EnvSettings) string {
 	case settings.CraftTargetItem != "":
 		return "craft " + strings.TrimPrefix(settings.CraftTargetItem, "minecraft:")
 	default:
-		return gotoGoalDescription(settings.TargetOffset)
+		return fmt.Sprintf("goto (%+.0f, %+.0f, %+.0f) from spawn", settings.TargetOffset[0], settings.TargetOffset[1], settings.TargetOffset[2])
 	}
-}
-
-func gotoGoalDescription(offset [3]float64) string {
-	return fmt.Sprintf("goto (%+.0f, %+.0f, %+.0f) from spawn", offset[0], offset[1], offset[2])
 }
 
 // craftEconomyItems are the items behind every craft_target_item/
@@ -1856,14 +1786,19 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			seed := uint64(time.Now().UnixNano()) + uint64(i)
 			taskPCG := rand.NewPCG(seed, uint64(i))
 			taskRNG := rand.New(taskPCG)
-			base := rlenvadapter.TaskSelector(curriculumGen, taskRNG)
-			envCfg.TaskSelector = func(episode int, rng *oldrand.Rand) rlenv.TaskOverride {
-				override := base(episode, rng)
+			// Drawn and Converted here directly (rather than through
+			// rlenvadapter.TaskSelector) so spec's own Type/GoalDescription
+			// — not a re-derivation from override's raw field combination —
+			// is what names this episode's task and goal, see Convert's own
+			// doc comment for why.
+			envCfg.TaskSelector = func(episode int, _ *oldrand.Rand) rlenv.TaskOverride {
+				spec := curriculumGen.Next(episode, taskRNG)
+				override := rlenvadapter.Convert(spec)
 				taskMu.Lock()
-				selectedTask = taskNameForOverride(override)
-				selectedGoal = goalDescription(override)
+				selectedTask = spec.Type.String()
+				selectedGoal = spec.GoalDescription()
 				taskMu.Unlock()
-				recordTaskSelection(override)
+				recordTaskSelection(selectedTask)
 				logCraftEconomyInventory(settings.Connection.Name, liveAgent, selectedTask, override)
 				return override
 			}

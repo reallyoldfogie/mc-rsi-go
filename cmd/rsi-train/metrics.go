@@ -537,13 +537,11 @@ func actionName(action rl.Action) string {
 	}
 }
 
-// recordTaskSelection increments metricTaskEpisodesTotal for whichever
-// single task override describes as active, mirroring
-// rlenvadapter.TaskSelector's own "exactly one task active" invariant
-// (GoToTargetDisabled defaults true; MineTargetBlock/CraftTargetItem are
-// empty unless that task was chosen).
-func recordTaskSelection(override rlenv.TaskOverride) {
-	if name := taskNameForOverride(override); name != "unknown" {
+// recordTaskSelection increments metricTaskEpisodesTotal for name (a
+// curriculum.TaskType.String() value, e.g. "mine_far" — see main.go's own
+// TaskSelector closure, its only caller).
+func recordTaskSelection(name string) {
+	if name != "" && name != "unknown" {
 		metricTaskEpisodesTotal.WithLabelValues(name).Inc()
 	}
 }
