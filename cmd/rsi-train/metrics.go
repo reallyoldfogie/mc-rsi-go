@@ -351,6 +351,14 @@ type instrumentedEnvironment struct {
 	env            rl.Environment
 	task           string
 	taskForEpisode func() string
+	// goalForEpisode reports the current episode's actual success
+	// condition in plain language ("mine dirt", "craft stick", "goto
+	// (+5, +0, +0) from spawn", ...) for the dashboard's Goal stat -
+	// taskForEpisode's own counterpart, naming WHAT the episode ends by
+	// achieving rather than which task type it is. Always set alongside
+	// taskForEpisode at every connectedEnvironment construction site
+	// (main.go); nil only in a test fixture that doesn't care.
+	goalForEpisode func() string
 	started        bool
 	steps          int // steps taken so far in the in-progress episode; see metricEpisodeLengthSteps
 
@@ -370,6 +378,13 @@ func (e *instrumentedEnvironment) currentTask() string {
 		}
 	}
 	return e.task
+}
+
+func (e *instrumentedEnvironment) currentGoal() string {
+	if e.goalForEpisode != nil {
+		return e.goalForEpisode()
+	}
+	return ""
 }
 
 func (e *instrumentedEnvironment) ObservationSize() int { return e.env.ObservationSize() }
@@ -441,6 +456,7 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 	// TaskSelector runs inside the wrapped environment's Reset. Read the
 	// selected task again after Reset for the new episode's counters.
 	task = e.currentTask()
+	goal := e.currentGoal()
 	e.started = true
 	metricEpisodesStartedTotal.WithLabelValues(task).Inc()
 	if !evaluationInProgress.Load() {
@@ -448,6 +464,7 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 	}
 	e.registry.updateEpisode(e.index, func(s *agentSnapshot) {
 		s.Task = task
+		s.Goal = goal
 		s.LastAction = ""
 		s.EpisodeStep = 0
 		s.LastOutcome = ""

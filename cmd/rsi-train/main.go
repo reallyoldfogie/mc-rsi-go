@@ -295,7 +295,7 @@ func run(args []string) error {
 	}
 	for i, c := range connected {
 		agents.add(c.username, c.agent)
-		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, registry: agents, index: i}
+		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, registry: agents, index: i}
 	}
 	metricParallelEnvs.Set(float64(len(connected)))
 
@@ -1526,6 +1526,52 @@ func taskNameForOverride(override rlenv.TaskOverride) string {
 	}
 }
 
+// goalForSettings is goalDescription's counterpart for a run with no
+// curriculum (-curriculum-config unset): the same episode goal every
+// episode, straight from -mc-agent-config's static env.* settings.
+func goalForSettings(settings mcconfig.EnvSettings) string {
+	switch {
+	case settings.MineTargetBlock != "":
+		return "mine " + strings.TrimPrefix(settings.MineTargetBlock, "minecraft:")
+	case settings.CraftTargetItem != "":
+		return "craft " + strings.TrimPrefix(settings.CraftTargetItem, "minecraft:")
+	default:
+		return gotoGoalDescription(settings.TargetOffset)
+	}
+}
+
+// goalDescription renders override's actual success condition in plain
+// language ("mine dirt", "craft stick", "goto (+5, +0, +0) from spawn")
+// for the dashboard's Goal stat — taskNameForOverride's own counterpart,
+// naming WHAT the episode ends by achieving rather than which task type
+// it is. For a chain episode, every stage's override already carries the
+// same CraftTargetItem (the chain's ultimate goal item — see
+// rlenvadapter.TaskSelector), so that's shown regardless of which stage
+// is currently active; Task already conveys the stage.
+//
+// TargetOffset is relative to wherever Reset found the bot that episode,
+// not an absolute world coordinate — rlenv.Environment's own resolved
+// targetX/Y/Z are unexported, so this is the closest honest equivalent to
+// "goto <loc>" without an upstream mc-agent change.
+func goalDescription(override rlenv.TaskOverride) string {
+	switch {
+	case override.ChainStage != 0:
+		return "craft " + strings.TrimPrefix(override.CraftTargetItem, "minecraft:")
+	case override.MineTargetBlock != "":
+		return "mine " + strings.TrimPrefix(override.MineTargetBlock, "minecraft:")
+	case override.CraftTargetItem != "":
+		return "craft " + strings.TrimPrefix(override.CraftTargetItem, "minecraft:")
+	case !override.GoToTargetDisabled:
+		return gotoGoalDescription(override.TargetOffset)
+	default:
+		return ""
+	}
+}
+
+func gotoGoalDescription(offset [3]float64) string {
+	return fmt.Sprintf("goto (%+.0f, %+.0f, %+.0f) from spawn", offset[0], offset[1], offset[2])
+}
+
 // craftEconomyItems are the items behind every craft_target_item/
 // chain_goal_item this run's curriculum can pose (see curriculum.json):
 // minecraft:oak_log -> oak_planks -> stick/crafting_table/chest/bowl, with
@@ -1640,6 +1686,10 @@ type connectedEnvironment struct {
 	username       string
 	env            rl.Environment
 	taskForEpisode func() string
+	// goalForEpisode is taskForEpisode's own counterpart for the
+	// dashboard's Goal stat — see instrumentedEnvironment.goalForEpisode's
+	// own doc comment.
+	goalForEpisode func() string
 	// reseedEvalTasks, when curriculum task selection is active, reseeds
 	// this environment's curriculum task rng in place (via
 	// *rand.PCG.Seed, not swapping in a new source — the TaskSelector
@@ -1773,6 +1823,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			envCfg.Seeder = craftIngredientSeeder
 			var taskMu sync.RWMutex
 			selectedTask := taskName(settings.Env)
+			selectedGoal := goalForSettings(settings.Env)
 			// Each environment gets its own rng, not a shared one: N
 			// environments' Reset calls run concurrently (see
 			// leapfrog.Round's rollout collection), and math/rand/v2's
@@ -1794,6 +1845,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 				override := base(episode, rng)
 				taskMu.Lock()
 				selectedTask = taskNameForOverride(override)
+				selectedGoal = goalDescription(override)
 				taskMu.Unlock()
 				recordTaskSelection(override)
 				logCraftEconomyInventory(settings.Connection.Name, liveAgent, selectedTask, override)
@@ -1807,6 +1859,11 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 				defer taskMu.RUnlock()
 				return selectedTask
 			}
+			goalForEpisode := func() string {
+				taskMu.RLock()
+				defer taskMu.RUnlock()
+				return selectedGoal
+			}
 			env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
 			if err != nil {
 				closeConnectedAgent(a)
@@ -1818,6 +1875,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 				username:        settings.Connection.Name,
 				env:             env,
 				taskForEpisode:  taskForEpisode,
+				goalForEpisode:  goalForEpisode,
 				reseedEvalTasks: taskPCG.Seed,
 				stopWatch:       make(chan struct{}),
 			})
@@ -1830,7 +1888,14 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
 		}
 
-		connected = append(connected, connectedEnvironment{agent: a, username: settings.Connection.Name, env: env, taskForEpisode: func() string { return taskName(settings.Env) }, stopWatch: make(chan struct{})})
+		connected = append(connected, connectedEnvironment{
+			agent:          a,
+			username:       settings.Connection.Name,
+			env:            env,
+			taskForEpisode: func() string { return taskName(settings.Env) },
+			goalForEpisode: func() string { return goalForSettings(settings.Env) },
+			stopWatch:      make(chan struct{}),
+		})
 	}
 	return connected, nil
 }
@@ -1876,7 +1941,7 @@ func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected [
 		index := len(connected)
 		agents.add(c.username, c.agent)
 		connected = append(connected, c)
-		envs = append(envs, &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, registry: agents, index: index})
+		envs = append(envs, &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, registry: agents, index: index})
 	}
 	return connected, envs, nil
 }

@@ -106,6 +106,7 @@ type agentSnapshot struct {
 	Index       int              `json:"index"`
 	Username    string           `json:"username"`
 	Task        string           `json:"task"`
+	Goal        string           `json:"goal"`
 	LastAction  string           `json:"last_action"`
 	EpisodeStep int              `json:"episode_step"`
 	LastOutcome string           `json:"last_outcome"`
@@ -130,6 +131,14 @@ type agentSnapshot struct {
 // its "minecraft:" prefix already stripped, matching itemIconsFS's own
 // filenames.
 type inventoryEntry struct {
+	// Slot is this entry's 1-based position in the displayed bar (1-27
+	// are main-inventory slots, 28-36 are hotbar slots, matching the
+	// Main()-then-Hotbar() order summarizeInventory builds entries in) —
+	// not mc-agent/mc-bot-go's own raw protocol slot numbers (screen.
+	// MainSlotStart=9, HotbarSlotStart=36, with the crafting grid and
+	// armor ahead of those), which would be confusing here since this
+	// strip never shows those other slot kinds at all.
+	Slot  int    `json:"slot"`
 	Name  string `json:"name"`
 	Count int    `json:"count"`
 }
@@ -348,16 +357,17 @@ func summarizeInventory(itemMgr models.ItemManager, slotGroups ...[]screen.Slot)
 	entries := make([]inventoryEntry, 0, 36) // 27 main + 9 hotbar, the common case
 	for _, slots := range slotGroups {
 		for _, s := range slots {
+			slot := len(entries) + 1
 			if s.Count == 0 {
-				entries = append(entries, inventoryEntry{})
+				entries = append(entries, inventoryEntry{Slot: slot})
 				continue
 			}
 			name := strings.TrimPrefix(itemMgr.GetItemNameByID(int32(s.ID)), "minecraft:")
 			if name == "" || name == "air" {
-				entries = append(entries, inventoryEntry{})
+				entries = append(entries, inventoryEntry{Slot: slot})
 				continue
 			}
-			entries = append(entries, inventoryEntry{Name: name, Count: int(s.Count)})
+			entries = append(entries, inventoryEntry{Slot: slot, Name: name, Count: int(s.Count)})
 		}
 	}
 	return entries

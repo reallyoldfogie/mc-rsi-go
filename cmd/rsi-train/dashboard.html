@@ -219,6 +219,7 @@
     el.innerHTML =
       stat("Agent", a.username || ("agent-" + a.index)) +
       stat("Task", a.task || "-") +
+      stat("Goal", a.goal || "-") +
       stat("Last action", a.last_action || "-") +
       stat("Episode step", a.episode_step) +
       stat("Last outcome", a.last_outcome || "in progress") +
@@ -252,10 +253,11 @@
       chip.className = "item-chip";
 
       if (!it.name) {
+        chip.title = "slot " + it.slot + " (empty)";
         el.appendChild(chip); // empty slot: just the box, nothing in it.
         return;
       }
-      chip.title = it.name + " ×" + it.count;
+      chip.title = it.name + " ×" + it.count + " (slot " + it.slot + ")";
 
       var img = document.createElement("img");
       img.src = "/icons/" + encodeURIComponent(it.name) + ".png";

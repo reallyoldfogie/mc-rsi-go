@@ -193,9 +193,9 @@ func TestSummarizeInventoryPreservesSlotOrderAcrossGroupsWithoutMerging(t *testi
 	// main-then-hotbar slot order, matching the real inventory screen -
 	// not merged/summed the way the dashboard used to.
 	assert.Equal(t, []inventoryEntry{
-		{Name: "oak_log", Count: 3},
-		{Name: "stick", Count: 1},
-		{Name: "oak_log", Count: 2},
+		{Slot: 1, Name: "oak_log", Count: 3},
+		{Slot: 2, Name: "stick", Count: 1},
+		{Slot: 3, Name: "oak_log", Count: 2},
 	}, got)
 }
 
@@ -206,9 +206,12 @@ func TestSummarizeInventoryRepresentsEmptyAndAirSlotsAsEmptyEntriesInPlace(t *te
 	got := summarizeInventory(itemMgr, slots)
 
 	// One entry per slot, in slot order - empty/air slots become the zero
-	// value (an empty box) rather than being dropped, so the strip shows
-	// which slot each item is actually in.
-	assert.Equal(t, []inventoryEntry{{}, {}, {}, {Name: "stick", Count: 4}}, got)
+	// value plus their own Slot number (an empty, numbered box) rather
+	// than being dropped, so the strip shows which slot each item is
+	// actually in.
+	assert.Equal(t, []inventoryEntry{
+		{Slot: 1}, {Slot: 2}, {Slot: 3}, {Slot: 4, Name: "stick", Count: 4},
+	}, got)
 }
 
 func TestSummarizeInventoryEmptyInventoryReturnsEmptyNotNil(t *testing.T) {
@@ -225,8 +228,8 @@ func TestSummarizeInventoryAllEmptySlotsReportsOneEntryPerSlot(t *testing.T) {
 	got := summarizeInventory(fakeItemManager{}, main, hotbar)
 
 	assert.Len(t, got, 36, "an all-empty inventory is still 36 slots, not 0 - the dashboard needs every box to draw a full strip")
-	for _, e := range got {
-		assert.Equal(t, inventoryEntry{}, e)
+	for i, e := range got {
+		assert.Equal(t, inventoryEntry{Slot: i + 1}, e)
 	}
 }
 
