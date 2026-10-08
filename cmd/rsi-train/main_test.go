@@ -761,6 +761,27 @@ func TestGoalDescriptionNamesTheChainsUltimateGoalRegardlessOfStage(t *testing.T
 	}
 }
 
+// TestTaskKindForOverrideIsTheSingleSourceForNameAndGoal guards the
+// refactor taskNameForOverride/goalDescription are both now thin wrappers
+// over: every case has to set both labels together, so this would catch a
+// future case that sets one but not the other.
+func TestTaskKindForOverrideIsTheSingleSourceForNameAndGoal(t *testing.T) {
+	ov := rlenv.TaskOverride{GoToTargetDisabled: true, MineTargetBlock: "minecraft:dirt"}
+	kind := taskKindForOverride(ov)
+	assert.Equal(t, kind.name, taskNameForOverride(ov))
+	assert.Equal(t, kind.goal, goalDescription(ov))
+}
+
+// TestTaskKindForOverrideUnknownChainStageFallsBackRatherThanPanicking
+// covers chainStageNames missing an entry (an rlenv version bump adding a
+// stage this map hasn't been updated for yet) - the one remaining
+// hand-maintained piece of the task-kind classification.
+func TestTaskKindForOverrideUnknownChainStageFallsBackRatherThanPanicking(t *testing.T) {
+	kind := taskKindForOverride(rlenv.TaskOverride{ChainStage: 99, CraftTargetItem: "minecraft:bowl"})
+	assert.Equal(t, "chain_unknown", kind.name)
+	assert.Equal(t, "craft bowl", kind.goal)
+}
+
 func TestGoalForSettingsMirrorsGoalDescriptionForAStaticEnv(t *testing.T) {
 	assert.Equal(t, "mine dirt", goalForSettings(mcconfig.EnvSettings{MineTargetBlock: "minecraft:dirt"}))
 	assert.Equal(t, "craft stick", goalForSettings(mcconfig.EnvSettings{CraftTargetItem: "minecraft:stick"}))
