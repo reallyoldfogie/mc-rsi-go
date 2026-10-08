@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"sort"
@@ -76,6 +77,7 @@ type agentSnapshot struct {
 	Health      float32          `json:"health"`
 	Food        int32            `json:"food"`
 	Inventory   []inventoryEntry `json:"inventory"`
+	Nearby      []nearbyEntity   `json:"nearby"`
 	UpdatedAt   time.Time        `json:"updated_at"`
 
 	agent models.Agent
@@ -166,10 +168,15 @@ func (r *agentRegistry) pollOnce() {
 			health, food, _, healthKnown = hp.Health()
 		}
 		inventory := readInventory(b.agent)
+		var nearby []nearbyEntity
+		if ok {
+			nearby = readNearbyEntities(b.agent, pos.X, pos.Y, pos.Z)
+		}
 
 		r.mu.Lock()
 		if ok {
 			b.X, b.Y, b.Z, b.Yaw, b.Pitch = pos.X, pos.Y, pos.Z, yaw, pitch
+			b.Nearby = nearby
 		}
 		if healthKnown {
 			b.Health, b.Food = health, food
@@ -179,6 +186,89 @@ func (r *agentRegistry) pollOnce() {
 		}
 		r.mu.Unlock()
 	}
+}
+
+// nearbyEntityRadius bounds how far from a bot's own position
+// readNearbyEntities looks, and nearbyEntityMax caps how many of those it
+// keeps (nearest first) - a generous margin beyond the dashboard's own
+// ZOOM_RADIUS (dashboard.html), so nothing visible in the zoomed view is
+// missing, without unbounded JSON payload growth in a crowded area.
+const (
+	nearbyEntityRadius = 32.0
+	nearbyEntityMax    = 40
+)
+
+// nearbyEntity is one non-bot entity (a dropped item, a mob, ...) near a
+// bot's own position, for the dashboard's zoomed single-agent view -
+// context for "what is around this bot," not just where the bot itself is.
+type nearbyEntity struct {
+	Type string  `json:"type"`
+	X    float64 `json:"x"`
+	Y    float64 `json:"y"`
+	Z    float64 `json:"z"`
+}
+
+// readNearbyEntities summarizes a's already-tracked nearby entities around
+// (originX, originY, originZ), or nil if it has none within
+// nearbyEntityRadius. GetTrackedEntities is a plain read of state mc-agent
+// already tracks from the connection's own packet stream (every entity in
+// the bot's own loaded view distance), not a new network call - same cost
+// class as GetPosition/GetInventory.
+func readNearbyEntities(a models.Agent, originX, originY, originZ float64) []nearbyEntity {
+	tracked := a.GetTrackedEntities()
+	if len(tracked) == 0 {
+		return nil
+	}
+	return summarizeNearbyEntities(tracked, a.GetRegistry("minecraft:entity_type"), originX, originY, originZ)
+}
+
+// summarizeNearbyEntities filters tracked to live (non-Removed) entities
+// within nearbyEntityRadius of the given origin, resolves each one's type
+// name via reg (falling back to a numeric placeholder if reg is nil or
+// doesn't recognize the ID), and returns the nearbyEntityMax nearest ones
+// sorted by distance. Split out from readNearbyEntities so it's testable
+// without a models.Agent fake for the whole (large) interface - see
+// summarizeInventory's own doc comment for why this repo avoids those.
+func summarizeNearbyEntities(tracked map[int32]models.TrackedEntityInfo, reg models.CustomRegistry, originX, originY, originZ float64) []nearbyEntity {
+	type candidate struct {
+		nearbyEntity
+		distSq float64
+	}
+	maxDistSq := nearbyEntityRadius * nearbyEntityRadius
+	candidates := make([]candidate, 0, len(tracked))
+	for _, info := range tracked {
+		if info.Removed {
+			continue
+		}
+		dx, dy, dz := info.X-originX, info.Y-originY, info.Z-originZ
+		distSq := dx*dx + dy*dy + dz*dz
+		if distSq > maxDistSq {
+			continue
+		}
+		name := ""
+		if reg != nil {
+			if n, ok := reg.GetNameByID(info.EntityType); ok {
+				name = strings.TrimPrefix(n, "minecraft:")
+			}
+		}
+		if name == "" {
+			name = fmt.Sprintf("entity-%d", info.EntityType)
+		}
+		candidates = append(candidates, candidate{
+			nearbyEntity: nearbyEntity{Type: name, X: info.X, Y: info.Y, Z: info.Z},
+			distSq:       distSq,
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].distSq < candidates[j].distSq })
+	if len(candidates) > nearbyEntityMax {
+		candidates = candidates[:nearbyEntityMax]
+	}
+
+	out := make([]nearbyEntity, len(candidates))
+	for i, c := range candidates {
+		out[i] = c.nearbyEntity
+	}
+	return out
 }
 
 // readInventory sums a's main inventory + hotbar slots by item name, or
@@ -198,14 +288,20 @@ func readInventory(a models.Agent) []inventoryEntry {
 	return summarizeInventory(itemMgr, inv.Main(), inv.Hotbar())
 }
 
-// summarizeInventory sums each distinct item across every slot group
-// passed (e.g. main inventory + hotbar), stripping each resolved name's
-// "minecraft:" prefix and skipping empty/air slots. Split out from
-// readInventory so it's testable without a models.Agent fake for the
-// whole (large) interface — see reconcileEnvCount's own tests for why
-// this repo avoids those.
+// summarizeInventory returns one entry per non-empty slot across every slot
+// group passed, in the order given (readInventory passes Main() then
+// Hotbar(), matching the real inventory screen's own top-to-bottom slot
+// order — see screen.MainSlotStart/HotbarSlotStart) and preserving each
+// group's own slot order within it. Deliberately NOT merged/summed by
+// name — two separate stacks of the same item in different slots stay two
+// separate entries, exactly as the player's own inventory would show them,
+// per the dashboard's own "same order as the player's inventory" design.
+// Each resolved name has its "minecraft:" prefix stripped; empty/air slots
+// are skipped. Split out from readInventory so it's testable without a
+// models.Agent fake for the whole (large) interface — see
+// reconcileEnvCount's own tests for why this repo avoids those.
 func summarizeInventory(itemMgr models.ItemManager, slotGroups ...[]screen.Slot) []inventoryEntry {
-	counts := map[string]int{}
+	entries := make([]inventoryEntry, 0, 36) // 27 main + 9 hotbar, the common case
 	for _, slots := range slotGroups {
 		for _, s := range slots {
 			if s.Count == 0 {
@@ -215,15 +311,9 @@ func summarizeInventory(itemMgr models.ItemManager, slotGroups ...[]screen.Slot)
 			if name == "" || name == "air" {
 				continue
 			}
-			counts[name] += int(s.Count)
+			entries = append(entries, inventoryEntry{Name: name, Count: int(s.Count)})
 		}
 	}
-
-	entries := make([]inventoryEntry, 0, len(counts))
-	for name, count := range counts {
-		entries = append(entries, inventoryEntry{Name: name, Count: count})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 	return entries
 }
 

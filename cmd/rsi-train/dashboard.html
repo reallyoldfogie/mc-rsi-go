@@ -72,18 +72,19 @@
     gap: 6px;
   }
   .item-chip {
-    display: flex;
-    align-items: center;
-    gap: 4px;
+    position: relative;
+    flex: none;
+    width: 34px;
+    height: 34px;
     background: #1b1e25;
     border: 1px solid #2a2d35;
-    border-radius: 4px;
-    padding: 3px 7px 3px 3px;
-    font-size: 12px;
+    border-radius: 3px;
   }
   .item-chip img, .item-chip .badge {
-    width: 20px;
-    height: 20px;
+    position: absolute;
+    inset: 2px;
+    width: calc(100% - 4px);
+    height: calc(100% - 4px);
     image-rendering: pixelated;
   }
   .item-chip .badge {
@@ -91,12 +92,20 @@
     align-items: center;
     justify-content: center;
     background: #2a2d35;
-    border-radius: 3px;
-    font-size: 10px;
+    border-radius: 2px;
+    font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
   }
-  .item-chip .count { color: #c7cad1; }
+  .item-chip .count {
+    position: absolute;
+    right: 2px;
+    bottom: 1px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 1px 0 #000, -1px 0 #000, 0 1px #000, 0 -1px #000;
+  }
   /* #plot-wrap (an ordinary block element) absorbs the flex sizing;
      #plot itself just fills it via plain percentages. A canvas given
      flex:1 directly, with no explicit width/height CSS, can get sized
@@ -124,6 +133,29 @@
 
   var selected = null;
   var latest = [];
+
+  // trails holds each agent's last TRAIL_LENGTH positions (index -> [{x,
+  // z}, ...], oldest first), purely client-side - the backend only ever
+  // gives us the current snapshot, so this is the dashboard's own memory
+  // of "where has this bot been," not something /agents reports.
+  var trails = {};
+  var TRAIL_LENGTH = 20;
+
+  // updateTrails appends latest's current positions to each agent's trail
+  // and drops any agent no longer present (e.g. a parallel-envs scale-down)
+  // so trails never grows unbounded. Called once per poll, before render.
+  function updateTrails() {
+    var liveIndices = {};
+    latest.forEach(function (a) {
+      liveIndices[a.index] = true;
+      var h = trails[a.index] || (trails[a.index] = []);
+      h.push({ x: a.x, z: a.z });
+      if (h.length > TRAIL_LENGTH) h.shift();
+    });
+    Object.keys(trails).forEach(function (k) {
+      if (!liveIndices[k]) delete trails[k];
+    });
+  }
 
   function statusDot(a) {
     var ageMs = Date.now() - new Date(a.updated_at).getTime();
@@ -233,6 +265,78 @@
   // stays in view as it moves.
   var ZOOM_RADIUS = 24;
 
+  // niceGridStep picks a "round" world-unit spacing (1/2/5 x a power of
+  // ten) that puts roughly targetLines gridlines across span world units -
+  // the same rounding Google Maps/D3 axis ticks use, so the grid reads as
+  // "20 blocks apart," never an arbitrary value like 17.3.
+  function niceGridStep(span, targetLines) {
+    var raw = span / targetLines;
+    var mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    var residual = raw / mag;
+    var nice = residual > 5 ? 10 : residual > 2 ? 5 : residual > 1 ? 2 : 1;
+    return nice * mag;
+  }
+
+  // drawGrid gives the plot a sense of scale and orientation - without it
+  // there's nothing on screen to judge "how far" or "which way" from,
+  // just a dot floating in a void. Gridlines are drawn at absolute world
+  // coordinates (not relative to the view), so they line up the same way
+  // regardless of which agent is selected.
+  function drawGrid(ctx, w, h, centerX, centerZ, scale) {
+    var step = niceGridStep(Math.min(w, h) / scale, 5);
+    var worldLeft = centerX - (w / 2) / scale, worldRight = centerX + (w / 2) / scale;
+    var worldTop = centerZ - (h / 2) / scale, worldBottom = centerZ + (h / 2) / scale;
+
+    ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.fillStyle = "rgba(255,255,255,0.28)";
+    ctx.font = "10px sans-serif";
+    ctx.lineWidth = 1;
+
+    for (var gx = Math.ceil(worldLeft / step) * step; gx <= worldRight; gx += step) {
+      var px = w / 2 + (gx - centerX) * scale;
+      ctx.beginPath();
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, h);
+      ctx.stroke();
+      ctx.fillText(gx.toFixed(0), px + 3, 11);
+    }
+    for (var gz = Math.ceil(worldTop / step) * step; gz <= worldBottom; gz += step) {
+      var py = h / 2 + (gz - centerZ) * scale;
+      ctx.beginPath();
+      ctx.moveTo(0, py);
+      ctx.lineTo(w, py);
+      ctx.stroke();
+      ctx.fillText(gz.toFixed(0), 3, py - 3);
+    }
+  }
+
+  // drawFacingIndicator draws a short arrow from (x, y) in the direction
+  // yawDeg faces, turning a plain dot into something that shows which way
+  // the bot is actually looking. dx/dz mirrors Minecraft's own yaw
+  // convention (0 = +Z/south, 90 = -X/west), the same formula bot
+  // libraries use to turn yaw into a direction vector.
+  function drawFacingIndicator(ctx, x, y, yawDeg, len, color) {
+    var rad = yawDeg * Math.PI / 180;
+    var dx = -Math.sin(rad), dz = Math.cos(rad);
+    var tipX = x + dx * len, tipY = y + dz * len;
+
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(tipX, tipY);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    var angle = Math.atan2(dz, dx), headLen = 5;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - headLen * Math.cos(angle - Math.PI / 6), tipY - headLen * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(tipX - headLen * Math.cos(angle + Math.PI / 6), tipY - headLen * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
   function renderPlot() {
     var canvas = document.getElementById("plot");
     var dpr = window.devicePixelRatio || 1;
@@ -275,12 +379,45 @@
       return [w / 2 + (a.x - centerX) * scale, h / 2 + (a.z - centerZ) * scale];
     }
 
+    drawGrid(ctx, w, h, centerX, centerZ, scale);
+
+    // Nearby entities (dropped items, mobs, ...) only make sense once
+    // zoomed to a single bot - at the all-agents scale they'd be
+    // indistinguishable from the bot's own dot. Drawn before the agents
+    // themselves so a bot's own dot/trail/label always reads on top.
+    if (sel && sel.nearby) {
+      sel.nearby.forEach(function (e) {
+        var p = toCanvas(e);
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], 3, 0, Math.PI * 2);
+        ctx.fillStyle = "#d9a24b";
+        ctx.fill();
+        ctx.fillStyle = "rgba(217,162,75,0.8)";
+        ctx.font = "10px sans-serif";
+        ctx.fillText(e.type, p[0] + 6, p[1] + 3);
+      });
+    }
+
     visible.forEach(function (a) {
       var p = toCanvas(a);
       var isSel = a.index === selected;
+      var color = isSel ? "#5b9dff" : "#8a8f99";
+
+      var trail = trails[a.index];
+      if (trail && trail.length > 1) {
+        ctx.beginPath();
+        trail.forEach(function (pos, i) {
+          var tp = toCanvas(pos);
+          if (i === 0) ctx.moveTo(tp[0], tp[1]); else ctx.lineTo(tp[0], tp[1]);
+        });
+        ctx.strokeStyle = isSel ? "rgba(91,157,255,0.5)" : "rgba(138,143,153,0.35)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
       ctx.beginPath();
       ctx.arc(p[0], p[1], isSel ? 8 : 5, 0, Math.PI * 2);
-      ctx.fillStyle = isSel ? "#5b9dff" : "#8a8f99";
+      ctx.fillStyle = color;
       ctx.fill();
       if (isSel) {
         ctx.beginPath();
@@ -289,6 +426,8 @@
         ctx.lineWidth = 1.5;
         ctx.stroke();
       }
+      drawFacingIndicator(ctx, p[0], p[1], a.yaw, isSel ? 16 : 11, color);
+
       ctx.fillStyle = "#c7cad1";
       ctx.font = "11px sans-serif";
       ctx.fillText(a.username || ("agent-" + a.index), p[0] + 10, p[1] - 10);
@@ -306,6 +445,7 @@
   function poll() {
     fetch("/agents").then(function (r) { return r.json(); }).then(function (data) {
       latest = data || [];
+      updateTrails();
       render();
     }).catch(function () { /* transient fetch error; try again next tick */ });
   }

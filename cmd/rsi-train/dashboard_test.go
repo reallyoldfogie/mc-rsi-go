@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/reallyoldfogie/mc-agent/models"
 	"github.com/reallyoldfogie/mc-bot-go/bot/screen"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -130,14 +131,21 @@ func TestServeDashboardPageServesEmbeddedHTML(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "<!doctype html>")
 }
 
-func TestSummarizeInventorySumsAcrossSlotGroups(t *testing.T) {
+func TestSummarizeInventoryPreservesSlotOrderAcrossGroupsWithoutMerging(t *testing.T) {
 	itemMgr := fakeItemManager{1: "minecraft:oak_log", 2: "minecraft:stick"}
 	main := []screen.Slot{{ID: 1, Count: 3}, {ID: 2, Count: 1}}
 	hotbar := []screen.Slot{{ID: 1, Count: 2}}
 
 	got := summarizeInventory(itemMgr, main, hotbar)
 
-	assert.Equal(t, []inventoryEntry{{Name: "oak_log", Count: 5}, {Name: "stick", Count: 1}}, got)
+	// Two oak_log stacks in different slots stay two separate entries, in
+	// main-then-hotbar slot order, matching the real inventory screen -
+	// not merged/summed the way the dashboard used to.
+	assert.Equal(t, []inventoryEntry{
+		{Name: "oak_log", Count: 3},
+		{Name: "stick", Count: 1},
+		{Name: "oak_log", Count: 2},
+	}, got)
 }
 
 func TestSummarizeInventorySkipsEmptyAndAirSlots(t *testing.T) {
@@ -154,4 +162,65 @@ func TestSummarizeInventoryEmptyInventoryReturnsEmptyNotNil(t *testing.T) {
 
 	assert.NotNil(t, got, "an empty inventory must still report zero items, not be mistaken for a 'not ready yet' nil")
 	assert.Empty(t, got)
+}
+
+// fakeEntityTypeRegistry resolves entity type IDs to names from a fixed
+// map, the one piece of models.CustomRegistry summarizeNearbyEntities
+// actually needs.
+type fakeEntityTypeRegistry map[int32]string
+
+func (f fakeEntityTypeRegistry) GetID() string                       { return "minecraft:entity_type" }
+func (f fakeEntityTypeRegistry) GetNameByID(id int32) (string, bool) { n, ok := f[id]; return n, ok }
+func (f fakeEntityTypeRegistry) GetIDByName(string) (int32, bool)    { return 0, false }
+func (f fakeEntityTypeRegistry) IsReady() bool                       { return true }
+func (f fakeEntityTypeRegistry) Dump()                               {}
+
+func TestSummarizeNearbyEntitiesFiltersByRadiusAndSortsByDistance(t *testing.T) {
+	reg := fakeEntityTypeRegistry{1: "minecraft:item", 2: "minecraft:zombie"}
+	tracked := map[int32]models.TrackedEntityInfo{
+		10: {EntityID: 10, EntityType: 2, X: 100, Y: 0, Z: 0},              // far away - excluded
+		11: {EntityID: 11, EntityType: 1, X: 5, Y: 0, Z: 0},                // nearest
+		12: {EntityID: 12, EntityType: 1, X: 0, Y: 0, Z: 10},               // next nearest
+		13: {EntityID: 13, EntityType: 2, X: 0, Y: 0, Z: 0, Removed: true}, // excluded
+	}
+
+	got := summarizeNearbyEntities(tracked, reg, 0, 0, 0)
+
+	assert.Equal(t, []nearbyEntity{
+		{Type: "item", X: 5, Y: 0, Z: 0},
+		{Type: "item", X: 0, Y: 0, Z: 10},
+	}, got)
+}
+
+func TestSummarizeNearbyEntitiesUnresolvedTypeFallsBackToNumericName(t *testing.T) {
+	tracked := map[int32]models.TrackedEntityInfo{1: {EntityID: 1, EntityType: 99, X: 1, Y: 0, Z: 0}}
+
+	got := summarizeNearbyEntities(tracked, fakeEntityTypeRegistry{}, 0, 0, 0)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "entity-99", got[0].Type)
+}
+
+func TestSummarizeNearbyEntitiesNilRegistryFallsBackToNumericName(t *testing.T) {
+	tracked := map[int32]models.TrackedEntityInfo{1: {EntityID: 1, EntityType: 7, X: 1, Y: 0, Z: 0}}
+
+	got := summarizeNearbyEntities(tracked, nil, 0, 0, 0)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "entity-7", got[0].Type)
+}
+
+func TestSummarizeNearbyEntitiesCapsAtMax(t *testing.T) {
+	reg := fakeEntityTypeRegistry{1: "minecraft:item"}
+	tracked := make(map[int32]models.TrackedEntityInfo, nearbyEntityMax+10)
+	for i := int32(0); i < nearbyEntityMax+10; i++ {
+		// Spaced well under a block apart so every one of them - not just
+		// the radius filter's own survivors - is within nearbyEntityRadius,
+		// exercising the max-count cap specifically.
+		tracked[i] = models.TrackedEntityInfo{EntityID: i, EntityType: 1, X: float64(i) * 0.1, Y: 0, Z: 0}
+	}
+
+	got := summarizeNearbyEntities(tracked, reg, 0, 0, 0)
+
+	assert.Len(t, got, nearbyEntityMax)
 }
