@@ -46,7 +46,48 @@ func serveItemIcons() http.Handler {
 	if err != nil {
 		panic(err) // itemicons is embedded above; only a packaging bug could make this fail.
 	}
-	return http.StripPrefix("/icons/", http.FileServer(http.FS(sub)))
+	return http.StripPrefix("/icons/", itemIconFallback{fsys: sub, next: http.FileServer(http.FS(sub))})
+}
+
+// itemIconFallbackSuffixes are the directional-texture suffixes Minecraft
+// uses for a block with no single uniform face — a bare "<name>.png" only
+// exists for blocks that look the same from every side (dirt, oak_planks,
+// ...); one like crafting_table, furnace, or grass_block only has
+// "<name>_top.png"/"_front.png"/"_side.png"/"_all.png", never a bare file.
+// Tried in this order: _top is usually the most recognizable face for the
+// kind of blocks this dashboard actually shows (crafting_table, furnace,
+// grass_block, logs, ...), not a claim it's always the "right" face.
+var itemIconFallbackSuffixes = []string{"_top", "_front", "_side", "_all"}
+
+// itemIconFallback serves a bare "<name>.png" request directly when it
+// exists, and otherwise rewrites it to the first itemIconFallbackSuffixes
+// variant that does, instead of just 404ing — without this, every
+// multi-face block-type item in the bot's inventory 404s, not just the
+// handful whose icon happens to need its own flat texture.
+type itemIconFallback struct {
+	fsys fs.FS
+	next http.Handler
+}
+
+func (h itemIconFallback) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	name, ok := strings.CutSuffix(strings.TrimPrefix(req.URL.Path, "/"), ".png")
+	if !ok || name == "" || strings.ContainsRune(name, '/') {
+		h.next.ServeHTTP(w, req)
+		return
+	}
+	if _, err := fs.Stat(h.fsys, name+".png"); err == nil {
+		h.next.ServeHTTP(w, req)
+		return
+	}
+	for _, suffix := range itemIconFallbackSuffixes {
+		if _, err := fs.Stat(h.fsys, name+suffix+".png"); err == nil {
+			req = req.Clone(req.Context())
+			req.URL.Path = "/" + name + suffix + ".png"
+			h.next.ServeHTTP(w, req)
+			return
+		}
+	}
+	h.next.ServeHTTP(w, req) // no variant either; let it 404 on the original path.
 }
 
 // agentPositionPollInterval is how often agentRegistry.runPoller refreshes

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/fstest"
 
 	"github.com/reallyoldfogie/mc-agent/models"
 	"github.com/reallyoldfogie/mc-bot-go/bot/screen"
@@ -129,6 +130,56 @@ func TestServeDashboardPageServesEmbeddedHTML(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
 	assert.Contains(t, w.Body.String(), "<!doctype html>")
+}
+
+func TestItemIconFallbackServesBareNameDirectly(t *testing.T) {
+	fsys := fstest.MapFS{"stick.png": &fstest.MapFile{Data: []byte("stick-bytes")}}
+	h := itemIconFallback{fsys: fsys, next: http.FileServer(http.FS(fsys))}
+
+	req := httptest.NewRequest(http.MethodGet, "/stick.png", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "stick-bytes", w.Body.String())
+}
+
+func TestItemIconFallbackFallsBackToDirectionalSuffix(t *testing.T) {
+	fsys := fstest.MapFS{"crafting_table_top.png": &fstest.MapFile{Data: []byte("top-bytes")}}
+	h := itemIconFallback{fsys: fsys, next: http.FileServer(http.FS(fsys))}
+
+	req := httptest.NewRequest(http.MethodGet, "/crafting_table.png", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "top-bytes", w.Body.String())
+}
+
+func TestItemIconFallbackPrefersEarlierSuffixOverLater(t *testing.T) {
+	fsys := fstest.MapFS{
+		"furnace_top.png":  &fstest.MapFile{Data: []byte("top-bytes")},
+		"furnace_side.png": &fstest.MapFile{Data: []byte("side-bytes")},
+	}
+	h := itemIconFallback{fsys: fsys, next: http.FileServer(http.FS(fsys))}
+
+	req := httptest.NewRequest(http.MethodGet, "/furnace.png", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "top-bytes", w.Body.String(), "itemIconFallbackSuffixes' own order (_top before _side) must be honored")
+}
+
+func TestItemIconFallback404sWhenNoVariantExists(t *testing.T) {
+	fsys := fstest.MapFS{}
+	h := itemIconFallback{fsys: fsys, next: http.FileServer(http.FS(fsys))}
+
+	req := httptest.NewRequest(http.MethodGet, "/totally_not_a_real_item.png", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestSummarizeInventoryPreservesSlotOrderAcrossGroupsWithoutMerging(t *testing.T) {
