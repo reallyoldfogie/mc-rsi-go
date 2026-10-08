@@ -131,7 +131,7 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.parallelEnvs, "parallel-envs", 1, "number of concurrent live Minecraft environments to train against (see docs/plans/08-parallel-environments-and-scaling.md); each needs its own already-running server — addresses/RCON/bot usernames beyond the first are derived from -mc-agent-config via pkg/parallelenv.DeriveSettings. 1 (the default) preserves single-environment behavior exactly.")
 	fs.BoolVar(&f.sharedServer, "shared-server", false, "run all -parallel-envs bots against ONE already-running server instead of one server each, each confined to its own working area (see -shared-server-separation-chunks). Requires RCON to be configured. The operator is responsible for launching that server with a reduced VIEW_DISTANCE/SIMULATION_DISTANCE (e.g. 4-6) small enough not to overlap adjacent bots' working areas.")
 	fs.IntVar(&f.sharedServerSeparationChunks, "shared-server-separation-chunks", 16, "chunks between adjacent bots' working areas when -shared-server is set; ignored otherwise")
-	fs.StringVar(&f.curriculumConfigPath, "curriculum-config", "", "optional path to a pkg/curriculum pool JSON file (target_offsets/mine_target_blocks/mine_search_radius/craft_target_items) — if set, each environment's Config.TaskSelector picks a fresh task+goal every episode (pkg/curriculum.UniformRandom via pkg/curriculum/rlenvadapter) instead of -mc-agent-config's single static env.target_offset/mine/craft settings for the whole run. Unset preserves that static-Config behavior exactly.")
+	fs.StringVar(&f.curriculumConfigPath, "curriculum-config", "", "optional path to a pkg/curriculum pool JSON file (target_offsets/mine_target_blocks/mine_search_radius/craft_target_items) — if set, each environment's Config.TaskSelector picks a fresh task+goal every episode (pkg/curriculum/rlenvadapter.Select) instead of -mc-agent-config's single static env.target_offset/mine/craft settings for the whole run. Unset preserves that static-Config behavior exactly.")
 	fs.StringVar(&f.metricsAddr, "metrics-addr", ":9400", "address to serve Prometheus metrics on (see monitoring/README.md); empty disables the metrics server entirely")
 	fs.IntVar(&f.hiddenLayers, "hidden-layers", 2, "number of hidden layers in a freshly-created generation-0 policy network (docs/plans/20-configurable-depth-step-memory-and-dynamic-architecture.md Part A); only used when -checkpoint-dir has no existing generation to resume — an existing checkpoint's own depth always wins, whatever this flag says, including one produced by cmd/deepen-checkpoint with a depth other than 2. 2 is the default this repo has always used.")
 	if err := fs.Parse(args); err != nil {
@@ -227,16 +227,16 @@ func run(args []string) error {
 		return fmt.Errorf("loading mc-agent config: %w", err)
 	}
 
-	var curriculumGen *curriculum.UniformRandom
+	var curriculumPool *curriculum.Pool
 	if f.curriculumConfigPath != "" {
 		pool, err := loadCurriculumPool(f.curriculumConfigPath)
 		if err != nil {
 			return err
 		}
-		curriculumGen, err = curriculum.NewUniformRandom(pool)
-		if err != nil {
+		if err := rlenvadapter.ValidatePool(pool); err != nil {
 			return fmt.Errorf("building curriculum generator from %s: %w", f.curriculumConfigPath, err)
 		}
+		curriculumPool = &pool
 	}
 
 	exporter := newCheckpointExporter(f.checkpointDir)
@@ -270,7 +270,7 @@ func run(args []string) error {
 		initialParallelEnvs = persisted
 	}
 
-	connected, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumGen, f.packetLogDir(), f.episodeLimits())
+	connected, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumPool, f.packetLogDir(), f.episodeLimits())
 	if err != nil {
 		return err
 	}
@@ -290,7 +290,7 @@ func run(args []string) error {
 
 	envs := make([]rl.Environment, len(connected))
 	episodeTask := "curriculum"
-	if curriculumGen == nil {
+	if curriculumPool == nil {
 		episodeTask = taskName(mcSettings.Env)
 	}
 	for i, c := range connected {
@@ -501,7 +501,7 @@ func run(args []string) error {
 			// against them.
 			newConnected, newEnvs, rcErr := reconcileEnvCount(ctx, stop, connected, envs, n,
 				mcSettings, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks,
-				curriculumGen, f.packetLogDir(),
+				curriculumPool, f.packetLogDir(),
 				f.episodeLimits(),
 				episodeTask, agents)
 			if rcErr != nil {
@@ -1501,12 +1501,12 @@ func taskName(settings mcconfig.EnvSettings) string {
 	}
 }
 
-// goalForSettings is curriculum.TaskSpec.GoalDescription's counterpart for
+// goalForSettings is rlenvadapter.Task.GoalDescription's counterpart for
 // a run with no curriculum (-curriculum-config unset): the same episode
 // goal every episode, straight from -mc-agent-config's static env.*
-// settings, which (unlike curriculum.TaskSpec) has no Type tag or far/
-// chain variants to begin with — just mine, craft, or goto — so there is
-// no switch here worth consolidating further.
+// settings, which (unlike a curriculum.Pool-driven run) has no far/chain
+// variants to begin with — just mine, craft, or goto — so there is no
+// switch here worth consolidating further.
 func goalForSettings(settings mcconfig.EnvSettings) string {
 	switch {
 	case settings.MineTargetBlock != "":
@@ -1687,7 +1687,7 @@ func (f flags) packetLogDir() string {
 // On a mid-loop failure, every already-connected agent is closed before
 // the error is returned, so a partial connect never leaks live bot
 // sessions.
-func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, error) {
+func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, error) {
 	if sharedServer {
 		if base.RCON.Address == "" {
 			return nil, fmt.Errorf("rsi-train: -shared-server requires RCON to be configured in -mc-agent-config")
@@ -1696,7 +1696,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 			return nil, fmt.Errorf("applying shared-server gamerules: %w", err)
 		}
 	}
-	return connectEnvironmentRange(ctx, base, 0, n, autoResetOrigin, sharedServer, separationChunks, curriculumGen, trainingDataDir, limits)
+	return connectEnvironmentRange(ctx, base, 0, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits)
 }
 
 // connectEnvironmentRange connects environments at indices [start, n) out
@@ -1710,7 +1710,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 // smaller-n call already connected and is actively using. See
 // reconcileEnvCount, the live POST /config/parallel-envs path this
 // exists for.
-func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, error) {
+func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, error) {
 	connected := make([]connectedEnvironment, 0, n-start)
 	closeAll := func() {
 		for _, c := range connected {
@@ -1760,7 +1760,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 				return nil, fmt.Errorf("environment %d/%d: %w", i, n, err)
 			}
 		}
-		if curriculumGen != nil {
+		if curriculumPool != nil {
 			// See craftIngredientSeeder's own doc comment: this is also what
 			// turns on mc-agent's own seedFarTargets/seedChain path for
 			// every craft_far/mine_far/chain_* episode (gated on
@@ -1773,11 +1773,10 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			// Each environment gets its own rng, not a shared one: N
 			// environments' Reset calls run concurrently (see
 			// leapfrog.Round's rollout collection), and math/rand/v2's
-			// Rand is not safe for concurrent use. curriculumGen itself
-			// (a *curriculum.UniformRandom) holds no mutable state beyond
-			// its read-only Pool, so sharing it across every env's own
-			// rlenvadapter.TaskSelector closure is safe — only the rng
-			// each closure supplies needs to be distinct.
+			// Rand is not safe for concurrent use. curriculumPool itself is
+			// read-only plain data, so sharing it across every env's own
+			// rlenvadapter.Select call is safe — only the rng each closure
+			// supplies needs to be distinct.
 			// time.Now().UnixNano()+i mirrors applyAutoResetOrigin's own
 			// defaultAutoJitter seeding for the same reason: nanosecond
 			// resolution across this loop's own real, if brief, elapsed
@@ -1786,17 +1785,17 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			seed := uint64(time.Now().UnixNano()) + uint64(i)
 			taskPCG := rand.NewPCG(seed, uint64(i))
 			taskRNG := rand.New(taskPCG)
-			// Drawn and Converted here directly (rather than through
-			// rlenvadapter.TaskSelector) so spec's own Type/GoalDescription
-			// — not a re-derivation from override's raw field combination —
-			// is what names this episode's task and goal, see Convert's own
-			// doc comment for why.
-			envCfg.TaskSelector = func(episode int, _ *oldrand.Rand) rlenv.TaskOverride {
-				spec := curriculumGen.Next(episode, taskRNG)
-				override := rlenvadapter.Convert(spec)
+			// Selected here directly (rather than through
+			// rlenvadapter.TaskSelector) so the Task's own Name/
+			// GoalDescription — not a re-derivation from override's raw
+			// field combination — is what names this episode's task and
+			// goal; see rlenvadapter.TaskSelector's own doc comment for why.
+			envCfg.TaskSelector = func(_ int, _ *oldrand.Rand) rlenv.TaskOverride {
+				task := rlenvadapter.Select(*curriculumPool, taskRNG)
+				override := task.ToOverride()
 				taskMu.Lock()
-				selectedTask = spec.Type.String()
-				selectedGoal = spec.GoalDescription()
+				selectedTask = task.Name()
+				selectedGoal = task.GoalDescription()
 				taskMu.Unlock()
 				recordTaskSelection(selectedTask)
 				logCraftEconomyInventory(settings.Connection.Name, liveAgent, selectedTask, override)
@@ -1865,7 +1864,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 // field's own doc comment) so watchForUnexpectedExit's watcher for it
 // exits quietly instead of treating the close as an unexpected session
 // end and stopping the whole run.
-func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected []connectedEnvironment, envs []rl.Environment, n int, base mcconfig.Settings, autoResetOrigin, sharedServer bool, separationChunks int, curriculumGen *curriculum.UniformRandom, trainingDataDir string, limits episodeLimits, episodeTask string, agents *agentRegistry) ([]connectedEnvironment, []rl.Environment, error) {
+func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected []connectedEnvironment, envs []rl.Environment, n int, base mcconfig.Settings, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits, episodeTask string, agents *agentRegistry) ([]connectedEnvironment, []rl.Environment, error) {
 	current := len(connected)
 	if n == current {
 		return connected, envs, nil
@@ -1883,7 +1882,7 @@ func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected [
 		return connected[:n], envs[:n], nil
 	}
 
-	added, err := connectEnvironmentRange(ctx, base, current, n, autoResetOrigin, sharedServer, separationChunks, curriculumGen, trainingDataDir, limits)
+	added, err := connectEnvironmentRange(ctx, base, current, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits)
 	if err != nil {
 		return connected, envs, fmt.Errorf("connecting %d additional environment(s): %w", n-current, err)
 	}

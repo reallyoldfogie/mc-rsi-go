@@ -537,8 +537,8 @@ func actionName(action rl.Action) string {
 	}
 }
 
-// recordTaskSelection increments metricTaskEpisodesTotal for name (a
-// curriculum.TaskType.String() value, e.g. "mine_far" — see main.go's own
+// recordTaskSelection increments metricTaskEpisodesTotal for name (an
+// rlenvadapter.Task.Name() value, e.g. "mine_far" — see main.go's own
 // TaskSelector closure, its only caller).
 func recordTaskSelection(name string) {
 	if name != "" && name != "unknown" {

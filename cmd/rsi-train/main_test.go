@@ -727,11 +727,11 @@ func TestApplyEpisodeLimitsTurnsOnObservationNormalization(t *testing.T) {
 }
 
 // TestGoalForSettingsMirrorsCurriculumsGoalDescriptionForAStaticEnv checks
-// goalForSettings against the same cases curriculum.TaskSpec.
-// GoalDescription's own tests cover, now that goalForSettings is the only
-// task-kind-to-goal switch left in this package — see that method's own
-// doc comment for where the curriculum-driven path's equivalent logic
-// moved to.
+// goalForSettings against the same cases rlenvadapter's own per-task
+// GoalDescription tests cover, now that goalForSettings is the only
+// task-kind-to-goal switch left in this package — the curriculum-driven
+// path's equivalent logic lives on each rlenvadapter.Task implementation
+// instead (see that package's own doc comment).
 func TestGoalForSettingsMirrorsCurriculumsGoalDescriptionForAStaticEnv(t *testing.T) {
 	assert.Equal(t, "mine dirt", goalForSettings(mcconfig.EnvSettings{MineTargetBlock: "minecraft:dirt"}))
 	assert.Equal(t, "craft stick", goalForSettings(mcconfig.EnvSettings{CraftTargetItem: "minecraft:stick"}))

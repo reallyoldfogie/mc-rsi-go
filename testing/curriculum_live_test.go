@@ -24,7 +24,8 @@ import (
 // testing/rl_train_test.go's newAlternatingMineOrCraftSeeder /
 // newAlternatingMineOrCraftTaskSelector proof-of-concept (mc-agent,
 // docs/plans/06) one level further — this repo's own real
-// pkg/curriculum.Generator, through pkg/curriculum/rlenvadapter, driving
+// pkg/curriculum.Pool, through pkg/curriculum/rlenvadapter's own task
+// selection, driving
 // a live rlenv.Environment across all three task types (not just
 // mine-vs-craft), confirming Environment.ActionMask always legalizes
 // exactly one of GoToTarget/Mine/Craft each episode and that the goal-
@@ -66,19 +67,19 @@ func TestCurriculumVariesTaskPerEpisodeLive(t *testing.T) {
 	liveAgent, ok := a.(rlenv.LiveAgent)
 	require.True(t, ok, "agent does not satisfy rlenv.LiveAgent")
 
-	gen, err := curriculum.NewUniformRandom(curriculum.Pool{
+	pool := curriculum.Pool{
 		TargetOffsets:    [][3]float64{{5, 0, 0}, {0, 0, 5}, {-5, 0, 0}},
 		MineTargetBlocks: []string{"minecraft:stone"},
 		MineSearchRadius: 8,
 		CraftTargetItems: []string{"minecraft:stick"},
-	})
-	require.NoError(t, err)
+	}
+	require.NoError(t, rlenvadapter.ValidatePool(pool))
 
 	selectorRNG := rand.New(rand.NewPCG(1, 2))
 	env, err := rlenv.New(liveAgent, actions.NewRegistry(), rlenv.Config{
 		ArrivalThreshold: 1.5,
 		StepTimeout:      15 * time.Second,
-		TaskSelector:     rlenvadapter.TaskSelector(gen, selectorRNG),
+		TaskSelector:     rlenvadapter.TaskSelector(pool, selectorRNG),
 		Seeder:           rlenv.DefaultEpisodeSeeder,
 	})
 	require.NoError(t, err, "construct rlenv.Environment")
