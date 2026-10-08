@@ -69,8 +69,10 @@
     border-bottom: 1px solid #2a2d35;
     display: flex;
     flex-wrap: wrap;
+    align-items: center;
     gap: 6px;
   }
+  .inventory-divider { flex: none; width: 1px; height: 34px; background: #2a2d35; margin: 0 2px; }
   .item-chip {
     position: relative;
     flex: none;
@@ -227,14 +229,32 @@
       stat("Updated", new Date(a.updated_at).toLocaleTimeString());
   }
 
+  // INVENTORY_MAIN_SLOTS is how many of agentSnapshot.inventory's leading
+  // entries are main-inventory slots (the rest are hotbar) - matches
+  // screen.MainSlotEnd-MainSlotStart (dashboard.go's readInventory passes
+  // Main() before Hotbar()), used only to draw a divider between the two
+  // groups, same as the real inventory screen's own gap.
+  var INVENTORY_MAIN_SLOTS = 27;
+
   function renderInventory(a) {
     var el = document.getElementById("inventory");
     el.innerHTML = "";
     var items = a && a.inventory || [];
-    el.style.display = items.length === 0 ? "none" : "flex";
-    items.forEach(function (it) {
+    el.style.display = a ? "flex" : "none";
+    items.forEach(function (it, i) {
+      if (i === INVENTORY_MAIN_SLOTS) {
+        var divider = document.createElement("div");
+        divider.className = "inventory-divider";
+        el.appendChild(divider);
+      }
+
       var chip = document.createElement("div");
       chip.className = "item-chip";
+
+      if (!it.name) {
+        el.appendChild(chip); // empty slot: just the box, nothing in it.
+        return;
+      }
       chip.title = it.name + " ×" + it.count;
 
       var img = document.createElement("img");

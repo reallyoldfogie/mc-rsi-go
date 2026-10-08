@@ -83,10 +83,12 @@ type agentSnapshot struct {
 	agent models.Agent
 }
 
-// inventoryEntry is one distinct item (summed across every slot it occupies
-// in the bot's main inventory + hotbar) for the dashboard's inventory
-// strip. Name has its "minecraft:" prefix already stripped, matching
-// itemIconsFS's own filenames.
+// inventoryEntry is one inventory slot (main inventory or hotbar) for the
+// dashboard's inventory strip - the zero value represents an empty slot,
+// shown as an empty box so the strip reads as "this bot's whole inventory,
+// slot for slot," not just a compacted list of what it's holding. Name has
+// its "minecraft:" prefix already stripped, matching itemIconsFS's own
+// filenames.
 type inventoryEntry struct {
 	Name  string `json:"name"`
 	Count int    `json:"count"`
@@ -288,7 +290,8 @@ func readInventory(a models.Agent) []inventoryEntry {
 	return summarizeInventory(itemMgr, inv.Main(), inv.Hotbar())
 }
 
-// summarizeInventory returns one entry per non-empty slot across every slot
+// summarizeInventory returns one entry PER SLOT (including empty ones, as
+// the zero value — see inventoryEntry's own doc comment) across every slot
 // group passed, in the order given (readInventory passes Main() then
 // Hotbar(), matching the real inventory screen's own top-to-bottom slot
 // order — see screen.MainSlotStart/HotbarSlotStart) and preserving each
@@ -296,8 +299,9 @@ func readInventory(a models.Agent) []inventoryEntry {
 // name — two separate stacks of the same item in different slots stay two
 // separate entries, exactly as the player's own inventory would show them,
 // per the dashboard's own "same order as the player's inventory" design.
-// Each resolved name has its "minecraft:" prefix stripped; empty/air slots
-// are skipped. Split out from readInventory so it's testable without a
+// Each resolved name has its "minecraft:" prefix stripped; air (a slot
+// technically "holding" the air item, not actually empty) counts as empty
+// too. Split out from readInventory so it's testable without a
 // models.Agent fake for the whole (large) interface — see
 // reconcileEnvCount's own tests for why this repo avoids those.
 func summarizeInventory(itemMgr models.ItemManager, slotGroups ...[]screen.Slot) []inventoryEntry {
@@ -305,10 +309,12 @@ func summarizeInventory(itemMgr models.ItemManager, slotGroups ...[]screen.Slot)
 	for _, slots := range slotGroups {
 		for _, s := range slots {
 			if s.Count == 0 {
+				entries = append(entries, inventoryEntry{})
 				continue
 			}
 			name := strings.TrimPrefix(itemMgr.GetItemNameByID(int32(s.ID)), "minecraft:")
 			if name == "" || name == "air" {
+				entries = append(entries, inventoryEntry{})
 				continue
 			}
 			entries = append(entries, inventoryEntry{Name: name, Count: int(s.Count)})

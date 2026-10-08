@@ -148,13 +148,16 @@ func TestSummarizeInventoryPreservesSlotOrderAcrossGroupsWithoutMerging(t *testi
 	}, got)
 }
 
-func TestSummarizeInventorySkipsEmptyAndAirSlots(t *testing.T) {
+func TestSummarizeInventoryRepresentsEmptyAndAirSlotsAsEmptyEntriesInPlace(t *testing.T) {
 	itemMgr := fakeItemManager{0: "minecraft:air", 1: "minecraft:stick"}
 	slots := []screen.Slot{{ID: 0, Count: 0}, {ID: 0, Count: 1}, {ID: 1, Count: 0}, {ID: 1, Count: 4}}
 
 	got := summarizeInventory(itemMgr, slots)
 
-	assert.Equal(t, []inventoryEntry{{Name: "stick", Count: 4}}, got)
+	// One entry per slot, in slot order - empty/air slots become the zero
+	// value (an empty box) rather than being dropped, so the strip shows
+	// which slot each item is actually in.
+	assert.Equal(t, []inventoryEntry{{}, {}, {}, {Name: "stick", Count: 4}}, got)
 }
 
 func TestSummarizeInventoryEmptyInventoryReturnsEmptyNotNil(t *testing.T) {
@@ -162,6 +165,18 @@ func TestSummarizeInventoryEmptyInventoryReturnsEmptyNotNil(t *testing.T) {
 
 	assert.NotNil(t, got, "an empty inventory must still report zero items, not be mistaken for a 'not ready yet' nil")
 	assert.Empty(t, got)
+}
+
+func TestSummarizeInventoryAllEmptySlotsReportsOneEntryPerSlot(t *testing.T) {
+	main := make([]screen.Slot, 27) // a bot holding nothing: every slot genuinely empty.
+	hotbar := make([]screen.Slot, 9)
+
+	got := summarizeInventory(fakeItemManager{}, main, hotbar)
+
+	assert.Len(t, got, 36, "an all-empty inventory is still 36 slots, not 0 - the dashboard needs every box to draw a full strip")
+	for _, e := range got {
+		assert.Equal(t, inventoryEntry{}, e)
+	}
 }
 
 // fakeEntityTypeRegistry resolves entity type IDs to names from a fixed
