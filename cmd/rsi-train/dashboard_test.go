@@ -168,7 +168,7 @@ func TestItemIconFallbackPrefersEarlierSuffixOverLater(t *testing.T) {
 	h.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "top-bytes", w.Body.String(), "itemIconFallbackSuffixes' own order (_top before _side) must be honored")
+	assert.Equal(t, "side-bytes", w.Body.String(), "itemIconFallbackSuffixes' own order (_side before _top) must be honored")
 }
 
 func TestItemIconFallback404sWhenNoVariantExists(t *testing.T) {

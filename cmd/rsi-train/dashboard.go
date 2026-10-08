@@ -54,10 +54,9 @@ func serveItemIcons() http.Handler {
 // exists for blocks that look the same from every side (dirt, oak_planks,
 // ...); one like crafting_table, furnace, or grass_block only has
 // "<name>_top.png"/"_front.png"/"_side.png"/"_all.png", never a bare file.
-// Tried in this order: _top is usually the most recognizable face for the
-// kind of blocks this dashboard actually shows (crafting_table, furnace,
-// grass_block, logs, ...), not a claim it's always the "right" face.
-var itemIconFallbackSuffixes = []string{"_top", "_front", "_side", "_all"}
+// Tried in this order (_front, then _side, then _top) to match how an
+// inventory slot icon actually reads at a glance.
+var itemIconFallbackSuffixes = []string{"_front", "_side", "_top", "_all"}
 
 // itemIconFallback serves a bare "<name>.png" request directly when it
 // exists, and otherwise rewrites it to the first itemIconFallbackSuffixes
