@@ -241,9 +241,10 @@ func run(args []string) error {
 
 	exporter := newCheckpointExporter(f.checkpointDir)
 	envCountReq := newEnvCountRequest()
+	restartReq := newRestartRequest()
 	envConfirmer := newParallelEnvsConfirmer(f.checkpointDir)
 	if f.metricsAddr != "" {
-		startMetricsServer(f.metricsAddr, exporter, envCountReq)
+		startMetricsServer(f.metricsAddr, exporter, envCountReq, restartReq)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -314,7 +315,7 @@ func run(args []string) error {
 	// made generic in place - runRecurrentRounds mirrors it for
 	// *actorcritic.RecurrentParams instead.
 	if trainerSettings.RecurrentChunkLen > 0 {
-		return runRecurrentRounds(ctx, stop, f, trainerSettings, connected, envs, environmentID)
+		return runRecurrentRounds(ctx, stop, f, trainerSettings, connected, envs, environmentID, restartReq)
 	}
 
 	teacherParams, rec, err := loadOrInitTeacher(f.checkpointDir, environmentID, envs[0].ObservationSize(), trainerSettings.HiddenSize, envs[0].ActionSpace(), f.hiddenLayers)
@@ -411,6 +412,10 @@ func run(args []string) error {
 			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
 			metricEpochDurationSeconds.Observe(time.Since(lastEpochEnd).Seconds())
 			lastEpochEnd = time.Now()
+			if restartReq.take() {
+				log.Printf("  restart requested; stopping after epoch %d", stats.Epoch)
+				stop()
+			}
 			if f.checkpointInterval > 0 && (stats.Epoch+1)%f.checkpointInterval == 0 {
 				if err := saveInterimCheckpoint(interimDir, params, environmentID, stats.Epoch, progress, rec.Generation); err != nil {
 					log.Printf("  saving interim checkpoint: %v", err)
@@ -1144,7 +1149,7 @@ func loadOrInitTeacherRecurrent(checkpointDir, environmentID string, observation
 // the latest generation lineage.Save actually wrote (same as a plain run
 // that hasn't completed even one epoch yet), never from a mid-round
 // student.
-func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, trainerSettings crlconfig.Settings, connected []connectedEnvironment, envs []rl.Environment, environmentID string) error {
+func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, trainerSettings crlconfig.Settings, connected []connectedEnvironment, envs []rl.Environment, environmentID string, restartReq *restartRequest) error {
 	if f.checkpointInterval > 0 {
 		log.Printf("recurrent mode: -checkpoint-interval is not yet supported; interim checkpoints will not be saved")
 	}
@@ -1218,6 +1223,10 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
 			metricEpochDurationSeconds.Observe(time.Since(lastEpochEnd).Seconds())
 			lastEpochEnd = time.Now()
+			if restartReq.take() {
+				log.Printf("  restart requested; stopping after epoch %d", stats.Epoch)
+				stop()
+			}
 		},
 	}
 
