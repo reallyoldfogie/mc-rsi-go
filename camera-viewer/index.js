@@ -25,6 +25,18 @@ const config = {
   viewerPort: parseInt(process.env.VIEWER_PORT || '3001', 10),
   controlPort: parseInt(process.env.CONTROL_PORT || '3002', 10),
   firstPerson: (process.env.FIRST_PERSON || 'true') === 'true',
+  // viewerPrefix is prismarine-viewer's own `prefix` option (default ''
+  // for standalone use, where the page is served at the viewer port's
+  // own root). Set this when something else reverse-proxies the 3D page
+  // under a sub-path: prismarine-viewer's client bundle derives its own
+  // socket.io path from window.location.pathname at load time (see
+  // node_modules/prismarine-viewer/lib/index.js), so the server-side
+  // prefix here must exactly match the path the browser actually loads
+  // the page at, or the socket.io handshake 400s. rsi-train's own
+  // reverse proxy (cmd/rsi-train/cameraviewer.go) sets this to
+  // "/camera/view" and proxies that same path 1:1, with no rewriting -
+  // see that file's own doc comment.
+  viewerPrefix: process.env.VIEWER_PREFIX || '',
   // Minecraft's own /spectate occasionally drops (the target bot
   // disconnecting and reconnecting under the same name, a server
   // restart, ...). Re-issuing it on an interval is cheap and makes the
@@ -78,7 +90,7 @@ const bot = mineflayer.createBot({
 bot.once('spawn', async () => {
   log(`spawned at ${bot.entity.position}`);
 
-  attachViewer(bot, { port: config.viewerPort, firstPerson: config.firstPerson });
+  attachViewer(bot, { port: config.viewerPort, firstPerson: config.firstPerson, prefix: config.viewerPrefix });
   log(`prismarine-viewer listening on :${config.viewerPort}`);
 
   try {

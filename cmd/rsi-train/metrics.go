@@ -321,7 +321,17 @@ func recordRoundEvaluation[P leapfrog.RecurrentOrNot](result leapfrog.Result[P])
 // in the background. Errors (e.g. the port is already taken) are logged,
 // not fatal — this server going down is an observability problem, not a
 // reason to stop an otherwise-healthy training run.
-func startMetricsServer(addr string, exporter *checkpointExporter, envCount *envCountRequest, restart *restartRequest, agents *agentRegistry) {
+//
+// viewer, when non-nil (-camera-viewer-enabled), additionally serves the
+// dashboard's 3D mode toggle (dashboard.html's toggleViewMode): POST
+// /camera/follow, POST /camera/stop, and the 3D page itself (reverse-
+// proxied from the camera-viewer container — see cameraviewer.go's own
+// doc comment) under cameraViewerPrefix. nil leaves the dashboard's 3D
+// button present but non-functional (every /camera/* request 404s,
+// which dashboard.html's enterCameraMode already handles by reverting to
+// 2D) rather than needing the frontend to know ahead of time whether
+// this feature is enabled.
+func startMetricsServer(addr string, exporter *checkpointExporter, envCount *envCountRequest, restart *restartRequest, agents *agentRegistry, viewer *cameraViewerManager) {
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
 	mux.Handle("/checkpoint/export", exporter)
@@ -330,13 +340,18 @@ func startMetricsServer(addr string, exporter *checkpointExporter, envCount *env
 	mux.Handle("/agents", agents)
 	mux.HandleFunc("/dashboard", serveDashboardPage)
 	mux.Handle("/icons/", serveItemIcons())
+	if viewer != nil {
+		mux.HandleFunc("/camera/follow", viewer.followHandler)
+		mux.HandleFunc("/camera/stop", viewer.stopHandler)
+		mux.Handle(cameraViewerPrefix+"/", viewer.viewProxy())
+	}
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	go func() {
-		log.Printf("metrics: serving /metrics, POST /checkpoint/export, POST /config/parallel-envs, POST /control/restart-at-epoch-boundary, GET /agents, /dashboard, /icons/, and /debug/pprof/ on %s", addr)
+		log.Printf("metrics: serving /metrics, POST /checkpoint/export, POST /config/parallel-envs, POST /control/restart-at-epoch-boundary, GET /agents, /dashboard, /icons/, and /debug/pprof/ on %s (camera-viewer: %v)", addr, viewer != nil)
 		if err := http.ListenAndServe(addr, mux); err != nil {
 			log.Printf("metrics: server error: %v", err)
 		}

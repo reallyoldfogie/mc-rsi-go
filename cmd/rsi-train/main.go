@@ -102,6 +102,8 @@ type flags struct {
 	curriculumConfigPath         string
 	metricsAddr                  string
 	hiddenLayers                 int
+	cameraViewerEnabled          bool
+	cameraViewerImage            string
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -134,6 +136,8 @@ func parseFlags(args []string) (flags, error) {
 	fs.StringVar(&f.curriculumConfigPath, "curriculum-config", "", "optional path to a pkg/curriculum pool JSON file (target_offsets/mine_target_blocks/mine_search_radius/craft_target_items) — if set, each environment's Config.TaskSelector picks a fresh task+goal every episode (pkg/curriculum/rlenvadapter.Select) instead of -mc-agent-config's single static env.target_offset/mine/craft settings for the whole run. Unset preserves that static-Config behavior exactly.")
 	fs.StringVar(&f.metricsAddr, "metrics-addr", ":9400", "address to serve Prometheus metrics on (see monitoring/README.md); empty disables the metrics server entirely")
 	fs.IntVar(&f.hiddenLayers, "hidden-layers", 2, "number of hidden layers in a freshly-created generation-0 policy network (docs/plans/20-configurable-depth-step-memory-and-dynamic-architecture.md Part A); only used when -checkpoint-dir has no existing generation to resume — an existing checkpoint's own depth always wins, whatever this flag says, including one produced by cmd/deepen-checkpoint with a depth other than 2. 2 is the default this repo has always used.")
+	fs.BoolVar(&f.cameraViewerEnabled, "camera-viewer-enabled", false, "let the dashboard's 3D mode toggle (dashboard.html) manage a camera-viewer Docker container (see camera-viewer/README.md) for a live 3D spectator view of whichever bot is selected — requires Docker (DOCKER_HOST/etc., same convention as testing/mcserver.go) and -mc-agent-config's rcon.address to be set. Off by default: most runs don't want an extra Docker dependency, and the image (see -camera-viewer-image) isn't built automatically.")
+	fs.StringVar(&f.cameraViewerImage, "camera-viewer-image", cameraViewerDefaultImage, "Docker image tag camera-viewer containers are created from — build it once with: docker build -t <this> camera-viewer/. Ignored unless -camera-viewer-enabled.")
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}
@@ -247,8 +251,17 @@ func run(args []string) error {
 	// so instrumentedEnvironment never needs a nil check when recording
 	// into it — see that type's own doc comment.
 	agents := newAgentRegistry()
+	var viewer *cameraViewerManager
+	if f.cameraViewerEnabled {
+		v, err := newCameraViewerManager(mcSettings, f.cameraViewerImage)
+		if err != nil {
+			return fmt.Errorf("camera-viewer: %w", err)
+		}
+		viewer = v
+		defer viewer.Close()
+	}
 	if f.metricsAddr != "" {
-		startMetricsServer(f.metricsAddr, exporter, envCountReq, restartReq, agents)
+		startMetricsServer(f.metricsAddr, exporter, envCountReq, restartReq, agents, viewer)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

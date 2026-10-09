@@ -1,9 +1,18 @@
-# Camera Viewer (prototype)
+# Camera Viewer
 
 A live 3D "ride along" camera for one `rsi-train` bot at a time, rendered in any browser. This is
-the Phase 2 prototype for the agent dashboard's 2D plot ([`../cmd/rsi-train/dashboard.html`](../cmd/rsi-train/dashboard.html)):
+the Phase 2 companion to the agent dashboard's 2D plot ([`../cmd/rsi-train/dashboard.html`](../cmd/rsi-train/dashboard.html)):
 that view shows where every bot is from above; this shows what one specific bot is actually
 seeing, in 3D, as it trains.
+
+It runs two ways:
+
+- **Integrated** — the dashboard's own "Switch to 3D" button (next to a selected agent's stats)
+  manages this tool's container for you; the browser only ever talks to `rsi-train` itself. See
+  "Running it via the dashboard (integrated mode)" below.
+- **Standalone** — run it yourself, locally or in Docker, independent of `rsi-train` entirely. See
+  "Running it locally" / "Docker or local" below. This is also how the integrated mode's own
+  container gets built — both modes run the exact same tool.
 
 ## How it works
 
@@ -28,8 +37,7 @@ Minecraft server as a completely independent client, the same way any other Mine
    looking through (approximately) the spectated bot's own eyes, live.
 4. A tiny HTTP control API (`GET /status`, `POST /follow`) lets you change which bot is being
    followed without restarting the process — see "Switching who it's watching" below. This is the
-   seam a future dashboard integration would use (e.g. a button next to each bot in the existing 2D
-   plot's sidebar).
+   seam the dashboard's own integrated mode calls into (see "Running it via the dashboard" below).
 
 No change to `mc-agent`, `rlenv`, or any training code was needed — the trainee bots have no idea
 this extra spectator client exists. It's the same reason `mc-agent`'s own replay recorder (which
@@ -58,7 +66,10 @@ All configuration is environment variables (see the top of `index.js` for the fu
 defaults): `MC_USERNAME` (this spectator's own player name, must be ≤16 characters — Minecraft
 usernames longer than that fail to log in with a confusing protocol decode error, not a clear
 "name too long"), `VIEWER_PORT` (default `3001`), `CONTROL_PORT` (default `3002`), `FIRST_PERSON`
-(default `true`), `RESPECTATE_INTERVAL_MS` (default `10000`).
+(default `true`), `RESPECTATE_INTERVAL_MS` (default `10000`), `VIEWER_PREFIX` (default `""` — set
+only when something reverse-proxies the 3D page under a sub-path; see `index.js`'s own doc comment
+on why the value must exactly match the path the browser loads the page at. The integrated mode
+below sets this for you).
 
 ### Switching who it's watching
 
@@ -72,6 +83,42 @@ curl http://localhost:3002/status
 `Ctrl+C` (or `docker stop` / `SIGTERM` in a container) — the shutdown handler disconnects the
 spectator client and closes both HTTP servers cleanly, so the extra player slot and RCON
 connection don't linger. It leaves the server in exactly the state it found it.
+
+## Running it via the dashboard (integrated mode)
+
+Build the image once (`rsi-train` never builds it for you — same reasoning as
+`EnsureServer` pulling `itzg/minecraft-server` but never building a custom image):
+
+```
+docker build -t mc-rsi-camera-viewer:latest camera-viewer/
+```
+
+Then run `rsi-train` with `-camera-viewer-enabled` (see `cmd/rsi-train/cameraviewer.go`):
+
+```
+./rsi-train -mc-agent-config ./my-config.json -checkpoint-dir ./checkpoints -camera-viewer-enabled
+```
+
+Open the dashboard (`/dashboard`), select an agent, and click "Switch to 3D" in the stats header.
+`rsi-train` itself now manages this tool's container end to end:
+
+- It starts the container (`--network host`, the same networking choice "Docker or local" below
+  explains) the first time you switch to 3D, with `MC_HOST`/`MC_PORT`/`MC_VERSION`/`RCON_HOST`/
+  `RCON_PORT`/`RCON_PASSWORD` filled in from the same `-mc-agent-config` the trainer itself is
+  already using — nothing to configure separately.
+- It reverse-proxies the 3D page itself (HTML/JS/WebSocket) through the dashboard's own HTTP
+  server, under `/camera/view/`, and translates the dashboard's `POST /camera/follow?bot=<name>` /
+  `POST /camera/stop` into this tool's own control API calls. **The browser only ever talks to
+  `rsi-train`** — it has no idea a separate container, or this tool at all, is involved.
+- Switching which agent is selected while still in 3D mode just re-targets the same running
+  container (a cheap control-API call) — the container, and your browser's WebSocket connection to
+  it, both stay up.
+- Switching back to 2D (or closing the browser tab — see `dashboard.html`'s `beforeunload`
+  handler) stops and removes the container. It only runs while something is actually watching.
+
+`VIEWER_PORT`/`CONTROL_PORT` are fixed at `3001`/`3002` in this mode (`cmd/rsi-train/
+cameraviewer.go`'s own constants) — don't also run the standalone tool on the same host at the
+same time, they'll collide on those ports.
 
 ## Docker or local — which do I need?
 
@@ -118,15 +165,20 @@ project), **running it as a plain local Node process (`npm start`, no Docker) is
 and was this prototype's first and simplest verified path — reach for Docker when you want to ship
 this to a different machine, or isolate its dependencies from the host.
 
-## Current limitations (this is a prototype, not Phase 2 proper)
+## Current limitations
 
-- One spectator client follows one bot at a time. Watching several bots at once means running
-  several instances (distinct `MC_USERNAME`/`VIEWER_PORT`/`CONTROL_PORT` each).
-- Not wired into the 2D dashboard's UI yet — no "open 3D view" button next to a bot in
-  `dashboard.html`'s sidebar. The control API (`POST /follow`) is exactly the seam that integration
-  would call; it just doesn't exist yet.
+- One spectator client follows one bot at a time. In integrated mode, the dashboard can only show
+  one agent's 3D view at once (matching "select one agent" being the whole premise of that mode).
+  Standalone, watching several bots at once means running several instances (distinct
+  `MC_USERNAME`/`VIEWER_PORT`/`CONTROL_PORT`/`VIEWER_PREFIX` each).
 - No auth on the control API or the viewer page itself — fine for `localhost`-only use (this
-  project's whole dashboard story so far), not for exposing beyond that without adding some.
+  project's whole dashboard story so far, including the integrated mode's own reverse proxy), not
+  for exposing beyond that without adding some.
 - `RESPECTATE_INTERVAL_MS`'s periodic re-issue is a blunt safety net, not a real "did spectate
   actually stick" check — it re-sends `/spectate` on a timer regardless of whether anything went
   wrong.
+- Integrated mode's `cameraViewerManager` (`cmd/rsi-train/cameraviewer.go`) has an opt-in, env-var-
+  gated live test (`cmd/rsi-train/cameraviewer_test.go`,
+  `TestCameraViewerManagerLive`) rather than one that runs by default — same pattern as every other
+  live test in that package (`MC_RSI_TRAINER_LIVE_CONFIG`), since it needs Docker and the image
+  already built.
