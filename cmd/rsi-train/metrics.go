@@ -359,8 +359,16 @@ type instrumentedEnvironment struct {
 	// taskForEpisode at every connectedEnvironment construction site
 	// (main.go); nil only in a test fixture that doesn't care.
 	goalForEpisode func() string
-	started        bool
-	steps          int // steps taken so far in the in-progress episode; see metricEpisodeLengthSteps
+	// targetOffsetForEpisode reports this episode's rlenv.TaskOverride.
+	// TargetOffset and whether it's meaningful at all (ok is false for a
+	// plain mine/craft episode, which has no predetermined location - see
+	// agentSnapshot.Target's own doc comment) — the dashboard's own
+	// agentRegistry combines this with the bot's own Spawn (captured
+	// separately, since this closure only knows the *offset*, not an
+	// absolute position) to plot a target marker.
+	targetOffsetForEpisode func() (offset [3]float64, ok bool)
+	started                bool
+	steps                  int // steps taken so far in the in-progress episode; see metricEpisodeLengthSteps
 
 	// registry and index are the dashboard's agentRegistry and this env's
 	// index within it (matching connected/envs — see agentRegistry's own
@@ -385,6 +393,13 @@ func (e *instrumentedEnvironment) currentGoal() string {
 		return e.goalForEpisode()
 	}
 	return ""
+}
+
+func (e *instrumentedEnvironment) currentTargetOffset() (offset [3]float64, ok bool) {
+	if e.targetOffsetForEpisode != nil {
+		return e.targetOffsetForEpisode()
+	}
+	return [3]float64{}, false
 }
 
 func (e *instrumentedEnvironment) ObservationSize() int { return e.env.ObservationSize() }
@@ -457,6 +472,7 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 	// selected task again after Reset for the new episode's counters.
 	task = e.currentTask()
 	goal := e.currentGoal()
+	targetOffset, hasTarget := e.currentTargetOffset()
 	e.started = true
 	metricEpisodesStartedTotal.WithLabelValues(task).Inc()
 	if !evaluationInProgress.Load() {
@@ -468,6 +484,13 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 		s.LastAction = ""
 		s.EpisodeStep = 0
 		s.LastOutcome = ""
+		// A new episode's Spawn is wherever the bot's position is next
+		// polled, not its last episode's — re-arm the capture, and clear
+		// the stale Target until Spawn (and this one) are recombined.
+		s.needsSpawnCapture = true
+		s.hasTarget = hasTarget
+		s.targetOffset = targetOffset
+		s.Target = nil
 	})
 	return obs, nil
 }

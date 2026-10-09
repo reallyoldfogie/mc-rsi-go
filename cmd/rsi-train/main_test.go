@@ -738,6 +738,28 @@ func TestGoalForSettingsMirrorsCurriculumsGoalDescriptionForAStaticEnv(t *testin
 	assert.Equal(t, "goto (+5, +0, +0) from spawn", goalForSettings(mcconfig.EnvSettings{TargetOffset: [3]float64{5, 0, 0}}))
 }
 
+// TestTargetOffsetForSettingsOnlyReportsAGotoTarget checks
+// targetOffsetForSettings against the same task-kind cases
+// TestGoalForSettingsMirrorsCurriculumsGoalDescriptionForAStaticEnv
+// covers: only the goto case has a predetermined location to report (see
+// that function's own doc comment) — a plain mine/craft episode searches
+// from wherever the bot already is, so ok must be false there even though
+// the zero-value TargetOffset field is still technically present on
+// mcconfig.EnvSettings.
+func TestTargetOffsetForSettingsOnlyReportsAGotoTarget(t *testing.T) {
+	offset, ok := targetOffsetForSettings(mcconfig.EnvSettings{MineTargetBlock: "minecraft:dirt"})
+	assert.False(t, ok)
+	assert.Equal(t, [3]float64{}, offset)
+
+	offset, ok = targetOffsetForSettings(mcconfig.EnvSettings{CraftTargetItem: "minecraft:stick"})
+	assert.False(t, ok)
+	assert.Equal(t, [3]float64{}, offset)
+
+	offset, ok = targetOffsetForSettings(mcconfig.EnvSettings{TargetOffset: [3]float64{5, 0, 0}})
+	assert.True(t, ok)
+	assert.Equal(t, [3]float64{5, 0, 0}, offset)
+}
+
 func TestLoadCurriculumPoolReadsTheChainKeys(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "curriculum.json")
 	require.NoError(t, os.WriteFile(path, []byte(`{

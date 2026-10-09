@@ -295,7 +295,7 @@ func run(args []string) error {
 	}
 	for i, c := range connected {
 		agents.add(c.username, c.agent)
-		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, registry: agents, index: i}
+		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, targetOffsetForEpisode: c.targetOffsetForEpisode, registry: agents, index: i}
 	}
 	metricParallelEnvs.Set(float64(len(connected)))
 
@@ -1518,6 +1518,20 @@ func goalForSettings(settings mcconfig.EnvSettings) string {
 	}
 }
 
+// targetOffsetForSettings is instrumentedEnvironment.targetOffsetForEpisode's
+// counterpart for a static (no-curriculum) run: only the goto case has a
+// predetermined location to report (see targetOffsetForEpisode's own doc
+// comment on ok's meaning) — mine/craft here, like their curriculum-driven
+// equivalents, search from wherever the bot already is.
+func targetOffsetForSettings(settings mcconfig.EnvSettings) (offset [3]float64, ok bool) {
+	switch {
+	case settings.MineTargetBlock != "", settings.CraftTargetItem != "":
+		return [3]float64{}, false
+	default:
+		return settings.TargetOffset, true
+	}
+}
+
 // craftEconomyItems are the items behind every craft_target_item/
 // chain_goal_item this run's curriculum can pose (see curriculum.json):
 // minecraft:oak_log -> oak_planks -> stick/crafting_table/chest/bowl, with
@@ -1636,6 +1650,10 @@ type connectedEnvironment struct {
 	// dashboard's Goal stat — see instrumentedEnvironment.goalForEpisode's
 	// own doc comment.
 	goalForEpisode func() string
+	// targetOffsetForEpisode is taskForEpisode's own counterpart for the
+	// dashboard's Target marker — see
+	// instrumentedEnvironment.targetOffsetForEpisode's own doc comment.
+	targetOffsetForEpisode func() (offset [3]float64, ok bool)
 	// reseedEvalTasks, when curriculum task selection is active, reseeds
 	// this environment's curriculum task rng in place (via
 	// *rand.PCG.Seed, not swapping in a new source — the TaskSelector
@@ -1770,6 +1788,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			var taskMu sync.RWMutex
 			selectedTask := taskName(settings.Env)
 			selectedGoal := goalForSettings(settings.Env)
+			selectedTargetOffset, selectedHasTarget := targetOffsetForSettings(settings.Env)
 			// Each environment gets its own rng, not a shared one: N
 			// environments' Reset calls run concurrently (see
 			// leapfrog.Round's rollout collection), and math/rand/v2's
@@ -1796,6 +1815,8 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 				taskMu.Lock()
 				selectedTask = task.Name()
 				selectedGoal = task.GoalDescription()
+				selectedTargetOffset = override.TargetOffset
+				selectedHasTarget = !override.GoToTargetDisabled
 				taskMu.Unlock()
 				recordTaskSelection(selectedTask)
 				logCraftEconomyInventory(settings.Connection.Name, liveAgent, selectedTask, override)
@@ -1814,6 +1835,11 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 				defer taskMu.RUnlock()
 				return selectedGoal
 			}
+			targetOffsetForEpisode := func() (offset [3]float64, ok bool) {
+				taskMu.RLock()
+				defer taskMu.RUnlock()
+				return selectedTargetOffset, selectedHasTarget
+			}
 			env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
 			if err != nil {
 				closeConnectedAgent(a)
@@ -1821,13 +1847,14 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 				return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
 			}
 			connected = append(connected, connectedEnvironment{
-				agent:           a,
-				username:        settings.Connection.Name,
-				env:             env,
-				taskForEpisode:  taskForEpisode,
-				goalForEpisode:  goalForEpisode,
-				reseedEvalTasks: taskPCG.Seed,
-				stopWatch:       make(chan struct{}),
+				agent:                  a,
+				username:               settings.Connection.Name,
+				env:                    env,
+				taskForEpisode:         taskForEpisode,
+				goalForEpisode:         goalForEpisode,
+				targetOffsetForEpisode: targetOffsetForEpisode,
+				reseedEvalTasks:        taskPCG.Seed,
+				stopWatch:              make(chan struct{}),
 			})
 			continue
 		}
@@ -1839,12 +1866,13 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 		}
 
 		connected = append(connected, connectedEnvironment{
-			agent:          a,
-			username:       settings.Connection.Name,
-			env:            env,
-			taskForEpisode: func() string { return taskName(settings.Env) },
-			goalForEpisode: func() string { return goalForSettings(settings.Env) },
-			stopWatch:      make(chan struct{}),
+			agent:                  a,
+			username:               settings.Connection.Name,
+			env:                    env,
+			taskForEpisode:         func() string { return taskName(settings.Env) },
+			goalForEpisode:         func() string { return goalForSettings(settings.Env) },
+			targetOffsetForEpisode: func() ([3]float64, bool) { return targetOffsetForSettings(settings.Env) },
+			stopWatch:              make(chan struct{}),
 		})
 	}
 	return connected, nil
@@ -1891,7 +1919,7 @@ func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected [
 		index := len(connected)
 		agents.add(c.username, c.agent)
 		connected = append(connected, c)
-		envs = append(envs, &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, registry: agents, index: index})
+		envs = append(envs, &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, targetOffsetForEpisode: c.targetOffsetForEpisode, registry: agents, index: index})
 	}
 	return connected, envs, nil
 }

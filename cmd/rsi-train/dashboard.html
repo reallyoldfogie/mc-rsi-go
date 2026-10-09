@@ -281,11 +281,33 @@
     });
   }
 
-  // ZOOM_RADIUS is half the window width/height (in blocks) the per-agent
-  // zoomed view centers on its selected bot - comfortably larger than
-  // -clear-area-radius's own default (16) so the bot's whole working area
-  // stays in view as it moves.
-  var ZOOM_RADIUS = 24;
+  // MIN_ZOOM_RADIUS is the smallest half-window (in blocks) the per-agent
+  // zoomed view will ever use, even when the bot, its spawn, and its
+  // target are all clustered tightly together - comfortably larger than
+  // -clear-area-radius's own default (16) so the bot's immediate working
+  // area stays in view. The actual radius grows beyond this to fit the
+  // bot/spawn/target bounding box - see zoomRadiusFor.
+  var MIN_ZOOM_RADIUS = 24;
+
+  // ZOOM_PADDING_FRACTION leaves a little breathing room around the
+  // bot/spawn/target bounding box, so a marker right at the edge of a
+  // tight box isn't drawn flush against the canvas border.
+  var ZOOM_PADDING_FRACTION = 0.2;
+
+  // zoomRadiusFor returns the half-window (in world blocks) that fits
+  // sel's own position plus its Spawn/Target markers (when known), never
+  // smaller than MIN_ZOOM_RADIUS - a goto/mine_far/craft_far/chain episode
+  // can send a bot (and its target) well outside a fixed 24-block window,
+  // and without this the dynamic zoom the user asked for would just be a
+  // bigger fixed radius instead.
+  function zoomRadiusFor(sel) {
+    var radius = MIN_ZOOM_RADIUS;
+    [sel.spawn, sel.target].forEach(function (p) {
+      if (!p) return;
+      radius = Math.max(radius, Math.abs(p.x - sel.x), Math.abs(p.z - sel.z));
+    });
+    return radius * (1 + ZOOM_PADDING_FRACTION);
+  }
 
   // niceGridStep picks a "round" world-unit spacing (1/2/5 x a power of
   // ten) that puts roughly targetLines gridlines across span world units -
@@ -359,6 +381,48 @@
     ctx.fill();
   }
 
+  // drawHomeIcon draws a small house outline at (x, y), marking the
+  // selected bot's episode spawn point - a fixed landmark to judge
+  // distance/drift against as the bot moves around the zoomed view.
+  function drawHomeIcon(ctx, x, y, color) {
+    var halfW = 7, roofH = 6, wallH = 7;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x - halfW, y + wallH / 2);
+    ctx.lineTo(x - halfW, y - wallH / 2);
+    ctx.lineTo(x, y - wallH / 2 - roofH);
+    ctx.lineTo(x + halfW, y - wallH / 2);
+    ctx.lineTo(x + halfW, y + wallH / 2);
+    ctx.closePath();
+    ctx.stroke();
+  }
+
+  // drawTargetMarker draws a crosshair at (x, y), marking this episode's
+  // fixed destination (see agentSnapshot.Target's own doc comment) - a
+  // goto/mine_far/craft_far/chain episode's bot is working toward this
+  // exact point, distinct from drifting toward "wherever a block/table
+  // happens to be," which a plain mine/craft episode has no marker for at
+  // all.
+  function drawTargetMarker(ctx, x, y, color) {
+    var r = 7;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - r - 4, y);
+    ctx.lineTo(x - r + 2, y);
+    ctx.moveTo(x + r - 2, y);
+    ctx.lineTo(x + r + 4, y);
+    ctx.moveTo(x, y - r - 4);
+    ctx.lineTo(x, y - r + 2);
+    ctx.moveTo(x, y + r - 2);
+    ctx.lineTo(x, y + r + 4);
+    ctx.stroke();
+  }
+
   function renderPlot() {
     var canvas = document.getElementById("plot");
     var dpr = window.devicePixelRatio || 1;
@@ -377,12 +441,15 @@
 
     if (sel) {
       // Single-agent zoomed view - the view a future 3D camera feed
-      // would replace/sit alongside.
+      // would replace/sit alongside. The radius grows to keep Spawn/
+      // Target in frame (see zoomRadiusFor) instead of a fixed window,
+      // so a far-off goto/chain target is never clipped out of view.
+      var zoomRadius = zoomRadiusFor(sel);
       centerX = sel.x;
       centerZ = sel.z;
-      scale = Math.min(w - 2 * pad, h - 2 * pad) / (2 * ZOOM_RADIUS);
+      scale = Math.min(w - 2 * pad, h - 2 * pad) / (2 * zoomRadius);
       visible = latest.filter(function (a) {
-        return Math.abs(a.x - centerX) <= ZOOM_RADIUS && Math.abs(a.z - centerZ) <= ZOOM_RADIUS;
+        return Math.abs(a.x - centerX) <= zoomRadius && Math.abs(a.z - centerZ) <= zoomRadius;
       });
     } else {
       var minX = Math.min.apply(null, latest.map(function (a) { return a.x; }));
@@ -418,6 +485,25 @@
         ctx.font = "10px sans-serif";
         ctx.fillText(e.type, p[0] + 6, p[1] + 3);
       });
+    }
+
+    // Spawn/Target markers only make sense once zoomed to a single bot -
+    // same reasoning as nearby entities above. Drawn before the agent
+    // dots so a bot's own dot/trail/label always reads on top even when
+    // it's sitting right on top of one of these.
+    if (sel && sel.spawn) {
+      var spawnP = toCanvas(sel.spawn);
+      drawHomeIcon(ctx, spawnP[0], spawnP[1], "#8a8f99");
+      ctx.fillStyle = "rgba(138,143,153,0.8)";
+      ctx.font = "10px sans-serif";
+      ctx.fillText("spawn", spawnP[0] + 10, spawnP[1] + 3);
+    }
+    if (sel && sel.target) {
+      var targetP = toCanvas(sel.target);
+      drawTargetMarker(ctx, targetP[0], targetP[1], "#d9534f");
+      ctx.fillStyle = "rgba(217,83,79,0.85)";
+      ctx.font = "10px sans-serif";
+      ctx.fillText("target", targetP[0] + 10, targetP[1] + 3);
     }
 
     visible.forEach(function (a) {

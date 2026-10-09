@@ -119,9 +119,46 @@ type agentSnapshot struct {
 	Food        int32            `json:"food"`
 	Inventory   []inventoryEntry `json:"inventory"`
 	Nearby      []nearbyEntity   `json:"nearby"`
-	UpdatedAt   time.Time        `json:"updated_at"`
+	// Spawn is where this episode started — not something rlenv exposes
+	// directly (its own resolved reset position is unexported, same
+	// reason Goal's own doc comment gives for "goto <loc>" not being a
+	// live absolute coordinate), so it's approximated as wherever the
+	// bot's position is first polled after Reset — see needsSpawnCapture.
+	// nil until that first poll lands.
+	Spawn *vec3 `json:"spawn"`
+	// Target is this episode's fixed destination, Spawn plus whichever
+	// TargetOffset the selected Task carried (see targetOffset) — real
+	// for goto/mine_far/craft_far/every chain stage, since all of those
+	// seed something at (or travel to) a point offset from Spawn; nil for
+	// a plain mine/craft episode, which has no predetermined location to
+	// mark (the bot finds its own block/table near wherever it already
+	// is). Recomputed every poll once Spawn is known, so it never goes
+	// stale relative to it.
+	Target    *vec3     `json:"target"`
+	UpdatedAt time.Time `json:"updated_at"`
 
 	agent models.Agent
+
+	// needsSpawnCapture is set whenever a new episode starts (Reset) and
+	// cleared the next time pollOnce captures a position for it into
+	// Spawn - see agentRegistry.pollOnce. hasTarget/targetOffset are this
+	// episode's own TargetOffset and whether it's meaningful (see
+	// instrumentedEnvironment.currentTargetOffset), carried alongside
+	// Task/Goal from the same TaskSelector draw, used to (re)compute
+	// Target once Spawn is known.
+	needsSpawnCapture bool
+	hasTarget         bool
+	targetOffset      [3]float64
+}
+
+// vec3 is a plain 3D point — Spawn/Target are pointers to one so they
+// encode as JSON null (checked directly in the dashboard's own JS, no
+// separate "is this known/meaningful" flag needed) until there's a real
+// position to report.
+type vec3 struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	Z float64 `json:"z"`
 }
 
 // inventoryEntry is one inventory slot (main inventory or hotbar) for the
@@ -228,6 +265,19 @@ func (r *agentRegistry) pollOnce() {
 		if ok {
 			b.X, b.Y, b.Z, b.Yaw, b.Pitch = pos.X, pos.Y, pos.Z, yaw, pitch
 			b.Nearby = nearby
+			if b.needsSpawnCapture {
+				b.Spawn = &vec3{X: pos.X, Y: pos.Y, Z: pos.Z}
+				b.needsSpawnCapture = false
+			}
+			if b.hasTarget && b.Spawn != nil {
+				b.Target = &vec3{
+					X: b.Spawn.X + b.targetOffset[0],
+					Y: b.Spawn.Y + b.targetOffset[1],
+					Z: b.Spawn.Z + b.targetOffset[2],
+				}
+			} else {
+				b.Target = nil
+			}
 		}
 		if healthKnown {
 			b.Health, b.Food = health, food
