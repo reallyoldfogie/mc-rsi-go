@@ -132,6 +132,41 @@ func newCameraViewerManager(mcSettings mcconfig.Settings, image string) (*camera
 	}, nil
 }
 
+// checkImage reports whether m.image exists in the local Docker image
+// store — the one check both ensureContainer (as a hard precondition,
+// every time it would otherwise create a container) and
+// checkImageAtStartup (as a one-time, non-fatal heads-up — see that
+// function's own doc comment) need, kept in one place so they can never
+// disagree about what "available" means.
+func (m *cameraViewerManager) checkImage(ctx context.Context) error {
+	images, err := m.cli.ImageList(ctx, client.ImageListOptions{
+		Filters: make(client.Filters).Add("reference", m.image),
+	})
+	if err != nil {
+		return fmt.Errorf("camera-viewer: listing images: %w", err)
+	}
+	if len(images.Items) == 0 {
+		return fmt.Errorf("camera-viewer: image %q not found locally — build it once with: docker build -t %s camera-viewer/", m.image, m.image)
+	}
+	return nil
+}
+
+// checkImageAtStartup logs a warning (never fails the caller) if this
+// manager's image isn't available yet, or Docker itself isn't reachable
+// — called once, right after -camera-viewer-enabled constructs a
+// manager (run, main.go), so a misconfigured or not-yet-built external
+// dependency is visible in train.log immediately, rather than only
+// surfacing hours later when someone first clicks "Switch to 3D" (that
+// click still gets its own clear error either way — see followHandler —
+// this is purely an earlier heads-up). Deliberately non-fatal: the 3D
+// view is a dashboard nicety, not something worth refusing to train
+// over.
+func (m *cameraViewerManager) checkImageAtStartup(ctx context.Context) {
+	if err := m.checkImage(ctx); err != nil {
+		log.Printf("%v (the dashboard's 3D mode will fail until this is fixed; training is unaffected)", err)
+	}
+}
+
 // ensureContainer starts the camera-viewer container if one isn't
 // already running under this manager, otherwise it's a no-op — the
 // common case once the dashboard is already in 3D mode and the selected
@@ -143,14 +178,8 @@ func (m *cameraViewerManager) ensureContainer(ctx context.Context) error {
 		return nil
 	}
 
-	images, err := m.cli.ImageList(ctx, client.ImageListOptions{
-		Filters: make(client.Filters).Add("reference", m.image),
-	})
-	if err != nil {
-		return fmt.Errorf("camera-viewer: listing images: %w", err)
-	}
-	if len(images.Items) == 0 {
-		return fmt.Errorf("camera-viewer: image %q not found locally — build it once with: docker build -t %s camera-viewer/", m.image, m.image)
+	if err := m.checkImage(ctx); err != nil {
+		return err
 	}
 
 	_, _ = m.cli.ContainerRemove(ctx, cameraViewerContainerName, client.ContainerRemoveOptions{Force: true, RemoveVolumes: true})
@@ -311,7 +340,7 @@ func (m *cameraViewerManager) followHandler(w http.ResponseWriter, req *http.Req
 		return
 	}
 	if err := m.follow(req.Context(), bot); err != nil {
-		log.Printf("camera-viewer: follow %s: %v", bot, err)
+		log.Printf("follow %s: %v", bot, err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}

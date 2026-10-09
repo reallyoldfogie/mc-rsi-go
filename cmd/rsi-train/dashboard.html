@@ -80,6 +80,16 @@
     cursor: pointer;
   }
   .mode-toggle:hover { background: #2a2d35; }
+  .camera-error {
+    position: absolute;
+    top: 42px;
+    right: 18px;
+    max-width: 320px;
+    font-size: 11px;
+    line-height: 1.4;
+    color: #ff8a8a;
+    text-align: right;
+  }
   #empty { padding: 18px; color: #8a8f99; }
   #inventory {
     padding: 0 18px 12px;
@@ -162,6 +172,14 @@
   // meaningful while an agent is selected; see render's own check below
   // for what happens if the selection is lost while in 3D mode.
   var viewMode = "2d";
+
+  // cameraError holds the most recent failure message from trying to
+  // enter 3D mode (e.g. "image not found" from cameraviewer.go's own
+  // ensureContainer) - null once there's nothing to show. Surfaced by
+  // renderStats right under the mode-toggle button; cleared whenever
+  // the toggle is pressed again, so a stale message doesn't linger past
+  // the next attempt.
+  var cameraError = null;
 
   // trails holds each agent's last TRAIL_LENGTH positions (index -> [{x,
   // z}, ...], oldest first), purely client-side - the backend only ever
@@ -265,6 +283,13 @@
     toggle.textContent = viewMode === "2d" ? "Switch to 3D" : "Switch to 2D";
     toggle.onclick = toggleViewMode;
     el.appendChild(toggle);
+
+    if (cameraError) {
+      var err = document.createElement("div");
+      err.className = "camera-error";
+      err.textContent = "3D view unavailable: " + cameraError;
+      el.appendChild(err);
+    }
   }
 
   // selectAgent is renderSidebar's one entry point for changing which
@@ -296,7 +321,17 @@
     var bot = a.username || ("agent-" + a.index);
     fetch("/camera/follow?bot=" + encodeURIComponent(bot), { method: "POST" })
       .then(function (r) {
-        if (!r.ok) throw new Error("follow failed: " + r.status);
+        if (r.ok) return null;
+        // followHandler (cmd/rsi-train/cameraviewer.go) writes the real
+        // failure reason (e.g. "image not found locally - build it
+        // once with: docker build...") as the plain-text response body
+        // via http.Error - read it rather than just the status code, so
+        // the message shown below is the actual, actionable reason.
+        return r.text().then(function (body) {
+          throw new Error(body.trim() || ("follow failed: " + r.status));
+        });
+      })
+      .then(function () {
         var frame = document.getElementById("camera-view");
         // Only (re)loaded on the first entry into 3D mode for this
         // session - once it's open, re-following a different bot
@@ -309,6 +344,7 @@
       })
       .catch(function (err) {
         console.error("camera-viewer:", err);
+        cameraError = err.message;
         viewMode = "2d";
         exitCameraMode();
         render();
@@ -331,6 +367,7 @@
   function toggleViewMode() {
     var a = resolveSelected();
     if (!a) return; // the toggle button only ever renders when one is selected and connected
+    cameraError = null;
     if (viewMode === "2d") {
       viewMode = "3d";
       enterCameraMode(a);

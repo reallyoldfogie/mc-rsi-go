@@ -259,6 +259,9 @@ func run(args []string) error {
 		}
 		viewer = v
 		defer viewer.Close()
+		checkCtx, checkCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		viewer.checkImageAtStartup(checkCtx)
+		checkCancel()
 	}
 	if f.metricsAddr != "" {
 		startMetricsServer(f.metricsAddr, exporter, envCountReq, restartReq, agents, viewer)

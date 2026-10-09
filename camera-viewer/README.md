@@ -120,6 +120,14 @@ Open the dashboard (`/dashboard`), select an agent, and click "Switch to 3D" in 
 cameraviewer.go`'s own constants) — don't also run the standalone tool on the same host at the
 same time, they'll collide on those ports.
 
+**If the image hasn't been built yet** (or Docker itself isn't reachable): `rsi-train` checks for
+it once at startup and logs a warning (`camera-viewer: image "..." not found locally — build it
+once with: docker build -t ...`) without refusing to start or affecting training at all — the 3D
+view is a dashboard nicety, not something worth failing a training run over. The same check runs
+again, for real, the first time anyone actually clicks "Switch to 3D": `followHandler` returns
+that exact message as an HTTP 502, which the dashboard shows right under the toggle button (and
+reverts to 2D) rather than failing silently.
+
 ## Docker or local — which do I need?
 
 **Either works for the Minecraft/RCON connection itself — this tool is a pure network client, no
