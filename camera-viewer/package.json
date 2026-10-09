@@ -1,0 +1,17 @@
+{
+  "name": "mc-rsi-trainer-camera-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Live 3D spectator camera for one rsi-train bot, rendered in-browser via prismarine-viewer.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "canvas": "^3.2.3",
+    "mineflayer": "^4.39.0",
+    "prismarine-viewer": "^1.33.0",
+    "rcon-client": "^4.2.5"
+  }
+}
