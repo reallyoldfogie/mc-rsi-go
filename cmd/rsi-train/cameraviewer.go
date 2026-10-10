@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -161,10 +162,25 @@ func (m *cameraViewerManager) checkImage(ctx context.Context) error {
 // this is purely an earlier heads-up). Deliberately non-fatal: the 3D
 // view is a dashboard nicety, not something worth refusing to train
 // over.
+//
+// The build command is always present in what gets logged, even when
+// checkImage's own error is the "can't even reach Docker to check"
+// variant rather than "confirmed missing" (whose error text already
+// names it — see the strings.Contains guard below, which avoids saying
+// it twice in that case): that failure is usually the same root cause
+// (image never built, daemon never started for it), and an operator
+// reading train.log wants the fix either way, not a report that stops
+// short of it.
 func (m *cameraViewerManager) checkImageAtStartup(ctx context.Context) {
-	if err := m.checkImage(ctx); err != nil {
-		log.Printf("%v (the dashboard's 3D mode will fail until this is fixed; training is unaffected)", err)
+	err := m.checkImage(ctx)
+	if err == nil {
+		return
 	}
+	msg := fmt.Sprintf("%v (the dashboard's 3D mode will fail until this is fixed; training is unaffected)", err)
+	if !strings.Contains(err.Error(), "docker build") {
+		msg += fmt.Sprintf(" — build the image with: docker build -t %s camera-viewer/", m.image)
+	}
+	log.Print(msg)
 }
 
 // ensureContainer starts the camera-viewer container if one isn't
