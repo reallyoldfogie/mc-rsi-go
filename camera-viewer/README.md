@@ -24,17 +24,31 @@ Minecraft server as a completely independent client, the same way any other Mine
    Go bots are built on, just in JavaScript.
 2. Over RCON, it puts that player into spectator mode (`gamemode spectator <name>`) and then runs
    Minecraft's own vanilla `/spectate <target> <name>` command. `/spectate` is a real server
-   feature (added in 1.14, originally for players spectating each other) that locks the camera
-   that player's client receives onto the target entity's exact position and look direction — the
-   *server* drives the camera from then on, frame by frame, exactly like riding in the target's
-   head. Nothing in this tool computes or syncs position itself; it just tells the server once who
-   to follow (see `setFollow` in `index.js`, re-issued every 10s as a safety net in case the target
-   disconnects/reconnects and spectate silently drops).
+   feature (added in 1.14, originally for players spectating each other), but **it only snaps the
+   spectating player near the target once** — found live, the hard way: continuous camera-follow
+   from `/spectate` is a *real-game-client* rendering trick (the client keeps reading the target's
+   own synced movement every frame and draws from there), not a continuous server-side re-teleport
+   of the spectator's own entity. mineflayer has no renderer, so it never receives whatever would
+   make that client-side trick visible to it — `bot.entity.position` (what prismarine-viewer
+   actually renders from) sat frozen for 30+ seconds in testing even while the target kept moving.
+   `startMirroring` (`index.js`) is the actual fix: once `/spectate` has snapped us near the target
+   (close enough for its entity to become "tracked," the same way any nearby entity would be),
+   mineflayer *does* receive that entity's own ordinary movement packets continuously (confirmed:
+   dozens of `entityMoved` events a second) — `startMirroring` listens for those, copies the
+   target's live position/yaw/pitch onto our own `bot.entity`, and re-emits `move` so prismarine-
+   viewer's own existing position-broadcast logic (unchanged, see step 3) picks it up as if it were
+   our own movement. The periodic RCON re-`/spectate` (`setFollow`, every 10s by default) still
+   matters alongside this: it's what keeps our spectator's *real*, server-tracked position (and
+   therefore which chunks the server bothers streaming to it) in the target's neighborhood as it
+   roams — the mirror only ever affects what we render from chunks already cached locally, it has
+   no way to make the server send new ones on its own.
 3. [prismarine-viewer](https://github.com/PrismarineJS/prismarine-viewer) is attached to that same
-   mineflayer connection. It receives the ordinary stream of chunk/entity packets the server sends
-   any client near the spectated position, meshes the visible terrain, and serves a three.js-based
-   3D page over a small built-in HTTP+WebSocket server. Open that page in a browser and you're
-   looking through (approximately) the spectated bot's own eyes, live.
+   mineflayer connection, completely unaware of any of the above — it renders from `bot.entity`
+   exactly like it always does, and startMirroring's whole job is making sure that keeps reflecting
+   the target rather than us. It meshes the visible terrain from the ordinary stream of chunk/
+   entity packets the server sends any nearby client, and serves a three.js-based 3D page over a
+   small built-in HTTP+WebSocket server. Open that page in a browser and you're looking through
+   (approximately) the spectated bot's own eyes, live.
 4. A tiny HTTP control API (`GET /status`, `POST /follow`) lets you change which bot is being
    followed without restarting the process — see "Switching who it's watching" below. This is the
    seam the dashboard's own integrated mode calls into (see "Running it via the dashboard" below).
