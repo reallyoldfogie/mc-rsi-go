@@ -49,6 +49,22 @@ func serveItemIcons() http.Handler {
 	return http.StripPrefix("/icons/", itemIconFallback{fsys: sub, next: http.FileServer(http.FS(sub))})
 }
 
+// vendorFS is third-party frontend JS vendored straight into the binary
+// (currently just a minified Three.js ES module build, for the dashboard's
+// 3D view) so the dashboard stays fully self-contained with no external
+// CDN dependency at runtime, same as itemIconsFS above.
+//
+//go:embed vendor
+var vendorFS embed.FS
+
+func serveVendor() http.Handler {
+	sub, err := fs.Sub(vendorFS, "vendor")
+	if err != nil {
+		panic(err) // vendor is embedded above; only a packaging bug could make this fail.
+	}
+	return http.StripPrefix("/vendor/", http.FileServer(http.FS(sub)))
+}
+
 // itemIconFallbackSuffixes are the directional-texture suffixes Minecraft
 // uses for a block with no single uniform face — a bare "<name>.png" only
 // exists for blocks that look the same from every side (dirt, oak_planks,

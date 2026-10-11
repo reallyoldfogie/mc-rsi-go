@@ -65,6 +65,19 @@
   }
   #stats .stat .val { font-size: 16px; font-weight: 600; }
   #empty { padding: 18px; color: #8a8f99; }
+  .view-toggle-btn {
+    position: absolute;
+    top: 14px;
+    right: 18px;
+    background: #262a33;
+    color: #e4e6eb;
+    border: 1px solid #3a3f4a;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .view-toggle-btn:hover { background: #2e333d; }
   #inventory {
     padding: 0 18px 12px;
     border-bottom: 1px solid #2a2d35;
@@ -115,7 +128,8 @@
      off its own width/height attributes' aspect ratio instead of
      stretching to fill the flex container - this sidesteps that. */
   #plot-wrap { flex: 1; min-height: 0; position: relative; }
-  #plot { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #plot, #camera-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #camera-canvas { display: none; }
 </style>
 </head>
 <body>
@@ -128,6 +142,7 @@
   <div id="inventory"></div>
   <div id="plot-wrap">
     <canvas id="plot"></canvas>
+    <canvas id="camera-canvas"></canvas>
   </div>
 </div>
 <script>
@@ -136,6 +151,53 @@
 
   var selected = null;
   var latest = [];
+
+  // viewMode is "2d" (the top-down plot, always available) or "3d" (the
+  // Three.js first-person view - see the type="module" script below,
+  // which owns the canvas#camera-canvas renderer/EventSource and exposes
+  // window.enter3DMode/window.exit3DMode as this script's only hooks into
+  // it). Only ever "3d" while an agent is both selected and connected -
+  // every path that clears either forces this back to "2d" first.
+  var viewMode = "2d";
+
+  // setViewMode flips which canvas is visible and refreshes the toggle
+  // button's label - the one place both of those stay in sync, since
+  // every entry/exit path (button click, deselect, agent disconnect) goes
+  // through here rather than setting viewMode directly.
+  function setViewMode(mode) {
+    viewMode = mode;
+    document.getElementById("plot").style.display = mode === "2d" ? "block" : "none";
+    document.getElementById("camera-canvas").style.display = mode === "3d" ? "block" : "none";
+    var btn = document.getElementById("view-toggle-btn");
+    if (btn) btn.textContent = mode === "3d" ? "Switch to 2D" : "Switch to 3D";
+  }
+
+  // exitViewMode is the one path back to 2D from anywhere - button click,
+  // deselecting the agent, or the agent disconnecting mid-view (the
+  // worldstream's own "gone" event, via window.onCameraGone below).
+  // Idempotent: safe to call even if already in 2D.
+  function exitViewMode() {
+    if (window.exit3DMode) window.exit3DMode();
+    setViewMode("2d");
+  }
+
+  function onViewToggleClick() {
+    if (viewMode === "3d") {
+      exitViewMode();
+    } else {
+      setViewMode("3d");
+      if (window.enter3DMode) window.enter3DMode(selected);
+    }
+  }
+
+  // onCameraGone is the module script's one hook back into this script -
+  // called when the worldstream reports the selected agent is no longer
+  // connected, so the view falls back to 2D instead of sitting on a frozen
+  // or blank 3D frame.
+  window.onCameraGone = function () {
+    exitViewMode();
+    render();
+  };
 
   // trails holds each agent's last TRAIL_LENGTH positions (index -> [{x,
   // z}, ...], oldest first), purely client-side - the backend only ever
@@ -218,6 +280,8 @@
       return;
     }
     el.innerHTML =
+      "<button id='view-toggle-btn' class='view-toggle-btn'>" +
+      (viewMode === "3d" ? "Switch to 2D" : "Switch to 3D") + "</button>" +
       stat("Agent", a.username || ("agent-" + a.index)) +
       stat("Task", a.task || "-") +
       stat("Goal", a.goal || "-") +
@@ -229,12 +293,21 @@
       stat("Health", a.health.toFixed(1) + " / 20") +
       stat("Food", a.food + " / 20") +
       stat("Updated", new Date(a.updated_at).toLocaleTimeString());
+    document.getElementById("view-toggle-btn").onclick = onViewToggleClick;
   }
 
   // selectAgent is renderSidebar's one entry point for changing which
-  // agent is selected.
+  // agent is selected. Picking "All agents" (index === null) always drops
+  // back to 2D - the 3D view has no meaning without a single bot to watch.
+  // Picking a different agent while already in 3D re-points the stream at
+  // the new one rather than silently keeping the old agent on screen.
   function selectAgent(index) {
     selected = index;
+    if (index === null) {
+      exitViewMode();
+    } else if (viewMode === "3d" && window.enter3DMode) {
+      window.enter3DMode(index);
+    }
     render();
   }
 
@@ -432,6 +505,11 @@
   }
 
   function renderPlot() {
+    // The 3D view (canvas#camera-canvas) owns the screen while active and
+    // redraws itself off its own EventSource/rAF loop - no need to also
+    // keep repainting the hidden 2D canvas underneath it every tick.
+    if (viewMode === "3d") return;
+
     var canvas = document.getElementById("plot");
     var dpr = window.devicePixelRatio || 1;
     var w = canvas.clientWidth, h = canvas.clientHeight;
@@ -448,10 +526,12 @@
     var centerX, centerZ, scale, visible;
 
     if (sel) {
-      // Single-agent zoomed view - the view a future 3D camera feed
-      // would replace/sit alongside. The radius grows to keep Spawn/
-      // Target in frame (see zoomRadiusFor) instead of a fixed window,
-      // so a far-off goto/chain target is never clipped out of view.
+      // Single-agent zoomed view, sitting alongside the first-person 3D
+      // view (canvas#camera-canvas, toggled via window.enter3DMode/
+      // exit3DMode) as the other way to look at the same selected bot.
+      // The radius grows to keep Spawn/Target in frame (see
+      // zoomRadiusFor) instead of a fixed window, so a far-off
+      // goto/mine_far/craft_far/chain target is never clipped out of view.
       var zoomRadius = zoomRadiusFor(sel);
       centerX = sel.x;
       centerZ = sel.z;
@@ -569,6 +649,177 @@
   window.addEventListener("resize", renderPlot);
   poll();
   setInterval(poll, 1000);
+})();
+</script>
+<script type="module">
+// This module owns canvas#camera-canvas end to end: the Three.js scene,
+// the EventSource consuming GET /agents/world, and the render loop. It
+// exposes exactly two things to the plain-script controller above -
+// window.enter3DMode(index) and window.exit3DMode() - everything else
+// (which agent, when to show the canvas, the toggle button) stays that
+// script's job.
+import * as THREE from "/vendor/three.module.min.js";
+
+(function () {
+  "use strict";
+
+  var canvas = document.getElementById("camera-canvas");
+  var renderer = null, scene = null, camera = null, boxGeometry = null;
+  var rafId = null;
+  var eventSource = null;
+  var blockMeshes = [];
+
+  // PLAYER_EYE_HEIGHT matches mc-agent's own models.PlayerEyeHeight - the
+  // worldstream's "position" events report the bot's feet position (the
+  // same convention as the vanilla position packet), so this is added
+  // when placing the camera to approximate what the bot itself sees
+  // rather than a view from ground level.
+  var PLAYER_EYE_HEIGHT = 1.62;
+
+  // BLOCK_COLORS is a small curated map for common blocks a training bot
+  // actually encounters (terrain, ores, wood, basic crafting stations) -
+  // flat colors, not textures, so there's no Minecraft-version-specific
+  // asset to keep in sync. Anything missing falls back to a
+  // deterministic hash-of-name color in colorForBlock below, so a new or
+  // uncommon block still renders as *something* distinct rather than
+  // defaulting to a single catch-all gray.
+  var BLOCK_COLORS = {
+    grass_block: 0x6aa84f, dirt: 0x8b5a2b, coarse_dirt: 0x7a4b28, podzol: 0x5b3a21,
+    stone: 0x8a8a8a, cobblestone: 0x999999, mossy_cobblestone: 0x6f8a63,
+    deepslate: 0x4a4a4e, cobbled_deepslate: 0x55555a,
+    oak_planks: 0xba8c55, spruce_planks: 0x9a7349, birch_planks: 0xd8c48a,
+    crafting_table: 0x8b5a2b, chest: 0xa0732c, furnace: 0x5a5a5a,
+    coal_ore: 0x2c2c2c, iron_ore: 0xd8af93, gold_ore: 0xe8d16f,
+    diamond_ore: 0x62dce0, redstone_ore: 0xb3312c, emerald_ore: 0x3fcf7f,
+    lapis_ore: 0x2a4d9c, copper_ore: 0xc2693e,
+    water: 0x3a6ea5, lava: 0xe25822,
+    sand: 0xdbce8f, red_sand: 0xb5542b, gravel: 0x8a8378,
+    bedrock: 0x3a3a3a, snow: 0xf0f8ff, snow_block: 0xf0f8ff, ice: 0xa8d8e8,
+    glass: 0xcde7f0, sandstone: 0xdbce9b, clay: 0xa0a0b0
+  };
+
+  function colorForBlock(fullName) {
+    var name = fullName.replace(/^minecraft:/, "");
+    if (Object.prototype.hasOwnProperty.call(BLOCK_COLORS, name)) return BLOCK_COLORS[name];
+    if (/leaves$/.test(name)) return 0x3e6b1f;
+    if (/log$|wood$|stem$/.test(name)) return 0x6b4423;
+    if (/planks$/.test(name)) return 0xba8c55;
+    if (/_ore$/.test(name)) return 0xb0b0b0;
+    var hash = 0;
+    for (var i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+    return new THREE.Color("hsl(" + (Math.abs(hash) % 360) + ", 40%, 45%)").getHex();
+  }
+
+  function disposeBlockMeshes() {
+    blockMeshes.forEach(function (mesh) {
+      scene.remove(mesh);
+      mesh.material.dispose();
+    });
+    blockMeshes = [];
+  }
+
+  // rebuildBlocks replaces every block instance each "blocks" event,
+  // rather than diffing against the previous tick - worldStreamHandler
+  // itself already resends the full visible set every tick (see its own
+  // doc comment on why: FindAllVisibleBlocksInSphere's ray-trace is
+  // already the expensive part), so matching that here keeps this layer
+  // just as simple. One InstancedMesh per distinct block name found this
+  // tick - cheap to render even at a few thousand blocks, since the GPU
+  // only sees one draw call per name instead of one per block.
+  function rebuildBlocks(blocks) {
+    if (!scene) return;
+    disposeBlockMeshes();
+    var groups = {};
+    blocks.forEach(function (b) {
+      (groups[b.name] || (groups[b.name] = [])).push(b);
+    });
+    var m = new THREE.Matrix4();
+    Object.keys(groups).forEach(function (name) {
+      var list = groups[name];
+      var mesh = new THREE.InstancedMesh(
+        boxGeometry,
+        new THREE.MeshLambertMaterial({ color: colorForBlock(name) }),
+        list.length
+      );
+      list.forEach(function (b, i) {
+        m.makeTranslation(b.x + 0.5, b.y + 0.5, b.z + 0.5);
+        mesh.setMatrixAt(i, m);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      scene.add(mesh);
+      blockMeshes.push(mesh);
+    });
+  }
+
+  // updateCameraFromPosition mirrors the same yaw convention the 2D
+  // plot's drawFacingIndicator already uses (0 = +Z/south, 90 = -X/west),
+  // extended with pitch the same way vanilla Minecraft's own look-vector
+  // formula does (positive pitch = looking down).
+  function updateCameraFromPosition(p) {
+    if (!camera) return;
+    var eyeY = p.y + PLAYER_EYE_HEIGHT;
+    camera.position.set(p.x, eyeY, p.z);
+    var yawRad = p.yaw * Math.PI / 180, pitchRad = p.pitch * Math.PI / 180;
+    var dx = -Math.sin(yawRad) * Math.cos(pitchRad);
+    var dy = -Math.sin(pitchRad);
+    var dz = Math.cos(yawRad) * Math.cos(pitchRad);
+    camera.lookAt(p.x + dx, eyeY + dy, p.z + dz);
+  }
+
+  function ensureScene() {
+    if (renderer) return;
+    boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0a0c10);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    var sun = new THREE.DirectionalLight(0xffffff, 0.8);
+    sun.position.set(50, 80, 30);
+    scene.add(sun);
+    camera = new THREE.PerspectiveCamera(70, 1, 0.1, 200);
+    renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+  }
+
+  function resizeRenderer() {
+    if (!renderer) return;
+    var w = canvas.clientWidth || 1, h = canvas.clientHeight || 1;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+
+  function animate() {
+    rafId = requestAnimationFrame(animate);
+    resizeRenderer();
+    renderer.render(scene, camera);
+  }
+
+  window.enter3DMode = function (index) {
+    ensureScene();
+    if (eventSource) eventSource.close();
+    if (!rafId) animate();
+    eventSource = new EventSource("/agents/world?index=" + index);
+    eventSource.onmessage = function (ev) {
+      var msg;
+      try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.type === "position") updateCameraFromPosition(msg);
+      else if (msg.type === "blocks") rebuildBlocks(msg.blocks);
+      else if (msg.type === "gone") {
+        window.exit3DMode();
+        if (window.onCameraGone) window.onCameraGone();
+      }
+    };
+  };
+
+  // exit3DMode is idempotent - called from a button click, a deselect, a
+  // re-point to a different agent, and the "gone" handler above, any of
+  // which might fire when there's nothing currently open.
+  window.exit3DMode = function () {
+    if (eventSource) { eventSource.close(); eventSource = null; }
+    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+    if (scene) disposeBlockMeshes();
+  };
+
+  window.addEventListener("resize", resizeRenderer);
 })();
 </script>
 </body>
