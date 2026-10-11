@@ -64,32 +64,6 @@
     color: #8a8f99;
   }
   #stats .stat .val { font-size: 16px; font-weight: 600; }
-  /* Positioned absolutely rather than as another grid child, so it
-     doesn't get stretched/reflowed by #stats' own auto-fit columns as
-     the stat grid's content width changes. */
-  .mode-toggle {
-    position: absolute;
-    top: 12px;
-    right: 18px;
-    background: #22252d;
-    color: #c7cad1;
-    border: 1px solid #2a2d35;
-    border-radius: 4px;
-    padding: 5px 12px;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  .mode-toggle:hover { background: #2a2d35; }
-  .camera-error {
-    position: absolute;
-    top: 42px;
-    right: 18px;
-    max-width: 320px;
-    font-size: 11px;
-    line-height: 1.4;
-    color: #ff8a8a;
-    text-align: right;
-  }
   #empty { padding: 18px; color: #8a8f99; }
   #inventory {
     padding: 0 18px 12px;
@@ -142,7 +116,6 @@
      stretching to fill the flex container - this sidesteps that. */
   #plot-wrap { flex: 1; min-height: 0; position: relative; }
   #plot { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
-  #camera-view { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: none; background: #000; }
 </style>
 </head>
 <body>
@@ -155,7 +128,6 @@
   <div id="inventory"></div>
   <div id="plot-wrap">
     <canvas id="plot"></canvas>
-    <iframe id="camera-view"></iframe>
   </div>
 </div>
 <script>
@@ -164,22 +136,6 @@
 
   var selected = null;
   var latest = [];
-
-  // viewMode is "2d" (the default - the plot canvas) or "3d" (the
-  // camera-view iframe, proxied through this same dashboard server from
-  // a camera-viewer container rsi-train manages - see
-  // cmd/rsi-train/cameraviewer.go and camera-viewer/README.md). Only
-  // meaningful while an agent is selected; see render's own check below
-  // for what happens if the selection is lost while in 3D mode.
-  var viewMode = "2d";
-
-  // cameraError holds the most recent failure message from trying to
-  // enter 3D mode (e.g. "image not found" from cameraviewer.go's own
-  // ensureContainer) - null once there's nothing to show. Surfaced by
-  // renderStats right under the mode-toggle button; cleared whenever
-  // the toggle is pressed again, so a stale message doesn't linger past
-  // the next attempt.
-  var cameraError = null;
 
   // trails holds each agent's last TRAIL_LENGTH positions (index -> [{x,
   // z}, ...], oldest first), purely client-side - the backend only ever
@@ -273,120 +229,14 @@
       stat("Health", a.health.toFixed(1) + " / 20") +
       stat("Food", a.food + " / 20") +
       stat("Updated", new Date(a.updated_at).toLocaleTimeString());
-
-    // Appended as a real DOM node after the innerHTML assignment above
-    // (which would otherwise wipe it) rather than folded into that
-    // string - it needs a live onclick handler, unlike the plain stat()
-    // cells.
-    var toggle = document.createElement("button");
-    toggle.className = "mode-toggle";
-    toggle.textContent = viewMode === "2d" ? "Switch to 3D" : "Switch to 2D";
-    toggle.onclick = toggleViewMode;
-    el.appendChild(toggle);
-
-    if (cameraError) {
-      var err = document.createElement("div");
-      err.className = "camera-error";
-      err.textContent = "3D view unavailable: " + cameraError;
-      el.appendChild(err);
-    }
   }
 
   // selectAgent is renderSidebar's one entry point for changing which
-  // agent is selected (replacing a bare `selected = ...` assignment) -
-  // it also keeps the 3D camera (if active) pointed at whatever's
-  // selected: re-following the new target in place if one is still
-  // selected, or dropping back to 2D if the selection was cleared
-  // (index === null) - 3D mode has no meaning for "all agents."
+  // agent is selected.
   function selectAgent(index) {
     selected = index;
-    if (viewMode === "3d") {
-      var a = resolveSelected();
-      if (a) {
-        enterCameraMode(a);
-      } else {
-        viewMode = "2d";
-        exitCameraMode();
-      }
-    }
     render();
   }
-
-  // enterCameraMode points the camera-viewer container (rsi-train-
-  // managed - see cmd/rsi-train/cameraviewer.go) at agent a, lazily
-  // starting it on the very first call. Safe to call again for a
-  // container that's already running (selectAgent's re-follow path) -
-  // that's just a cheap retarget, not a restart.
-  function enterCameraMode(a) {
-    var bot = a.username || ("agent-" + a.index);
-    fetch("/camera/follow?bot=" + encodeURIComponent(bot), { method: "POST" })
-      .then(function (r) {
-        if (r.ok) return null;
-        // followHandler (cmd/rsi-train/cameraviewer.go) writes the real
-        // failure reason (e.g. "image not found locally - build it
-        // once with: docker build...") as the plain-text response body
-        // via http.Error - read it rather than just the status code, so
-        // the message shown below is the actual, actionable reason.
-        return r.text().then(function (body) {
-          throw new Error(body.trim() || ("follow failed: " + r.status));
-        });
-      })
-      .then(function () {
-        var frame = document.getElementById("camera-view");
-        // Only (re)loaded on the first entry into 3D mode for this
-        // session - once it's open, re-following a different bot
-        // (selectAgent above) just changes what the already-connected
-        // viewer is spectating server-side; reloading the iframe would
-        // needlessly drop and reopen its WebSocket.
-        if (!frame.getAttribute("src")) frame.setAttribute("src", "/camera/view/");
-        document.getElementById("plot").style.display = "none";
-        frame.style.display = "block";
-      })
-      .catch(function (err) {
-        console.error("camera-viewer:", err);
-        cameraError = err.message;
-        viewMode = "2d";
-        exitCameraMode();
-        render();
-      });
-  }
-
-  // exitCameraMode tears down the camera-viewer container (POST
-  // /camera/stop - best effort, this never blocks switching the UI back
-  // to 2D) and hides the iframe, clearing its src so the next
-  // enterCameraMode gets a fresh connection against whatever container
-  // that next call starts.
-  function exitCameraMode() {
-    var frame = document.getElementById("camera-view");
-    frame.style.display = "none";
-    frame.removeAttribute("src");
-    document.getElementById("plot").style.display = "block";
-    fetch("/camera/stop", { method: "POST" }).catch(function () { /* best effort */ });
-  }
-
-  function toggleViewMode() {
-    var a = resolveSelected();
-    if (!a) return; // the toggle button only ever renders when one is selected and connected
-    cameraError = null;
-    if (viewMode === "2d") {
-      viewMode = "3d";
-      enterCameraMode(a);
-    } else {
-      viewMode = "2d";
-      exitCameraMode();
-    }
-    renderStats(a);
-  }
-
-  // Covers the "closed the tab/navigated away while in 3D mode" case
-  // selectAgent/toggleViewMode's own exitCameraMode calls can't - a
-  // regular fetch would be aborted mid-flight by the navigation it's
-  // racing; sendBeacon is designed to actually complete in that case.
-  window.addEventListener("beforeunload", function () {
-    if (viewMode === "3d") {
-      navigator.sendBeacon("/camera/stop");
-    }
-  });
 
   // INVENTORY_MAIN_SLOTS is how many of agentSnapshot.inventory's leading
   // entries are main-inventory slots (the rest are hotbar) - matches
@@ -702,14 +552,6 @@
 
   function render() {
     var a = resolveSelected();
-    // 3D mode has no meaning once there's no valid selected agent to
-    // follow (deselected back to "all agents," or the selected one
-    // disconnected/scaled down) - drop back to 2D rather than leaving
-    // the iframe showing a frozen last frame of a bot that's gone.
-    if (viewMode === "3d" && !a) {
-      viewMode = "2d";
-      exitCameraMode();
-    }
     renderSidebar();
     renderStats(a);
     renderInventory(a);

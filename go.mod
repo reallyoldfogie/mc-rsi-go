@@ -3,7 +3,6 @@ module github.com/reallyoldfogie/mc-rsi-trainer
 go 1.27.0
 
 require (
-	github.com/moby/moby/api v1.52.0
 	github.com/moby/moby/client v0.2.1
 	github.com/prometheus/client_golang v1.24.0
 	github.com/reallyoldfogie/cRL-go v0.14.0
@@ -36,6 +35,7 @@ require (
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/maxsupermanhd/go-mc-ms-auth v0.0.0-20230820124717-22f4d907eac4 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
+	github.com/moby/moby/api v1.52.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/ollama/ollama v0.20.7 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
