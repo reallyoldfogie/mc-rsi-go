@@ -328,6 +328,7 @@ func startMetricsServer(addr string, exporter *checkpointExporter, envCount *env
 	mux.Handle("/config/parallel-envs", envCount)
 	mux.Handle("/control/restart-at-epoch-boundary", restart)
 	mux.Handle("/agents", agents)
+	mux.HandleFunc("/agents/world", agents.worldStreamHandler)
 	mux.HandleFunc("/dashboard", serveDashboardPage)
 	mux.Handle("/icons/", serveItemIcons())
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
@@ -336,7 +337,7 @@ func startMetricsServer(addr string, exporter *checkpointExporter, envCount *env
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	go func() {
-		log.Printf("metrics: serving /metrics, POST /checkpoint/export, POST /config/parallel-envs, POST /control/restart-at-epoch-boundary, GET /agents, /dashboard, /icons/, and /debug/pprof/ on %s", addr)
+		log.Printf("metrics: serving /metrics, POST /checkpoint/export, POST /config/parallel-envs, POST /control/restart-at-epoch-boundary, GET /agents, /agents/world, /dashboard, /icons/, and /debug/pprof/ on %s", addr)
 		if err := http.ListenAndServe(addr, mux); err != nil {
 			log.Printf("metrics: server error: %v", err)
 		}

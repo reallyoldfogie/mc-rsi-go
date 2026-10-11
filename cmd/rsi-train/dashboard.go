@@ -233,6 +233,24 @@ func (r *agentRegistry) updateEpisode(i int, fn func(*agentSnapshot)) {
 	r.bots[i].UpdatedAt = time.Now()
 }
 
+// agentAt returns bot i's live models.Agent — the same connection driving
+// its training, not a separate spectator session — for a caller that needs
+// to read live world state directly (worldstream.go's SSE handler). false
+// on a nil receiver or an out-of-range index, mirroring updateEpisode's own
+// safety checks; an index is only ever stale in between a scale-down and
+// its instrumentedEnvironment being discarded.
+func (r *agentRegistry) agentAt(i int) (models.Agent, bool) {
+	if r == nil {
+		return nil, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if i < 0 || i >= len(r.bots) {
+		return nil, false
+	}
+	return r.bots[i].agent, true
+}
+
 // pollOnce refreshes every bot's position/yaw/pitch (via models.Position,
 // which models.Agent always satisfies through CommandAgent/MovementAgent)
 // and health/food (via models.HealthProvider, satisfied structurally by the
