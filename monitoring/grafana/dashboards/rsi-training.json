@@ -285,7 +285,7 @@
     {
       "type": "stat",
       "title": "Rounds won",
-      "description": "Total completed rounds where the Student beat the Teacher. Uses increase() over the \"Cumulative window\" variable above rather than the raw counter value, which would read 0 right after any trainer restart - the counter itself resets in the exporter's memory on every restart, but Prometheus's own scrape history hasn't lost anything, so increase() correctly reconstructs the true total across every restart (as long as the window it looks back over is long enough to not itself start partway through this run's history - the default, All-time, is).",
+      "description": "Total completed rounds where the Student beat the Teacher. Honors $lifetime_scope (see its own description): All-time reads rsi_rounds_total's raw value directly, Selected time range uses increase() over $__range. Not $lookback's 30d/$__range duration swap - that one still goes through Prometheus's own stored history for its \"all-time\" option, which was actively wrong here (found live 2026-10-12: read 0 instead of 1, because the real win happened before a gap in Prometheus's own retained samples). rsi_rounds_total doesn't need that any more: it's restart-surviving at the exporter level now (cmd/rsi-train/roundcounter.go persists it to interimDir/round-counter.json and reloads it on startup).",
       "id": 4,
       "gridPos": {
         "h": 4,
@@ -299,7 +299,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(rsi_rounds_total{outcome=\"won\"}[$lookback]))",
+          "expr": "$lifetime_scope * sum(rsi_rounds_total{outcome=\"won\"}) + (1-$lifetime_scope) * sum(increase(rsi_rounds_total{outcome=\"won\"}[$__range]))",
           "refId": "A"
         }
       ],
@@ -324,7 +324,7 @@
     {
       "type": "stat",
       "title": "Rounds lost",
-      "description": "Total completed rounds where the Teacher held. Not wasted work \u2014 the Student's updates are simply discarded and the next round tries again from the same Teacher. Uses increase() over the \"Cumulative window\" variable for the same restart-survival reason as the \"Rounds won\" panel next to it.",
+      "description": "Total completed rounds where the Teacher held. Not wasted work \u2014 the Student's updates are simply discarded and the next round tries again from the same Teacher. Honors $lifetime_scope, same reasoning as \"Rounds won\" next to it - see its own description.",
       "id": 5,
       "gridPos": {
         "h": 4,
@@ -338,7 +338,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(rsi_rounds_total{outcome=\"lost\"}[$lookback]))",
+          "expr": "$lifetime_scope * sum(rsi_rounds_total{outcome=\"lost\"}) + (1-$lifetime_scope) * sum(increase(rsi_rounds_total{outcome=\"lost\"}[$__range]))",
           "refId": "A"
         }
       ],
@@ -363,7 +363,7 @@
     {
       "type": "stat",
       "title": "Win rate",
-      "description": "Share of completed rounds the Student has won. Uses increase() over the \"Cumulative window\" variable for the same restart-survival reason as \"Rounds won\"/\"Rounds lost\".",
+      "description": "Share of completed rounds the Student has won. Honors $lifetime_scope, same reasoning as \"Rounds won\"/\"Rounds lost\" - see their own descriptions.",
       "id": 6,
       "gridPos": {
         "h": 4,
@@ -377,7 +377,7 @@
       },
       "targets": [
         {
-          "expr": "100 * sum(increase(rsi_rounds_total{outcome=\"won\"}[$lookback])) / sum(increase(rsi_rounds_total[$lookback]))",
+          "expr": "100 * ($lifetime_scope * sum(rsi_rounds_total{outcome=\"won\"}) + (1-$lifetime_scope) * sum(increase(rsi_rounds_total{outcome=\"won\"}[$__range]))) / ($lifetime_scope * sum(rsi_rounds_total) + (1-$lifetime_scope) * sum(increase(rsi_rounds_total[$__range])))",
           "refId": "A"
         }
       ],
@@ -607,7 +607,7 @@
     {
       "type": "stat",
       "title": "Average round duration",
-      "description": "Mean wall-clock time per completed round (all epochs of Student training plus both sides' evaluation episodes). Uses increase() over the \"Cumulative window\" variable on both the sum and count rather than their raw values, for the same restart-survival reason as \"Rounds won\"/\"Rounds lost\".",
+      "description": "Mean wall-clock time per completed round (all epochs of Student training plus both sides' evaluation episodes). Honors $lifetime_scope (see its own description): All-time divides rsi_round_duration_seconds_lifetime_total - a restart-surviving Gauge, since Histograms (rsi_round_duration_seconds itself) have no public API to seed their internal sum/count the way a plain Counter's Add does; see cmd/rsi-train/lifetimemetrics.go - by sum(rsi_rounds_total) (also restart-surviving). Selected time range uses increase() over $__range on both the Histogram's own sum and count, same as before.",
       "id": 21,
       "gridPos": {
         "h": 9,
@@ -621,7 +621,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(rsi_round_duration_seconds_sum[$lookback])) / sum(increase(rsi_round_duration_seconds_count[$lookback]))",
+          "expr": "$lifetime_scope * (sum(rsi_round_duration_seconds_lifetime_total) / sum(rsi_rounds_total)) + (1-$lifetime_scope) * (sum(increase(rsi_round_duration_seconds_sum[$__range])) / sum(increase(rsi_round_duration_seconds_count[$__range])))",
           "refId": "A"
         }
       ],
@@ -643,7 +643,7 @@
     {
       "type": "bargauge",
       "title": "Task mix",
-      "description": "How the curriculum's random per-episode task selection has actually split across tasks, over the \"Cumulative window\" variable above (All-time by default - cumulative counts over that window only ever grow; compare shapes, not absolute size). Only present when rsi-train was started with -curriculum-config. See \"Task mix balance\" below for whether the split is actually even. Uses increase() rather than the raw counter value, for the same restart-survival reason as \"Rounds won\"/\"Rounds lost\" - switch the variable to \"Selected time range\" to see task selection over just the dashboard's visible window instead (undercounts across a restart inside that window, same as any raw counter would).",
+      "description": "How the curriculum's random per-episode task selection has actually split across tasks, over $lifetime_scope (All-time by default - cumulative counts only ever grow; compare shapes, not absolute size). Only present when rsi-train was started with -curriculum-config. See \"Task mix balance\" below for whether the split is actually even. All-time reads rsi_task_episodes_total's raw per-task values directly - restart-surviving at the exporter level now (cmd/rsi-train/lifetimemetrics.go) - rather than increase() over Prometheus's own possibly-gapped history. Switch $lifetime_scope to \"Selected time range\" to see task selection over just the dashboard's visible window instead.",
       "id": 22,
       "gridPos": {
         "h": 9,
@@ -657,7 +657,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (task) (increase(rsi_task_episodes_total[$lookback]))",
+          "expr": "$lifetime_scope * sum by (task) (rsi_task_episodes_total) + (1-$lifetime_scope) * sum by (task) (increase(rsi_task_episodes_total[$__range]))",
           "legendFormat": "{{task}}",
           "refId": "A"
         }
@@ -1420,7 +1420,7 @@
     {
       "type": "barchart",
       "title": "Task mix balance (% deviation from other tasks' average)",
-      "description": "For each task, 100 * (its count - the average of every OTHER task's count) / that average - i.e. how far above or below the rest of the curriculum's tasks it currently sits, as a percentage. A perfectly even split sits at 0% for every task; the thresholds flag a task that's meaningfully over- or under-represented relative to the others, not an arbitrary absolute count. \u00b115% green, \u00b115-30% orange, beyond \u00b130% red. Uses barchart rather than bargauge specifically so bars are centered on zero (extending left for a negative deviation, right for a positive one) - bargauge has no such mode, it always fills from its configured min toward the value, which floored every negative bar at the min edge instead of showing it relative to zero. axisSoftMin/Max keep the \u00b130 threshold band visually legible without clipping anything further out. The organize transform drops Time/instance/job - Prometheus's table format turns every label into its own column, and barchart's auto-detected category axis otherwise grabs whichever string column sorts first (instance), not task. Every rsi_task_episodes_total reference is wrapped in increase(...[$lookback]) rather than read raw, for the same restart-survival reason as \"Rounds won\"/\"Rounds lost\" - this panel was missed in that original pass (found live when asked whether it was all-time or since-the-last-restart; it was reading the raw, restart-reset counter). Uses the dashboard's \"Cumulative window\" variable, same as \"Task mix\" above - switch it to see the balance over just the visible time range instead of the whole run.",
+      "description": "For each task, 100 * (its count - the average of every OTHER task's count) / that average - i.e. how far above or below the rest of the curriculum's tasks it currently sits, as a percentage. A perfectly even split sits at 0% for every task; the thresholds flag a task that's meaningfully over- or under-represented relative to the others, not an arbitrary absolute count. \u00b115% green, \u00b115-30% orange, beyond \u00b130% red. Uses barchart rather than bargauge specifically so bars are centered on zero (extending left for a negative deviation, right for a positive one) - bargauge has no such mode, it always fills from its configured min toward the value, which floored every negative bar at the min edge instead of showing it relative to zero. axisSoftMin/Max keep the \u00b130 threshold band visually legible without clipping anything further out. The organize transform drops Time/instance/job - Prometheus's table format turns every label into its own column, and barchart's auto-detected category axis otherwise grabs whichever string column sorts first (instance), not task. Every rsi_task_episodes_total reference honors $lifetime_scope (see its own description), same as \"Task mix\" above - All-time reads the raw, now-restart-surviving counter directly, Selected time range uses increase() over $__range. This panel used to wrap every reference in increase(...[$lookback]) instead, a lesser fix from when rsi_task_episodes_total still reset on every restart (found live 2026-10-12, same root cause as \"Rounds won\"/\"Rounds lost\").",
       "id": 44,
       "gridPos": {
         "h": 9,
@@ -1434,7 +1434,7 @@
       },
       "targets": [
         {
-          "expr": "100 * (sum by (task) (increase(rsi_task_episodes_total[$lookback])) - (scalar(sum(increase(rsi_task_episodes_total[$lookback]))) - sum by (task) (increase(rsi_task_episodes_total[$lookback]))) / (scalar(count(sum by (task) (increase(rsi_task_episodes_total[$lookback])))) - 1)) / ((scalar(sum(increase(rsi_task_episodes_total[$lookback]))) - sum by (task) (increase(rsi_task_episodes_total[$lookback]))) / (scalar(count(sum by (task) (increase(rsi_task_episodes_total[$lookback])))) - 1))",
+          "expr": "100 * (sum by (task) (($lifetime_scope * rsi_task_episodes_total + (1-$lifetime_scope) * increase(rsi_task_episodes_total[$__range]))) - (scalar(sum(($lifetime_scope * rsi_task_episodes_total + (1-$lifetime_scope) * increase(rsi_task_episodes_total[$__range])))) - sum by (task) (($lifetime_scope * rsi_task_episodes_total + (1-$lifetime_scope) * increase(rsi_task_episodes_total[$__range])))) / (scalar(count(sum by (task) (($lifetime_scope * rsi_task_episodes_total + (1-$lifetime_scope) * increase(rsi_task_episodes_total[$__range]))))) - 1)) / ((scalar(sum(($lifetime_scope * rsi_task_episodes_total + (1-$lifetime_scope) * increase(rsi_task_episodes_total[$__range])))) - sum by (task) (($lifetime_scope * rsi_task_episodes_total + (1-$lifetime_scope) * increase(rsi_task_episodes_total[$__range])))) / (scalar(count(sum by (task) (($lifetime_scope * rsi_task_episodes_total + (1-$lifetime_scope) * increase(rsi_task_episodes_total[$__range]))))) - 1))",
           "legendFormat": "{{task}}",
           "refId": "A",
           "format": "table",
@@ -1667,7 +1667,7 @@
     {
       "type": "stat",
       "title": "Average epoch duration",
-      "description": "Mean wall-clock time per completed Student-training epoch (rsi_epoch_rollout_size trajectories collected plus one PPO update over them). Uses increase() over the \"Cumulative window\" variable on both the sum and count, same restart-survival reason as \"Average round duration\".",
+      "description": "Mean wall-clock time per completed Student-training epoch (rsi_epoch_rollout_size trajectories collected plus one PPO update over them). Honors $lifetime_scope, same reasoning as \"Average round duration\" - see its own description. All-time divides rsi_epoch_duration_seconds_lifetime_total by rsi_epochs_total (both restart-surviving).",
       "id": 115,
       "gridPos": {
         "h": 9,
@@ -1681,7 +1681,7 @@
       },
       "targets": [
         {
-          "expr": "sum(increase(rsi_epoch_duration_seconds_sum[$lookback])) / sum(increase(rsi_epoch_duration_seconds_count[$lookback]))",
+          "expr": "$lifetime_scope * (sum(rsi_epoch_duration_seconds_lifetime_total) / sum(rsi_epochs_total)) + (1-$lifetime_scope) * (sum(increase(rsi_epoch_duration_seconds_sum[$__range])) / sum(increase(rsi_epoch_duration_seconds_count[$__range])))",
           "refId": "A"
         }
       ],
@@ -1714,7 +1714,7 @@
         "name": "lookback",
         "type": "custom",
         "label": "Cumulative window",
-        "description": "Every \"since the start of the run\" panel (Rounds won/lost, Win rate, Average round duration, Average epoch duration, Task mix, Task mix balance) uses this instead of its own fixed lookback, so one dropdown switches all of them together between the true all-time total (30d, comfortably covering this run's history) and whatever window the time picker above is set to (which undercounts across a trainer restart, same restart-sensitivity every raw counter has - see the glossary's \"Metrics and trainer restarts\" section).",
+        "description": "Not currently used by any panel on this dashboard (2026-10-12) - kept available for any FUTURE \"since the start of the run\" panel on a metric that doesn't have its own restart-survival fix. Switches such a panel between the true all-time total (30d, comfortably covering this run's history, PROVIDED Prometheus's own retained history actually reaches back that far without a gap) and whatever window the time picker above is set to. Every panel that used to rely on this (Rounds won/lost, Win rate, Average round duration, Average epoch duration, Task mix, Task mix balance) now uses $lifetime_scope instead (see its own description) - each of their underlying metrics is restart-surviving at the exporter level now, so for them, increase() over this window was not just unnecessary but could be actively wrong whenever Prometheus's own retained history had a gap (found live 2026-10-12 - this run's own scrape history was missing several hours around a WSL crash, well within this 30d window, which made increase() undercount).",
         "query": "All-time : 30d,Selected time range : $__range",
         "current": {
           "text": "All-time",
@@ -1729,6 +1729,30 @@
           {
             "text": "Selected time range",
             "value": "$__range",
+            "selected": false
+          }
+        ],
+        "hide": 0
+      },
+      {
+        "name": "lifetime_scope",
+        "type": "custom",
+        "label": "Lifetime scope",
+        "description": "Switches Rounds won/Rounds lost/Win rate/Average round duration/Average epoch duration/Task mix/Task mix balance between the true all-time total (1: reads each metric's own raw value directly - correct regardless of Prometheus's own retention/scrape gaps, since the exporter persists and restores all of them itself across restarts; see cmd/rsi-train/roundcounter.go and cmd/rsi-train/lifetimemetrics.go) and however much happened within the time picker's own window above (0: increase() over $__range, which needs Prometheus to have actually scraped that window, same restart-sensitivity as $lookback). Deliberately separate from $lookback - that variable's 30d-vs-$__range duration swap is still the only option for any OTHER metric without its own restart-survival fix, but would make these seven worse: increase() over ANY duration, however long, can still read the wrong answer if the real history it needs has a gap, and 1/0 here is a mask each panel's own formula multiplies by, not a window size.",
+        "query": "All-time : 1,Selected time range : 0",
+        "current": {
+          "text": "All-time",
+          "value": "1"
+        },
+        "options": [
+          {
+            "text": "All-time",
+            "value": "1",
+            "selected": true
+          },
+          {
+            "text": "Selected time range",
+            "value": "0",
             "selected": false
           }
         ],

@@ -380,6 +380,14 @@ func run(args []string) error {
 	// started, for that round's first epoch).
 	var lastEpochEnd time.Time
 
+	// roundDurationTotal/epochDurationTotal/epochsCount back the "Average
+	// round duration"/"Average epoch duration" dashboard panels' restart
+	// survival - declared here (rather than down with the rest of
+	// lifetimeMetricsState's own loading) so OnEpoch's closure, built
+	// just below, can close over them directly.
+	var roundDurationTotal, epochDurationTotal float64
+	epochsCount := 0
+
 	interimDir := filepath.Join(f.checkpointDir, "interim")
 	cfg := leapfrog.Config[*actorcritic.Params]{
 		Trainer:             trainerSettings,
@@ -419,7 +427,19 @@ func run(args []string) error {
 			metricEpochsTotal.Inc()
 			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
 			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
-			metricEpochDurationSeconds.Observe(time.Since(lastEpochEnd).Seconds())
+			thisEpochDuration := time.Since(lastEpochEnd).Seconds()
+			metricEpochDurationSeconds.Observe(thisEpochDuration)
+			epochDurationTotal += thisEpochDuration
+			epochsCount++
+			metricEpochDurationSecondsLifetimeTotal.Set(epochDurationTotal)
+			if err := saveLifetimeMetricsState(interimDir, lifetimeMetricsState{
+				RoundDurationSeconds: roundDurationTotal,
+				EpochDurationSeconds: epochDurationTotal,
+				Epochs:               epochsCount,
+				TaskEpisodes:         snapshotTaskEpisodeCounts(),
+			}); err != nil {
+				log.Printf("  epoch %d: persisting lifetime-metrics state for dashboard restart-survival: %v", stats.Epoch, err)
+			}
 			lastEpochEnd = time.Now()
 			if restartReq.take() {
 				log.Printf("  restart requested; stopping after epoch %d", stats.Epoch)
@@ -486,9 +506,36 @@ func run(args []string) error {
 		})
 	}
 
+	// Restores rsi_current_round and rsi_rounds_total the same way just
+	// above restores the reward panels - see roundCounterState's own doc
+	// comment for why neither metric survives a restart on its own.
+	startRound := 1
+	wonCount, lostCount := 0, 0
+	if state, ok := loadRoundCounterState(interimDir); ok {
+		startRound = state.Round + 1
+		wonCount, lostCount = state.Won, state.Lost
+		metricRoundsTotal.WithLabelValues("won").Add(float64(wonCount))
+		metricRoundsTotal.WithLabelValues("lost").Add(float64(lostCount))
+	}
+
+	// Restores "Average round duration"/"Average epoch duration"/"Task
+	// mix"/"Task mix balance" the same way the two blocks just above
+	// restore their own panels - see lifetimeMetricsState's own doc
+	// comment for why rsi_round_duration_seconds/rsi_epoch_duration_seconds
+	// need their own parallel Gauges rather than being seeded directly.
+	if state, ok := loadLifetimeMetricsState(interimDir); ok {
+		roundDurationTotal = state.RoundDurationSeconds
+		epochDurationTotal = state.EpochDurationSeconds
+		epochsCount = state.Epochs
+		metricRoundDurationSecondsLifetimeTotal.Set(roundDurationTotal)
+		metricEpochDurationSecondsLifetimeTotal.Set(epochDurationTotal)
+		metricEpochsTotal.Add(float64(epochsCount))
+		seedTaskEpisodeCounts(state.TaskEpisodes)
+	}
+
 	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
 
-	for round := 1; f.maxRounds == 0 || round <= f.maxRounds; round++ {
+	for round := startRound; f.maxRounds == 0 || round <= f.maxRounds; round++ {
 		if err := ctx.Err(); err != nil {
 			log.Printf("stopping before round %d: %v", round, err)
 			break
@@ -552,9 +599,19 @@ func run(args []string) error {
 		}
 		elapsed := time.Since(start).Round(time.Second)
 		metricRoundDurationSeconds.Observe(elapsed.Seconds())
+		roundDurationTotal += elapsed.Seconds()
+		metricRoundDurationSecondsLifetimeTotal.Set(roundDurationTotal)
 		recordRoundEvaluation(result)
 		if err := saveRoundEvalState(interimDir, result); err != nil {
 			log.Printf("round %d: persisting round-eval state for dashboard restart-survival: %v", round, err)
+		}
+		if err := saveLifetimeMetricsState(interimDir, lifetimeMetricsState{
+			RoundDurationSeconds: roundDurationTotal,
+			EpochDurationSeconds: epochDurationTotal,
+			Epochs:               epochsCount,
+			TaskEpisodes:         snapshotTaskEpisodeCounts(),
+		}); err != nil {
+			log.Printf("round %d: persisting lifetime-metrics state for dashboard restart-survival: %v", round, err)
 		}
 
 		if result.StudentWon {
@@ -575,8 +632,13 @@ func run(args []string) error {
 			exporter.setTeacher(teacherParams, rec)
 			metricRoundsTotal.WithLabelValues("won").Inc()
 			metricGeneration.Set(float64(rec.Generation))
+			wonCount++
 		} else {
 			metricRoundsTotal.WithLabelValues("lost").Inc()
+			lostCount++
+		}
+		if err := saveRoundCounterState(interimDir, roundCounterState{Round: round, Won: wonCount, Lost: lostCount}); err != nil {
+			log.Printf("round %d: persisting round-counter state for dashboard restart-survival: %v", round, err)
 		}
 
 		log.Printf("round %d (%s): teacher=%.3f student=%.3f studentWon=%v generation=%d (n=%d/side, std teacher=%.2f student=%.2f, paired diff=%+.3f ± %.3f)",

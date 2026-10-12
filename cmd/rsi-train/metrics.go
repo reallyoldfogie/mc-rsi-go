@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -141,6 +142,24 @@ var (
 		Name:    "rsi_round_duration_seconds",
 		Help:    "Wall-clock duration of each completed leapfrog round.",
 		Buckets: []float64{60, 300, 600, 1200, 1800, 3600, 5400, 7200, 10800, 14400},
+	})
+
+	// metricRoundDurationSecondsLifetimeTotal is rsi_round_duration_seconds'
+	// own _sum, reconstructed across restarts (see lifetimeMetricsState's
+	// own doc comment for why this needs a parallel Gauge rather than
+	// seeding the Histogram itself). Divide by sum(rsi_rounds_total) - also
+	// restart-surviving - for the lifetime average round duration.
+	metricRoundDurationSecondsLifetimeTotal = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_round_duration_seconds_lifetime_total",
+		Help: "Cumulative wall-clock seconds spent across every completed leapfrog round, this run's full lifetime (restart-surviving - see cmd/rsi-train/lifetimemetrics.go). Divide by sum(rsi_rounds_total) for the lifetime average round duration.",
+	})
+
+	// metricEpochDurationSecondsLifetimeTotal is the same idea as
+	// metricRoundDurationSecondsLifetimeTotal, for epochs - divide by
+	// rsi_epochs_total for the lifetime average epoch duration.
+	metricEpochDurationSecondsLifetimeTotal = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_duration_seconds_lifetime_total",
+		Help: "Cumulative wall-clock seconds spent across every completed Student-training epoch, this run's full lifetime (restart-surviving - see cmd/rsi-train/lifetimemetrics.go). Divide by rsi_epochs_total for the lifetime average epoch duration.",
 	})
 
 	metricTeacherReward = promauto.NewGauge(prometheus.GaugeOpts{
@@ -564,11 +583,57 @@ func actionName(action rl.Action) string {
 	}
 }
 
+// taskEpisodeCounts mirrors metricTaskEpisodesTotal in plain Go state, so
+// its current totals can be read back out and persisted (see
+// snapshotTaskEpisodeCounts/lifetimeMetricsState) - promauto's CounterVec
+// has no public "read all current values" API of its own, only Write (for
+// a single label's protobuf wire form), so this is simpler than scraping
+// that. Guarded by its own mutex since recordTaskSelection is called from
+// every connected environment's own TaskSelector closure, concurrently.
+var (
+	taskEpisodeCountsMu sync.Mutex
+	taskEpisodeCounts   = map[string]int{}
+)
+
 // recordTaskSelection increments metricTaskEpisodesTotal for name (an
 // rlenvadapter.Task.Name() value, e.g. "mine_far" — see main.go's own
-// TaskSelector closure, its only caller).
+// TaskSelector closure, its only caller), and the same count in
+// taskEpisodeCounts alongside it.
 func recordTaskSelection(name string) {
 	if name != "" && name != "unknown" {
 		metricTaskEpisodesTotal.WithLabelValues(name).Inc()
+		taskEpisodeCountsMu.Lock()
+		taskEpisodeCounts[name]++
+		taskEpisodeCountsMu.Unlock()
+	}
+}
+
+// snapshotTaskEpisodeCounts returns a copy of taskEpisodeCounts' current
+// totals, for persisting alongside the other lifetime metrics (see
+// lifetimeMetricsState) - a copy so the caller can serialize it without
+// holding the lock across a write.
+func snapshotTaskEpisodeCounts() map[string]int {
+	taskEpisodeCountsMu.Lock()
+	defer taskEpisodeCountsMu.Unlock()
+	out := make(map[string]int, len(taskEpisodeCounts))
+	for k, v := range taskEpisodeCounts {
+		out[k] = v
+	}
+	return out
+}
+
+// seedTaskEpisodeCounts pre-populates both taskEpisodeCounts and
+// metricTaskEpisodesTotal from a persisted lifetimeMetricsState.
+// TaskEpisodes - called once at startup, mirroring how
+// loadRoundCounterState seeds metricRoundsTotal in main.go. A seed does
+// not itself call recordTaskSelection (a real episode this process never
+// posed), so it updates both the Prometheus counter and the local map
+// directly rather than looping calls through that function.
+func seedTaskEpisodeCounts(counts map[string]int) {
+	taskEpisodeCountsMu.Lock()
+	defer taskEpisodeCountsMu.Unlock()
+	for name, n := range counts {
+		taskEpisodeCounts[name] = n
+		metricTaskEpisodesTotal.WithLabelValues(name).Add(float64(n))
 	}
 }
