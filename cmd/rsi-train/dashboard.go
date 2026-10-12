@@ -119,9 +119,16 @@ const agentPositionPollInterval = time.Second
 // access to, since it only wraps rl.Environment, not models.Agent) on its
 // own timer. agent itself is never serialized.
 type agentSnapshot struct {
-	Index       int              `json:"index"`
-	Username    string           `json:"username"`
-	Task        string           `json:"task"`
+	Index    int    `json:"index"`
+	Username string `json:"username"`
+	Task     string `json:"task"`
+	// Phase is "training" or "eval" (metrics.go's own episodeLengthPhase,
+	// which this mirrors) — training rollout collection and a round's
+	// teacher/student evaluation episodes run through this exact same bot
+	// connection and agentRegistry slot, one after another, so without
+	// this field the dashboard has no way to show which one is currently
+	// happening; it otherwise looks like an ordinary training episode.
+	Phase       string           `json:"phase"`
 	Goal        string           `json:"goal"`
 	LastAction  string           `json:"last_action"`
 	EpisodeStep int              `json:"episode_step"`

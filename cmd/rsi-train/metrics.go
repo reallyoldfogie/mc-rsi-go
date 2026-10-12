@@ -482,6 +482,7 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 	}
 	e.registry.updateEpisode(e.index, func(s *agentSnapshot) {
 		s.Task = task
+		s.Phase = episodeLengthPhase()
 		s.Goal = goal
 		s.LastAction = ""
 		s.EpisodeStep = 0
@@ -522,6 +523,7 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 	}
 	e.registry.updateEpisode(e.index, func(s *agentSnapshot) {
 		s.Task = task
+		s.Phase = episodeLengthPhase()
 		s.LastAction = actionName(action)
 		s.EpisodeStep = e.steps
 		if outcome != "" {

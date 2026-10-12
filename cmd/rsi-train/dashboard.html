@@ -29,6 +29,20 @@
     padding: 12px 14px 8px;
     margin: 0;
   }
+  #legend {
+    padding: 0 14px 10px;
+    border-bottom: 1px solid #2a2d35;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #legend .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    color: #8a8f99;
+  }
   .agent-row {
     padding: 8px 14px;
     cursor: pointer;
@@ -47,6 +61,19 @@
   .dot.stale { background: #5a5f6b; }
   .agent-row .name { font-weight: 600; }
   .agent-row .task { color: #8a8f99; font-size: 12px; }
+  .phase-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 6px;
+    background: #d9a24b;
+    color: #1b1e25;
+    vertical-align: middle;
+  }
   #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
   #stats {
     position: relative;
@@ -130,11 +157,36 @@
   #plot-wrap { flex: 1; min-height: 0; position: relative; }
   #plot, #camera-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   #camera-canvas { display: none; }
+  /* Sits above whichever of #plot/#camera-canvas is currently visible
+     (both are absolute/inset:0 siblings within #plot-wrap) - a plain
+     later sibling in source order already paints on top, no z-index
+     needed. pointer-events: none so it's purely visual; there's nothing
+     on the canvases underneath to click anyway. */
+  #stale-overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(90, 95, 107, 0.45);
+    pointer-events: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: #e4e6eb;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  }
+  #stale-overlay.visible { display: flex; }
 </style>
 </head>
 <body>
 <div id="sidebar">
   <h1>Agents</h1>
+  <div id="legend">
+    <div class="legend-item"><span class="dot live"></span> Live - updated in the last 5s</div>
+    <div class="legend-item"><span class="dot ok"></span> Last episode succeeded</div>
+    <div class="legend-item"><span class="dot fail"></span> Last episode failed</div>
+    <div class="legend-item"><span class="dot stale"></span> Stale - no update in 5s+</div>
+  </div>
   <div id="rows"></div>
 </div>
 <div id="main">
@@ -143,6 +195,7 @@
   <div id="plot-wrap">
     <canvas id="plot"></canvas>
     <canvas id="camera-canvas"></canvas>
+    <div id="stale-overlay">Connection stale - no update in 5s+</div>
   </div>
 </div>
 <script>
@@ -230,6 +283,16 @@
     return "live";
   }
 
+  // updateStaleOverlay shows #stale-overlay (over whichever of the 2D
+  // plot/3D camera view is currently visible) exactly when the selected
+  // agent's own dot would read "stale" - same statusDot call the sidebar
+  // row already uses, so the overlay and that dot never disagree. No
+  // overlay in the "All agents" view (a is null) - staleness is a
+  // per-agent thing, and each row already carries its own dot there.
+  function updateStaleOverlay(a) {
+    document.getElementById("stale-overlay").classList.toggle("visible", !!a && statusDot(a) === "stale");
+  }
+
   function renderSidebar() {
     var rows = document.getElementById("rows");
     rows.innerHTML = "";
@@ -247,7 +310,7 @@
       var dot = document.createElement("div");
       dot.className = "dot " + statusDot(a);
       var text = document.createElement("div");
-      text.innerHTML = "<div class='name'>" + (a.username || ("agent-" + a.index)) + "</div>" +
+      text.innerHTML = "<div class='name'>" + (a.username || ("agent-" + a.index)) + phaseBadge(a) + "</div>" +
         "<div class='task'>" + (a.task || "-") + "</div>";
       row.appendChild(dot);
       row.appendChild(text);
@@ -257,6 +320,17 @@
 
   function stat(label, value) {
     return "<div class='stat'><label>" + label + "</label><div class='val'>" + value + "</div></div>";
+  }
+
+  // phaseBadge flags a.phase === "eval" - training and a round's own
+  // teacher/student evaluation episodes run through the exact same bot
+  // connection and agent-row one after another (see metrics.go's
+  // episodeLengthPhase), so without this an eval episode is otherwise
+  // indistinguishable from an ordinary training one. Silent for
+  // "training" (the common case) rather than labeling both, matching
+  // this dashboard's existing style of only calling out the exception.
+  function phaseBadge(a) {
+    return a.phase === "eval" ? " <span class='phase-badge'>eval</span>" : "";
   }
 
   // resolveSelected returns the currently selected agent's latest
@@ -282,7 +356,7 @@
     el.innerHTML =
       "<button id='view-toggle-btn' class='view-toggle-btn'>" +
       (viewMode === "3d" ? "Switch to 2D" : "Switch to 3D") + "</button>" +
-      stat("Agent", a.username || ("agent-" + a.index)) +
+      stat("Agent", (a.username || ("agent-" + a.index)) + phaseBadge(a)) +
       stat("Task", a.task || "-") +
       stat("Goal", a.goal || "-") +
       stat("Last action", a.last_action || "-") +
@@ -636,6 +710,7 @@
     renderStats(a);
     renderInventory(a);
     renderPlot();
+    updateStaleOverlay(a);
   }
 
   function poll() {
@@ -685,6 +760,7 @@ import * as THREE from "/vendor/three.module.min.js";
   // defaulting to a single catch-all gray.
   var BLOCK_COLORS = {
     grass_block: 0x6aa84f, dirt: 0x8b5a2b, coarse_dirt: 0x7a4b28, podzol: 0x5b3a21,
+    mycelium: 0x6f6293,
     stone: 0x8a8a8a, cobblestone: 0x999999, mossy_cobblestone: 0x6f8a63,
     deepslate: 0x4a4a4e, cobbled_deepslate: 0x55555a,
     oak_planks: 0xba8c55, spruce_planks: 0x9a7349, birch_planks: 0xd8c48a,
@@ -698,8 +774,16 @@ import * as THREE from "/vendor/three.module.min.js";
     glass: 0xcde7f0, sandstone: 0xdbce9b, clay: 0xa0a0b0
   };
 
-  function colorForBlock(fullName) {
-    var name = fullName.replace(/^minecraft:/, "");
+  function stripMCPrefix(fullName) {
+    return fullName.replace(/^minecraft:/, "");
+  }
+
+  // colorForBlock is the fallback used for a block with no real texture
+  // to show at all (see materialCache/resolveBlockMaterials below) - a
+  // block rendered as a block-entity instead of a standard textured
+  // block model (chest, bed, banner, ...) never resolves one, same gap
+  // dashboard.go's itemIconFallback hits for the 2D inventory icon.
+  function colorForBlock(name) {
     if (Object.prototype.hasOwnProperty.call(BLOCK_COLORS, name)) return BLOCK_COLORS[name];
     if (/leaves$/.test(name)) return 0x3e6b1f;
     if (/log$|wood$|stem$/.test(name)) return 0x6b4423;
@@ -710,11 +794,191 @@ import * as THREE from "/vendor/three.module.min.js";
     return new THREE.Color("hsl(" + (Math.abs(hash) % 360) + ", 40%, 45%)").getHex();
   }
 
-  function disposeBlockMeshes() {
-    blockMeshes.forEach(function (mesh) {
-      scene.remove(mesh);
-      mesh.material.dispose();
+  var textureLoader = new THREE.TextureLoader();
+
+  // iconURL points at the exact same /icons/ endpoint the 2D inventory
+  // view already uses (dashboard.go's itemIconFallback) - a request for
+  // an exact existing file (e.g. "grass_block_top.png") is served
+  // directly with no rewriting, so every per-face texture below is
+  // already reachable with zero backend changes.
+  function iconURL(name) { return "/icons/" + name + ".png"; }
+
+  // loadFirstAvailable tries each URL in candidates in priority order -
+  // via textureLoader's own onError callback, which fires on a 404 -
+  // and resolves with whichever one actually exists, configured for
+  // Minecraft's own 16x16 pixel art (NearestFilter, so it doesn't blur
+  // on upscale - the WebGL equivalent of the 2D icons' own
+  // image-rendering:pixelated CSS) and cutout transparency (alphaTest
+  // rather than true alpha blending - correct for leaves/glass-pane
+  // style textures where a pixel is fully opaque or fully transparent,
+  // and avoids InstancedMesh's draw-order problems with real blending).
+  // Resolves with null if every candidate 404s.
+  function loadFirstAvailable(candidates, onResolved) {
+    tryAt(0);
+    function tryAt(i) {
+      if (i >= candidates.length) { onResolved(null); return; }
+      textureLoader.load(candidates[i], function (tex) {
+        tex.magFilter = THREE.NearestFilter;
+        tex.minFilter = THREE.NearestFilter;
+        onResolved(tex);
+      }, undefined, function () { tryAt(i + 1); });
+    }
+  }
+
+  // FACE_BOTTOM_OVERRIDES corrects the handful of blocks whose real
+  // vanilla block model points a face at a DIFFERENT block's own
+  // texture file, not discoverable from this block's own name - e.g.
+  // grass_block's underside is literally dirt.png, not a
+  // "grass_block_bottom.png" that doesn't exist (confirmed: no such
+  // file in cmd/rsi-train/itemicons/). Resolving this generically would
+  // mean parsing Minecraft's own block model JSON
+  // (assets/minecraft/models/block/*.json in the client jar) instead of
+  // guessing filename suffixes - out of scope here, so this just
+  // hardcodes the common, visually obvious cases. Anything else missing
+  // a dedicated bottom texture just reuses its own top texture there
+  // instead, which is wrong but rarely seen (the camera is almost never
+  // below a block looking up at it).
+  var FACE_BOTTOM_OVERRIDES = { grass_block: "dirt", podzol: "dirt", mycelium: "dirt" };
+
+  // TINT_TOP_FACES names blocks whose own top-face texture is a bare
+  // grayscale mask, not a usable color image - confirmed by eye
+  // (grass_block_top.png, mycelium_top.png) against this icon set.
+  // Vanilla Minecraft tints these per-biome at render time via a
+  // separate colormap lookup (never baked into the texture file itself
+  // in the real client jar either - this isn't an extraction gap, biome
+  // tinting is a genuine runtime effect); replicating that properly
+  // would mean fetching per-biome colormap data this dashboard has no
+  // other use for, so this just multiplies the mask by a fixed color
+  // (reusing BLOCK_COLORS' own curated value) as a reasonable
+  // approximation instead. grass_block's own *side* texture turned out
+  // to already have color baked in (unlike its top) in this particular
+  // icon set, so it's deliberately left off this list - tinting an
+  // already-colored texture would double up the color.
+  var TINT_TOP_FACES = { grass_block: true, mycelium: true };
+
+  // TINT_ALL_FACES is the same idea for a block whose single texture
+  // (used on all 6 faces - see sideCandidates/topCandidates both
+  // eventually falling back to the bare "<name>.png") is itself an
+  // untinted mask - confirmed for oak_leaves.png; matches the same
+  // /leaves$/ family colorForBlock's own hash-fallback regex already
+  // treats as one group, just checked up front here instead.
+  function needsAllFaceTint(name) {
+    return /leaves$/.test(name);
+  }
+
+  // texMaterial builds one face's MeshLambertMaterial, applying
+  // tintColor (if given) as Three.js's own map x color multiply -
+  // exactly the fixed-color approximation TINT_TOP_FACES/
+  // needsAllFaceTint's own doc comments describe, no extra rendering
+  // code needed beyond passing both fields to the same material.
+  function texMaterial(texture, tintColor) {
+    var opts = { map: texture, alphaTest: 0.5 };
+    if (tintColor !== undefined) opts.color = tintColor;
+    return new THREE.MeshLambertMaterial(opts);
+  }
+
+  // materialCache holds each block name's resolved material(s) - either
+  // a 6-entry array once per-face textures resolve ([+X,-X,+Y,-Y,+Z,-Z],
+  // matching THREE.BoxGeometry's own default face-group order), or a
+  // single flat-color MeshLambertMaterial as an immediate placeholder
+  // while textures are still loading, and permanently for a block with
+  // no texture at all. Keyed by bare name and never evicted - the set
+  // of distinct block names a bot's own working area ever shows is
+  // small and bounded.
+  var materialCache = {};
+
+  // resolveBlockMaterials kicks off texture resolution for name once
+  // per name ever (materialCache short-circuits every later call) and
+  // swaps in the real per-face materials once they resolve. Until then
+  // - and permanently, for a block with no texture at all -
+  // materialCache[name] holds colorForBlock's flat-color material, so
+  // rebuildBlocks always has something to render the instant it sees a
+  // new name, never blocking a frame on a network round trip. A mesh
+  // built from the stale placeholder gets replaced wholesale on the
+  // very next "blocks" tick (rebuildBlocks rebuilds everything every
+  // tick already), so resolution finishing just shows up as the block
+  // "becoming textured" a second or two after it first appears.
+  function resolveBlockMaterials(name) {
+    if (materialCache[name]) return;
+    materialCache[name] = new THREE.MeshLambertMaterial({ color: colorForBlock(name) });
+
+    var topCandidates = [iconURL(name + "_top"), iconURL(name)];
+    var bottomCandidates = (FACE_BOTTOM_OVERRIDES[name] ? [iconURL(FACE_BOTTOM_OVERRIDES[name])] : [])
+      .concat([iconURL(name + "_bottom")], topCandidates);
+    var sideCandidates = [iconURL(name + "_side"), iconURL(name + "_front"), iconURL(name)];
+
+    var allTint = needsAllFaceTint(name) ? colorForBlock(name) : undefined;
+    var topTint = allTint !== undefined ? allTint : (TINT_TOP_FACES[name] ? colorForBlock(name) : undefined);
+
+    loadFirstAvailable(topCandidates, function (top) {
+      if (!top) return; // nothing textured for this block at all (e.g. chest) - keep the flat color.
+      loadFirstAvailable(bottomCandidates, function (bottom) {
+        loadFirstAvailable(sideCandidates, function (side) {
+          var topMat = texMaterial(top, topTint);
+          var bottomMat = bottom ? texMaterial(bottom, allTint) : topMat;
+          var sideMat = side ? texMaterial(side, allTint) : topMat;
+          materialCache[name] = [sideMat, sideMat, topMat, bottomMat, sideMat, sideMat];
+        });
+      });
     });
+  }
+
+  // CHEST_SHAPES names the block-entity-rendered blocks (chest,
+  // trapped_chest, ender_chest) that get a real two-box lid+body shape
+  // instead of the generic single cube every other block uses -
+  // investigated after the dashboard.go itemIconFallback chest-icon gap
+  // turned out to be the same root cause here: these blocks were never
+  // textured via the standard block-model system at all (see
+  // dashboard.go's itemIconFallback doc comment), so they need their
+  // own geometry and texture-sourcing, not just a missing filename
+  // guess. bed/banner/skull have the same gap but aren't handled here -
+  // out of scope until they actually come up.
+  var CHEST_SHAPES = { chest: true, trapped_chest: true, ender_chest: true };
+
+  // Dimensions straight from vanilla's own ChestBlockEntityRenderer
+  // model, in 16ths of a block: a 14x10x14 body sitting on the floor
+  // with a 14x5x14 lid stacked directly on top. Always closed - there's
+  // no lid-open animation state in a worldStreamBlock to render
+  // otherwise. The latch always faces +Z (BoxGeometry's own face-group
+  // order - see rebuildBlocks' own doc comment) regardless of the real
+  // block's actual facing, since VisibleBlockInfo carries no
+  // orientation data to point it the right way.
+  var CHEST_FOOTPRINT = 14 / 16, CHEST_BODY_H = 10 / 16, CHEST_LID_H = 5 / 16;
+  var chestBodyGeometry = null, chestLidGeometry = null;
+
+  // chestMaterialCache mirrors materialCache's own caching/placeholder
+  // strategy, just producing one {body, lid} material-array pair
+  // instead of a single array - both boxes share the exact same two
+  // textures (<name>.png for the latch/front face, <name>_side.png for
+  // the plain wood everywhere else), cropped from the real client jar's
+  // entity/chest atlas straight into cmd/rsi-train/itemicons/ (the same
+  // two files dashboard.go's 2D inventory icon now also serves
+  // directly) - not UV-mapped against the atlas with full vanilla
+  // fidelity, just a recognizable front-vs-side split.
+  var chestMaterialCache = {};
+  function resolveChestMaterials(name) {
+    if (chestMaterialCache[name]) return;
+    var flat = new THREE.MeshLambertMaterial({ color: colorForBlock(name) });
+    chestMaterialCache[name] = { body: flat, lid: flat };
+
+    loadFirstAvailable([iconURL(name)], function (front) {
+      if (!front) return; // shouldn't happen now that the crop exists, but keep the flat-color fallback symmetric with resolveBlockMaterials.
+      loadFirstAvailable([iconURL(name + "_side")], function (side) {
+        var frontMat = texMaterial(front, undefined);
+        var sideMat = side ? texMaterial(side, undefined) : frontMat;
+        var faces = [sideMat, sideMat, sideMat, sideMat, frontMat, sideMat];
+        chestMaterialCache[name] = { body: faces, lid: faces };
+      });
+    });
+  }
+
+  function disposeBlockMeshes() {
+    // Materials/textures are cached and shared across ticks (see
+    // materialCache above), so only the per-tick InstancedMesh objects
+    // themselves get removed here - disposing a cached material would
+    // destroy a GPU resource the next tick's mesh of the same block
+    // name still expects to reuse.
+    blockMeshes.forEach(function (mesh) { scene.remove(mesh); });
     blockMeshes = [];
   }
 
@@ -725,22 +989,41 @@ import * as THREE from "/vendor/three.module.min.js";
   // already the expensive part), so matching that here keeps this layer
   // just as simple. One InstancedMesh per distinct block name found this
   // tick - cheap to render even at a few thousand blocks, since the GPU
-  // only sees one draw call per name instead of one per block.
+  // only sees a handful of draw calls per name (one per cube face
+  // group) instead of one per block.
   function rebuildBlocks(blocks) {
     if (!scene) return;
     disposeBlockMeshes();
     var groups = {};
     blocks.forEach(function (b) {
-      (groups[b.name] || (groups[b.name] = [])).push(b);
+      var name = stripMCPrefix(b.name);
+      (groups[name] || (groups[name] = [])).push(b);
     });
     var m = new THREE.Matrix4();
     Object.keys(groups).forEach(function (name) {
       var list = groups[name];
-      var mesh = new THREE.InstancedMesh(
-        boxGeometry,
-        new THREE.MeshLambertMaterial({ color: colorForBlock(name) }),
-        list.length
-      );
+
+      if (CHEST_SHAPES[name]) {
+        resolveChestMaterials(name);
+        var mats = chestMaterialCache[name];
+        var bodyMesh = new THREE.InstancedMesh(chestBodyGeometry, mats.body, list.length);
+        var lidMesh = new THREE.InstancedMesh(chestLidGeometry, mats.lid, list.length);
+        list.forEach(function (b, i) {
+          m.makeTranslation(b.x + 0.5, b.y + CHEST_BODY_H / 2, b.z + 0.5);
+          bodyMesh.setMatrixAt(i, m);
+          m.makeTranslation(b.x + 0.5, b.y + CHEST_BODY_H + CHEST_LID_H / 2, b.z + 0.5);
+          lidMesh.setMatrixAt(i, m);
+        });
+        bodyMesh.instanceMatrix.needsUpdate = true;
+        lidMesh.instanceMatrix.needsUpdate = true;
+        scene.add(bodyMesh);
+        scene.add(lidMesh);
+        blockMeshes.push(bodyMesh, lidMesh);
+        return;
+      }
+
+      resolveBlockMaterials(name);
+      var mesh = new THREE.InstancedMesh(boxGeometry, materialCache[name], list.length);
       list.forEach(function (b, i) {
         m.makeTranslation(b.x + 0.5, b.y + 0.5, b.z + 0.5);
         mesh.setMatrixAt(i, m);
@@ -769,6 +1052,8 @@ import * as THREE from "/vendor/three.module.min.js";
   function ensureScene() {
     if (renderer) return;
     boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+    chestBodyGeometry = new THREE.BoxGeometry(CHEST_FOOTPRINT, CHEST_BODY_H, CHEST_FOOTPRINT);
+    chestLidGeometry = new THREE.BoxGeometry(CHEST_FOOTPRINT, CHEST_LID_H, CHEST_FOOTPRINT);
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x0a0c10);
     scene.add(new THREE.AmbientLight(0xffffff, 0.6));
