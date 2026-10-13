@@ -88,7 +88,7 @@ func TestReconcileEnvCountNoopWhenAlreadyAtTarget(t *testing.T) {
 	envs := []rl.Environment{nil, nil}
 
 	gotConnected, gotEnvs, err := reconcileEnvCount(nil, nil, connected, envs, 2,
-		mcconfig.Settings{}, false, false, 0, nil, "", episodeLimits{}, "task", nil)
+		mcconfig.Settings{}, false, false, 0, nil, "", episodeLimits{}, "task", nil, nil)
 
 	require.NoError(t, err)
 	assert.Len(t, gotConnected, 2)
@@ -100,7 +100,7 @@ func TestReconcileEnvCountRejectsLessThanOne(t *testing.T) {
 	envs := []rl.Environment{nil, nil}
 
 	_, _, err := reconcileEnvCount(nil, nil, connected, envs, 0,
-		mcconfig.Settings{}, false, false, 0, nil, "", episodeLimits{}, "task", nil)
+		mcconfig.Settings{}, false, false, 0, nil, "", episodeLimits{}, "task", nil, nil)
 
 	assert.ErrorContains(t, err, "at least 1")
 }
