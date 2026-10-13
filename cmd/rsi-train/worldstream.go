@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -72,6 +73,18 @@ type worldStreamGoneEvent struct {
 // input (which bot to watch) is the URL itself, so there's nothing a
 // bidirectional protocol would buy here that plain net/http doesn't
 // already give for free.
+// isAirBlockName reports whether name is one of Minecraft's air variants
+// (regular, cave, or void air) - see worldStreamHandler's own call site
+// for why a ray-traced "visible" block can still come back named this.
+func isAirBlockName(name string) bool {
+	switch strings.TrimPrefix(name, "minecraft:") {
+	case "air", "cave_air", "void_air":
+		return true
+	default:
+		return false
+	}
+}
+
 func (r *agentRegistry) worldStreamHandler(w http.ResponseWriter, req *http.Request) {
 	index, err := strconv.Atoi(req.URL.Query().Get("index"))
 	if err != nil {
@@ -117,9 +130,25 @@ func (r *agentRegistry) worldStreamHandler(w http.ResponseWriter, req *http.Requ
 		if err != nil {
 			log.Printf("worldstream: FindAllVisibleBlocksInSphere for agent %d: %v", index, err)
 		} else {
-			blocks := make([]worldStreamBlock, len(visible))
-			for i, b := range visible {
-				blocks[i] = worldStreamBlock{X: b.X, Y: b.Y, Z: b.Z, Name: b.BlockName}
+			blocks := make([]worldStreamBlock, 0, len(visible))
+			for _, b := range visible {
+				if isAirBlockName(b.BlockName) {
+					// FindAllVisibleBlocksInSphere's own ray-trace only
+					// ever hits a loaded, non-passable (so non-air)
+					// block - but it re-reads each hit coordinate's
+					// stateID/name a second time afterward to build its
+					// result, which races a concurrent mine elsewhere on
+					// a shared server: if another bot mines that exact
+					// block between the ray hit and that re-read, the
+					// re-read can see air. Harmless to the training run
+					// itself (mc-agent's own bug, not this dashboard's,
+					// and nothing downstream here depends on this list
+					// being complete) - just skip it rather than hand
+					// the 3D view a block named "air" to texture as a
+					// solid cube.
+					continue
+				}
+				blocks = append(blocks, worldStreamBlock{X: b.X, Y: b.Y, Z: b.Z, Name: b.BlockName})
 			}
 			writeSSE(w, worldStreamBlocksEvent{Type: "blocks", Blocks: blocks})
 		}
