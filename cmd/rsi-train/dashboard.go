@@ -157,8 +157,24 @@ type agentSnapshot struct {
 	// mark (the bot finds its own block/table near wherever it already
 	// is). Recomputed every poll once Spawn is known, so it never goes
 	// stale relative to it.
-	Target    *vec3     `json:"target"`
+	Target *vec3 `json:"target"`
+	// UpdatedAt is stamped by updateEpisode alone - only when an actual
+	// RL step or Reset happens (instrumentedEnvironment, metrics.go),
+	// never by pollOnce. A single step can legitimately take several
+	// seconds of real time for a movement/mining task to physically
+	// complete before the environment calls Step again, so this is a
+	// training-activity signal, not a connection-health one - don't use
+	// it to decide whether the bot is still connected (see PolledAt for
+	// that; the two used to be conflated into one "stale" dot, which
+	// misread "mid-step" as "disconnected").
 	UpdatedAt time.Time `json:"updated_at"`
+	// PolledAt is stamped by pollOnce every time it successfully reads
+	// this bot's live position (runs once a second regardless of
+	// whether an RL step is in progress) - the connection-health signal
+	// UpdatedAt isn't: a healthy bot mid-mine keeps refreshing this
+	// every second even while UpdatedAt sits unchanged for the whole
+	// step's duration.
+	PolledAt time.Time `json:"polled_at"`
 
 	agent models.Agent
 
@@ -304,6 +320,7 @@ func (r *agentRegistry) pollOnce() {
 
 		r.mu.Lock()
 		if ok {
+			b.PolledAt = time.Now()
 			b.X, b.Y, b.Z, b.Yaw, b.Pitch = pos.X, pos.Y, pos.Z, yaw, pitch
 			b.Nearby = nearby
 			if b.needsSpawnCapture {

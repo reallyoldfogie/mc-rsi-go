@@ -182,10 +182,10 @@
 <div id="sidebar">
   <h1>Agents</h1>
   <div id="legend">
-    <div class="legend-item"><span class="dot live"></span> Live - updated in the last 5s</div>
+    <div class="legend-item"><span class="dot live"></span> Connected - responded in the last 5s</div>
     <div class="legend-item"><span class="dot ok"></span> Last episode succeeded</div>
     <div class="legend-item"><span class="dot fail"></span> Last episode failed</div>
-    <div class="legend-item"><span class="dot stale"></span> Stale - no update in 5s+</div>
+    <div class="legend-item"><span class="dot stale"></span> Disconnected - no response in 5s+</div>
   </div>
   <div id="rows"></div>
 </div>
@@ -195,7 +195,7 @@
   <div id="plot-wrap">
     <canvas id="plot"></canvas>
     <canvas id="camera-canvas"></canvas>
-    <div id="stale-overlay">Connection stale - no update in 5s+</div>
+    <div id="stale-overlay">Connection lost - no response in 5s+</div>
   </div>
 </div>
 <script>
@@ -275,20 +275,47 @@
     });
   }
 
+  // statusDot is a CONNECTION-health signal - keyed off polled_at
+  // (pollOnce, dashboard.go, stamped every ~1s whenever reading this
+  // bot's live position actually succeeds), not updated_at. These two
+  // used to be conflated into one "stale" dot keyed off updated_at
+  // alone, which is a TRAINING-activity timestamp (only advances on an
+  // actual RL step/Reset - metrics.go) - a bot mid-mine or mid-walk can
+  // legitimately go several seconds between steps while its connection
+  // stays perfectly healthy the whole time, which made "stale" the
+  // dot's resting state rather than a real signal. See
+  // stepFreshnessText below for the other half of the split.
   function statusDot(a) {
-    var ageMs = Date.now() - new Date(a.updated_at).getTime();
+    var ageMs = Date.now() - new Date(a.polled_at).getTime();
     if (ageMs > 5000) return "stale";
     if (a.last_outcome === "success") return "ok";
     if (a.last_outcome === "failure") return "fail";
     return "live";
   }
 
+  // stepFreshnessText is updated_at's own signal, split back out as
+  // plain text rather than a second traffic-light dot - unlike
+  // connection health, there's no meaningful "this is bad" threshold
+  // for step cadence (it's expected to vary from under a second to
+  // many seconds depending on the task), so showing the actual elapsed
+  // time is more honest than inventing an arbitrary color cutoff.
+  function stepFreshnessText(a) {
+    var ageMs = Date.now() - new Date(a.updated_at).getTime();
+    if (ageMs < 1000) return "just now";
+    if (ageMs < 60000) return Math.round(ageMs / 1000) + "s ago";
+    return Math.round(ageMs / 60000) + "m ago";
+  }
+
   // updateStaleOverlay shows #stale-overlay (over whichever of the 2D
   // plot/3D camera view is currently visible) exactly when the selected
   // agent's own dot would read "stale" - same statusDot call the sidebar
-  // row already uses, so the overlay and that dot never disagree. No
-  // overlay in the "All agents" view (a is null) - staleness is a
-  // per-agent thing, and each row already carries its own dot there.
+  // row already uses, so the overlay and that dot never disagree. Now
+  // that statusDot is connection-health-only (see its own doc comment),
+  // this correctly means "connection lost," not "mid-step" - showing
+  // the overlay just because a mining/movement action is taking a while
+  // would have been actively misleading. No overlay in the "All agents"
+  // view (a is null) - staleness is a per-agent thing, and each row
+  // already carries its own dot there.
   function updateStaleOverlay(a) {
     document.getElementById("stale-overlay").classList.toggle("visible", !!a && statusDot(a) === "stale");
   }
@@ -361,12 +388,13 @@
       stat("Goal", a.goal || "-") +
       stat("Last action", a.last_action || "-") +
       stat("Episode step", a.episode_step) +
+      stat("Last step", stepFreshnessText(a)) +
       stat("Last outcome", a.last_outcome || "in progress") +
       stat("Position", a.x.toFixed(1) + ", " + a.y.toFixed(1) + ", " + a.z.toFixed(1)) +
       stat("Yaw / pitch", a.yaw.toFixed(0) + "° / " + a.pitch.toFixed(0) + "°") +
       stat("Health", a.health.toFixed(1) + " / 20") +
       stat("Food", a.food + " / 20") +
-      stat("Updated", new Date(a.updated_at).toLocaleTimeString());
+      stat("Connected", new Date(a.polled_at).toLocaleTimeString());
     document.getElementById("view-toggle-btn").onclick = onViewToggleClick;
   }
 
