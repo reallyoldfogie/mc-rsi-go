@@ -321,47 +321,37 @@ func TestApplyAutoResetOriginNeverOverridesAnOperatorConfiguredResetOriginOrJitt
 
 func TestApplySharedServerWorkingAreaIndexZeroHasZeroOffset(t *testing.T) {
 	cfg := rlenv.Config{}
-	agent := fakePositionProvider{pos: models.V3{X: 1, Y: 2, Z: 3}, initialized: true}
+	sharedBase := [3]float64{1, 2, 3}
 
-	err := applySharedServerWorkingArea(&cfg, agent, 0, 16)
+	applySharedServerWorkingArea(&cfg, sharedBase, 0, 16)
 
-	require.NoError(t, err)
 	require.NotNil(t, cfg.ResetOrigin)
-	assert.Equal(t, [3]float64{1, 2, 3}, *cfg.ResetOrigin, "index 0's working area must equal the captured reference position exactly")
+	assert.Equal(t, [3]float64{1, 2, 3}, *cfg.ResetOrigin, "index 0's working area must equal sharedBase exactly")
 }
 
 func TestApplySharedServerWorkingAreaOffsetsSubsequentIndices(t *testing.T) {
 	cfg := rlenv.Config{}
-	agent := fakePositionProvider{pos: models.V3{X: 1, Y: 2, Z: 3}, initialized: true}
+	sharedBase := [3]float64{1, 2, 3}
 
-	err := applySharedServerWorkingArea(&cfg, agent, 2, 16)
+	applySharedServerWorkingArea(&cfg, sharedBase, 2, 16)
 
-	require.NoError(t, err)
 	require.NotNil(t, cfg.ResetOrigin)
 	assert.Equal(t, [3]float64{1 + 2*16*16, 2, 3}, *cfg.ResetOrigin)
 }
 
-func TestApplySharedServerWorkingAreaUsesAlreadySetResetOriginAsBase(t *testing.T) {
-	explicitOrigin := [3]float64{100, 5, -50}
-	cfg := rlenv.Config{ResetOrigin: &explicitOrigin}
-	agent := fakePositionProvider{pos: models.V3{X: 1, Y: 2, Z: 3}, initialized: true}
+func TestApplySharedServerWorkingAreaIgnoresAnyPreexistingResetOrigin(t *testing.T) {
+	// sharedBase, not cfg's own (possibly stale/already-offset) ResetOrigin,
+	// must be the only thing this reads - see its own doc comment for the
+	// compounding-drift bug that relying on cfg.ResetOrigin used to cause.
+	staleOrigin := [3]float64{999999, 999, 999999}
+	cfg := rlenv.Config{ResetOrigin: &staleOrigin}
+	sharedBase := [3]float64{100, 5, -50}
 
-	err := applySharedServerWorkingArea(&cfg, agent, 1, 16)
+	applySharedServerWorkingArea(&cfg, sharedBase, 1, 16)
 
-	require.NoError(t, err)
 	require.NotNil(t, cfg.ResetOrigin)
 	assert.Equal(t, [3]float64{100 + 16*16, 5, -50}, *cfg.ResetOrigin,
-		"an already-set ResetOrigin (operator config, or a preceding applyAutoResetOrigin call) must be used as the offset base, not the agent's own live position")
-}
-
-func TestApplySharedServerWorkingAreaErrorsWhenPositionNotYetKnownAndNoResetOriginSet(t *testing.T) {
-	cfg := rlenv.Config{}
-	agent := fakePositionProvider{initialized: false}
-
-	err := applySharedServerWorkingArea(&cfg, agent, 1, 16)
-
-	assert.Error(t, err, "unlike applyAutoResetOrigin, an unknown position must be a hard error here — a bot with no working area assigned would collide with bot 0")
-	assert.Nil(t, cfg.ResetOrigin)
+		"must overwrite cfg.ResetOrigin from sharedBase, ignoring whatever was already there")
 }
 
 // TestLoadOrInitTeacherCreatesAndPersistsGenerationZero verifies the

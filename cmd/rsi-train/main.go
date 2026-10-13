@@ -270,7 +270,7 @@ func run(args []string) error {
 		initialParallelEnvs = persisted
 	}
 
-	connected, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumPool, f.packetLogDir(), f.episodeLimits())
+	connected, sharedOriginBase, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumPool, f.packetLogDir(), f.episodeLimits())
 	if err != nil {
 		return err
 	}
@@ -550,7 +550,7 @@ func run(args []string) error {
 				mcSettings, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks,
 				curriculumPool, f.packetLogDir(),
 				f.episodeLimits(),
-				episodeTask, agents)
+				episodeTask, agents, &sharedOriginBase)
 			if rcErr != nil {
 				log.Printf("round %d: scaling to %d parallel envs failed, continuing with %d: %v", round, n, len(connected), rcErr)
 			} else {
@@ -972,36 +972,38 @@ func applyAutoResetOrigin(cfg *rlenv.Config, a positionProvider, rconAddress str
 
 // applySharedServerWorkingArea implements -shared-server's per-bot
 // working-area separation (docs/plans/08-parallel-environments-and-scaling.md):
-// gives bot index its own working area, separationChunks chunks from a
-// reference point, along X (see pkg/parallelenv.WorkingAreaOffset). The
-// reference point is cfg.ResetOrigin if already set (by the operator's
-// own config, or by a preceding applyAutoResetOrigin call for this same
-// bot — both compose for free), otherwise a's own live position,
-// captured the same way applyAutoResetOrigin does.
+// gives bot index its own working area, separationChunks chunks from
+// sharedBase, along X (see pkg/parallelenv.WorkingAreaOffset). Always sets
+// cfg.ResetOrigin (overwriting one that's already there): every bot MUST
+// get its own distinct working area for -shared-server mode to mean
+// anything — reusing a single shared reference point unmodified for every
+// bot would be a spawn collision, not a graceful degradation.
 //
-// Unlike applyAutoResetOrigin, this always sets cfg.ResetOrigin
-// (overwriting one that's already there) and returns an error rather
-// than silently leaving it unset: every bot MUST get its own distinct
-// working area for -shared-server mode to mean anything — reusing a
-// single shared reference point unmodified for every bot would be a
-// spawn collision, not a graceful degradation.
-func applySharedServerWorkingArea(cfg *rlenv.Config, a positionProvider, index, separationChunks int) error {
-	base := [3]float64{}
-	if cfg.ResetOrigin != nil {
-		base = *cfg.ResetOrigin
-	} else {
-		pos, ok := a.GetPositionSimple()
-		if !ok {
-			return fmt.Errorf("shared-server: bot %d position not known yet", index)
-		}
-		base = [3]float64{pos.X, pos.Y, pos.Z}
-	}
-
+// Takes sharedBase directly rather than deriving one from this bot's own
+// position or ResetOrigin, which is what it used to do (via cfg.ResetOrigin
+// if already set, else this bot's own live position) - found live
+// 2026-10-12/13 to compound without bound:
+// ResetOrigin causes a real teleport there every episode, so it persists
+// physically in-game across a restart. Re-deriving the base from a bot's
+// own ResetOrigin (or live position, which by then equals it) on a LATER
+// restart picks up a value that already includes THIS bot's own prior
+// offset - adding the offset again doubles it, and doing that on every
+// restart compounds by index*separationChunks*16 forever. Ten bots 14
+// days into this run had drifted 38 to 97,000+ blocks apart - nowhere
+// near the intended "share a compact, nearby region" design
+// -shared-server-separation-chunks exists for.
+//
+// Callers (connectEnvironmentRange) establish sharedBase exactly once per
+// process lifetime, from whichever bot's own position/ResetOrigin was
+// captured first, and reuse that same value for every bot's own working
+// area (including index 0, trivially, since WorkingAreaOffset(0, ...) is
+// zero) - never re-deriving it from a bot's own (now offset-including)
+// ResetOrigin again, so nothing here has anything left to compound.
+func applySharedServerWorkingArea(cfg *rlenv.Config, sharedBase [3]float64, index, separationChunks int) {
 	offset := parallelenv.WorkingAreaOffset(index, separationChunks)
-	origin := [3]float64{base[0] + offset[0], base[1] + offset[1], base[2] + offset[2]}
+	origin := [3]float64{sharedBase[0] + offset[0], sharedBase[1] + offset[1], sharedBase[2] + offset[2]}
 	cfg.ResetOrigin = &origin
 	log.Printf("shared-server: bot %d working area at (%.1f,%.1f,%.1f)", index, origin[0], origin[1], origin[2])
-	return nil
 }
 
 // sharedServerGamerules is applied once, automatically, whenever
@@ -1767,16 +1769,16 @@ func (f flags) packetLogDir() string {
 // On a mid-loop failure, every already-connected agent is closed before
 // the error is returned, so a partial connect never leaks live bot
 // sessions.
-func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, error) {
+func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, [3]float64, error) {
 	if sharedServer {
 		if base.RCON.Address == "" {
-			return nil, fmt.Errorf("rsi-train: -shared-server requires RCON to be configured in -mc-agent-config")
+			return nil, [3]float64{}, fmt.Errorf("rsi-train: -shared-server requires RCON to be configured in -mc-agent-config")
 		}
 		if err := applySharedServerGamerules(ctx, base.RCON.Address, base.RCON.Password); err != nil {
-			return nil, fmt.Errorf("applying shared-server gamerules: %w", err)
+			return nil, [3]float64{}, fmt.Errorf("applying shared-server gamerules: %w", err)
 		}
 	}
-	return connectEnvironmentRange(ctx, base, 0, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits)
+	return connectEnvironmentRange(ctx, base, 0, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits, nil)
 }
 
 // connectEnvironmentRange connects environments at indices [start, n) out
@@ -1790,12 +1792,26 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 // smaller-n call already connected and is actively using. See
 // reconcileEnvCount, the live POST /config/parallel-envs path this
 // exists for.
-func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, error) {
+//
+// sharedOriginBase is applySharedServerWorkingArea's own shared reference
+// point (see its doc comment for why this must never be re-derived from a
+// bot's own position/ResetOrigin after the very first time) - nil on the
+// initial call (connectEnvironments' only caller), which then establishes
+// it from the first bot connected here (index start) and returns it so a
+// later call adding more bots (reconcileEnvCount, growing an already-
+// running set) can pass the SAME value back in rather than letting a new
+// bot's own index-start position become a second, inconsistent base.
+func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits, sharedOriginBase *[3]float64) ([]connectedEnvironment, [3]float64, error) {
 	connected := make([]connectedEnvironment, 0, n-start)
 	closeAll := func() {
 		for _, c := range connected {
 			closeConnectedAgent(c.agent)
 		}
+	}
+
+	var resolvedBase [3]float64
+	if sharedOriginBase != nil {
+		resolvedBase = *sharedOriginBase
 	}
 
 	for i := start; i < n; i++ {
@@ -1813,19 +1829,19 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 		a, err := connectAgent(ctx, settings, suffix, trainingDataDir)
 		if err != nil {
 			closeAll()
-			return nil, fmt.Errorf("connecting environment %d/%d: %w", i, n, err)
+			return nil, resolvedBase, fmt.Errorf("connecting environment %d/%d: %w", i, n, err)
 		}
 		if err := opAgent(ctx, a, settings.Connection.Name); err != nil {
 			closeConnectedAgent(a)
 			closeAll()
-			return nil, fmt.Errorf("granting operator status to environment %d/%d: %w", i, n, err)
+			return nil, resolvedBase, fmt.Errorf("granting operator status to environment %d/%d: %w", i, n, err)
 		}
 
 		liveAgent, ok := a.(rlenv.LiveAgent)
 		if !ok {
 			closeConnectedAgent(a)
 			closeAll()
-			return nil, fmt.Errorf("environment %d/%d: agent does not satisfy rlenv.LiveAgent (missing InventoryCount/Craftable/BlockNameAt/HealthProvider?)", i, n)
+			return nil, resolvedBase, fmt.Errorf("environment %d/%d: agent does not satisfy rlenv.LiveAgent (missing InventoryCount/Craftable/BlockNameAt/HealthProvider?)", i, n)
 		}
 
 		envCfg := settings.Env.ToRlenvConfig()
@@ -1834,11 +1850,21 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			applyAutoResetOrigin(&envCfg, a, settings.RCON.Address)
 		}
 		if sharedServer {
-			if err := applySharedServerWorkingArea(&envCfg, a, i, separationChunks); err != nil {
-				closeConnectedAgent(a)
-				closeAll()
-				return nil, fmt.Errorf("environment %d/%d: %w", i, n, err)
+			if sharedOriginBase == nil && i == start {
+				// First bot processed in this call establishes the shared
+				// base for every bot connected here, and (via this
+				// function's own return value) every bot a later
+				// reconcileEnvCount call adds too - see
+				// applySharedServerWorkingArea's own doc comment for why
+				// this must happen exactly once per process lifetime.
+				if envCfg.ResetOrigin == nil {
+					closeConnectedAgent(a)
+					closeAll()
+					return nil, resolvedBase, fmt.Errorf("environment %d/%d: -shared-server needs a reference position - set -auto-reset-origin, or configure ResetOrigin explicitly", i, n)
+				}
+				resolvedBase = *envCfg.ResetOrigin
 			}
+			applySharedServerWorkingArea(&envCfg, resolvedBase, i, separationChunks)
 		}
 		if curriculumPool != nil {
 			// See craftIngredientSeeder's own doc comment: this is also what
@@ -1906,7 +1932,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			if err != nil {
 				closeConnectedAgent(a)
 				closeAll()
-				return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
+				return nil, resolvedBase, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
 			}
 			connected = append(connected, connectedEnvironment{
 				agent:                  a,
@@ -1924,7 +1950,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 		if err != nil {
 			closeConnectedAgent(a)
 			closeAll()
-			return nil, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
+			return nil, resolvedBase, fmt.Errorf("constructing environment %d/%d: %w", i, n, err)
 		}
 
 		connected = append(connected, connectedEnvironment{
@@ -1937,7 +1963,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			stopWatch:              make(chan struct{}),
 		})
 	}
-	return connected, nil
+	return connected, resolvedBase, nil
 }
 
 // reconcileEnvCount adjusts connected/envs to have exactly n entries,
@@ -1954,7 +1980,7 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 // field's own doc comment) so watchForUnexpectedExit's watcher for it
 // exits quietly instead of treating the close as an unexpected session
 // end and stopping the whole run.
-func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected []connectedEnvironment, envs []rl.Environment, n int, base mcconfig.Settings, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits, episodeTask string, agents *agentRegistry) ([]connectedEnvironment, []rl.Environment, error) {
+func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected []connectedEnvironment, envs []rl.Environment, n int, base mcconfig.Settings, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits, episodeTask string, agents *agentRegistry, sharedOriginBase *[3]float64) ([]connectedEnvironment, []rl.Environment, error) {
 	current := len(connected)
 	if n == current {
 		return connected, envs, nil
@@ -1972,7 +1998,7 @@ func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected [
 		return connected[:n], envs[:n], nil
 	}
 
-	added, err := connectEnvironmentRange(ctx, base, current, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits)
+	added, _, err := connectEnvironmentRange(ctx, base, current, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits, sharedOriginBase)
 	if err != nil {
 		return connected, envs, fmt.Errorf("connecting %d additional environment(s): %w", n-current, err)
 	}
