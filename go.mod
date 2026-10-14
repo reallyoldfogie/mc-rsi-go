@@ -6,7 +6,7 @@ require (
 	github.com/moby/moby/client v0.2.1
 	github.com/prometheus/client_golang v1.24.0
 	github.com/reallyoldfogie/cRL-go v0.14.0
-	github.com/reallyoldfogie/mc-agent v0.0.44
+	github.com/reallyoldfogie/mc-agent v0.0.45
 	github.com/reallyoldfogie/mc-bot-go v0.2.7
 	github.com/reallyoldfogie/mc-client-test-go v0.2.0
 	github.com/stretchr/testify v1.12.1
