@@ -31,11 +31,20 @@ func farPool() curriculum.Pool {
 	return p
 }
 
+func buriedPool() curriculum.Pool {
+	p := fullPool()
+	p.MineBuriedTargetBlocks = []string{"minecraft:coal_ore"}
+	p.MineBuriedSearchRadius = 10
+	p.MineBuriedRequiredTool = "minecraft:wooden_pickaxe"
+	return p
+}
+
 func chainPool() curriculum.Pool {
 	p := fullPool()
 	p.ChainTargetOffsets = [][3]float64{{18, 0, 0}, {0, 0, -18}}
 	p.ChainGoalItems = []string{"minecraft:bowl", "minecraft:chest"}
 	p.ChainSearchRadius = 8
+	p.ChainMineTargetBlocks = []string{"minecraft:coal_ore"}
 	return p
 }
 
@@ -154,6 +163,40 @@ func TestSelectProducesTheFarKindsWithTheirOwnParameters(t *testing.T) {
 	}
 }
 
+// TestSelectProducesMineBuriedWithItsOwnParameters mirrors
+// TestSelectProducesTheFarKindsWithTheirOwnParameters for mine_buried
+// (docs/plans/14): it has no goto/far-seed component, but does carry its
+// own search radius and required tool, separate from the plain mine task's.
+func TestSelectProducesMineBuriedWithItsOwnParameters(t *testing.T) {
+	pool := buriedPool()
+	rng := rand.New(rand.NewPCG(3, 4))
+	seen := map[string]bool{}
+	for range 2000 {
+		task := Select(pool, rng)
+		seen[task.Name()] = true
+		if task, ok := task.(mineBuriedTask); ok {
+			assert.Contains(t, pool.MineBuriedTargetBlocks, task.block)
+			assert.Equal(t, 10, task.searchRadius, "the buried search radius, not the plain mine task's")
+			assert.Equal(t, "minecraft:wooden_pickaxe", task.requiredTool)
+		}
+	}
+	for _, name := range []string{"goto", "mine", "craft", "mine_buried"} {
+		assert.True(t, seen[name], "%s must be reachable", name)
+	}
+}
+
+// A pool without MineBuriedTargetBlocks must never select mine_buried —
+// Available() gating it out, not an empty-string task sneaking through.
+func TestMineBuriedNeedsTargetBlocks(t *testing.T) {
+	p := fullPool() // MineBuriedTargetBlocks deliberately left empty
+	assert.False(t, mineBuriedFactory{}.Available(p))
+
+	rng := rand.New(rand.NewPCG(7, 8))
+	for range 200 {
+		assert.NotEqual(t, "mine_buried", Select(p, rng).Name())
+	}
+}
+
 func TestFarKindsNeedBothOffsetsAndTargets(t *testing.T) {
 	p := fullPool()
 	p.MineFarTargetOffsets = [][3]float64{{24, 0, 0}} // no blocks
@@ -219,11 +262,32 @@ func TestChainTasksCarryTheirStageAndItems(t *testing.T) {
 			assert.Equal(t, curriculum.ChainTableItem, task.craftItem)
 		case 4:
 			assert.Contains(t, pool.ChainGoalItems, task.craftItem)
+		case 5:
+			assert.Contains(t, pool.ChainGoalItems, task.craftItem, "chain_mine still crafts a goal item first")
+			assert.Contains(t, pool.ChainMineTargetBlocks, task.mineTarget)
 		}
 	}
-	for _, name := range []string{"chain_gather", "chain_table", "chain_place", "chain_use"} {
+	for _, name := range []string{"chain_gather", "chain_table", "chain_place", "chain_use", "chain_mine"} {
 		assert.True(t, seen[name], "%s must be reachable", name)
 	}
+}
+
+// TestChainMineNeedsAGoalItemAndABuriedBlock mirrors
+// TestChainKindsNeedOffsetsAndARadiusAndStageFourAlsoNeedsGoals for
+// chain_mine (docs/plans/14): it needs both a goal item to craft (the
+// same requirement stage 4 has) *and* at least one buried block to mine
+// afterward — either missing leaves it unavailable.
+func TestChainMineNeedsAGoalItemAndABuriedBlock(t *testing.T) {
+	p := fullPool()
+	p.ChainTargetOffsets = [][3]float64{{18, 0, 0}}
+	p.ChainSearchRadius = 8
+	assert.False(t, chainMineFactory{}.Available(p), "needs a goal item and a buried block")
+
+	p.ChainGoalItems = []string{"minecraft:wooden_pickaxe"}
+	assert.False(t, chainMineFactory{}.Available(p), "a goal item alone isn't enough")
+
+	p.ChainMineTargetBlocks = []string{"minecraft:coal_ore"}
+	assert.True(t, chainMineFactory{}.Available(p))
 }
 
 func TestChainTaskToOverrideCarriesTheTreeBlockAndStage(t *testing.T) {
@@ -238,6 +302,33 @@ func TestChainTaskToOverrideCarriesTheTreeBlockAndStage(t *testing.T) {
 	assert.Equal(t, 2, o.ChainStage)
 	assert.True(t, o.SeedAtGoal, "the tree must be seeded beside the goto target")
 	assert.True(t, o.CollectDrops, "the mined logs must reach the inventory")
+}
+
+// TestChainMineTaskToOverrideCarriesTheMineTargetBlock mirrors
+// TestChainTaskToOverrideCarriesTheTreeBlockAndStage for chain_mine's one
+// extra field.
+func TestChainMineTaskToOverrideCarriesTheMineTargetBlock(t *testing.T) {
+	task := chainTask{
+		stage:        rlenv.ChainMine,
+		offset:       [3]float64{18, 0, 0},
+		searchRadius: 8,
+		craftItem:    "minecraft:wooden_pickaxe",
+		mineTarget:   "minecraft:coal_ore",
+	}
+	o := task.ToOverride()
+
+	assert.Equal(t, "minecraft:wooden_pickaxe", o.CraftTargetItem)
+	assert.Equal(t, rlenv.ChainMine, o.ChainStage)
+	assert.Equal(t, "minecraft:coal_ore", o.ChainMineTargetBlock)
+	// Everything else is identical to every other chain stage.
+	assert.Equal(t, curriculum.ChainTreeBlock, o.MineTargetBlock, "the gather stage's log target is unchanged")
+	assert.True(t, o.SeedAtGoal)
+	assert.True(t, o.CollectDrops)
+}
+
+func TestGoalDescriptionForChainMineNamesTheMiningGoalNotTheCraft(t *testing.T) {
+	task := chainTask{stage: rlenv.ChainMine, craftItem: "minecraft:wooden_pickaxe", mineTarget: "minecraft:coal_ore"}
+	assert.Equal(t, "mine buried coal_ore", task.GoalDescription(), "chain_mine's actual success condition is mining, not crafting")
 }
 
 // A pool without a chain must select exactly as it did before the chain
@@ -314,6 +405,17 @@ func TestMineTaskToOverrideEnablesOnlyMine(t *testing.T) {
 	assert.True(t, o.GoToTargetDisabled)
 	assert.Equal(t, "minecraft:stone", o.MineTargetBlock)
 	assert.Equal(t, 12, o.MineSearchRadius)
+	assert.Empty(t, o.CraftTargetItem)
+}
+
+func TestMineBuriedTaskToOverrideEnablesOnlyMine(t *testing.T) {
+	o := mineBuriedTask{block: "minecraft:coal_ore", searchRadius: 10, requiredTool: "minecraft:wooden_pickaxe"}.ToOverride()
+
+	assert.True(t, o.GoToTargetDisabled)
+	assert.Equal(t, "minecraft:coal_ore", o.MineTargetBlock)
+	assert.Equal(t, 10, o.MineSearchRadius)
+	assert.Equal(t, "minecraft:wooden_pickaxe", o.MineRequiredTool)
+	assert.True(t, o.MineTargetBuried, "the target is already in the world; DefaultEpisodeSeeder must not place a fresh one")
 	assert.Empty(t, o.CraftTargetItem)
 }
 

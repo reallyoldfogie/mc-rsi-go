@@ -48,6 +48,22 @@ type Pool struct {
 	// episode samples uniformly from (e.g. "minecraft:stick").
 	CraftTargetItems []string
 
+	// MineBuriedTargetBlocks/MineBuriedSearchRadius/MineBuriedRequiredTool
+	// pose "mine_buried" (docs/plans/14): like the plain mine task above —
+	// no goto/far-seed component, the target is already within reach — but
+	// targeting ore baked into the shared template's underground stone
+	// band instead of the on-the-surface variety MineTargetBlocks draws
+	// from, with a tool (e.g. "minecraft:wooden_pickaxe") seeded into
+	// inventory first, since mc-agent has no tool-tier gating of its own
+	// but the live server does, and digging through stone bare-handed is
+	// both unrealistic and slow. MineBuriedRequiredTool is shared across
+	// every mine_buried episode, not itself sampled, the same way
+	// MineSearchRadius is for the plain mine task. Empty blocks disable
+	// the type.
+	MineBuriedTargetBlocks []string
+	MineBuriedSearchRadius int
+	MineBuriedRequiredTool string
+
 	// MineFarTargetOffsets/MineFarBlocks/MineFarSearchRadius pose "go there,
 	// then mine": a mine block is placed beside a goto target sampled from
 	// MineFarTargetOffsets. The search radius must be smaller than the
@@ -82,4 +98,15 @@ type Pool struct {
 	ChainTargetOffsets [][3]float64
 	ChainGoalItems     []string
 	ChainSearchRadius  int
+
+	// ChainMineTargetBlocks poses stage 5 (ChainMine, "chain_buried_mining,"
+	// docs/plans/14): same gather/table/place/craft sequence as stage 4
+	// (ChainGoalItems still picks the tool to craft — e.g.
+	// "minecraft:wooden_pickaxe"), but once crafted the chain switches to
+	// finding and mining one of these block names, baked into the shared
+	// working-area template's underground stone band rather than seeded
+	// per episode (unlike the tree, which still is). Shares
+	// ChainTargetOffsets/ChainSearchRadius with every other chain stage.
+	// Empty disables the type, same as every other *TargetBlocks field.
+	ChainMineTargetBlocks []string
 }

@@ -765,6 +765,29 @@ func TestLoadCurriculumPoolReadsTheChainKeys(t *testing.T) {
 	assert.Equal(t, 8, pool.ChainSearchRadius)
 }
 
+// TestLoadCurriculumPoolReadsTheBuriedMiningKeys mirrors
+// TestLoadCurriculumPoolReadsTheChainKeys for docs/plans/14's two buried-
+// block task kinds — a real gap caught while live-testing: these fields
+// existed on curriculum.Pool but were never added to this command's own
+// on-disk JSON shape, leaving both task kinds unreachable from any run
+// driven by -curriculum-config.
+func TestLoadCurriculumPoolReadsTheBuriedMiningKeys(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "curriculum.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"target_offsets": [[5,0,0]],
+		"mine_buried_target_blocks": ["minecraft:coal_ore"],
+		"mine_buried_search_radius": 24,
+		"mine_buried_required_tool": "minecraft:wooden_pickaxe",
+		"chain_mine_target_blocks": ["minecraft:coal_ore"]
+	}`), 0o600))
+	pool, err := loadCurriculumPool(path)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"minecraft:coal_ore"}, pool.MineBuriedTargetBlocks)
+	assert.Equal(t, 24, pool.MineBuriedSearchRadius)
+	assert.Equal(t, "minecraft:wooden_pickaxe", pool.MineBuriedRequiredTool)
+	assert.Equal(t, []string{"minecraft:coal_ore"}, pool.ChainMineTargetBlocks)
+}
+
 func TestActionNamesIncludePlace(t *testing.T) {
 	assert.Equal(t, "place", actionName(rlenv.ActionPlace))
 }
