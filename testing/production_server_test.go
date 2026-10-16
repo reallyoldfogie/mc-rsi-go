@@ -65,7 +65,7 @@ func TestEnsureProductionServerLive(t *testing.T) {
 		WithViewDistance(4), // -shared-server's working-area separation depends on this staying small - see WithViewDistance's own doc comment.
 		WithDataDir(dataDir),
 		WithExtraEnv(map[string]string{
-			"LEVEL_TYPE": "FLAT", // vanilla's default flat recipe (bedrock, 2x dirt, grass_block) - matches what every working area's ground was verified to be, live, 2026-10-04. (TYPE picks the server software, e.g. VANILLA/PAPER - not the world generator; that's LEVEL_TYPE.)
+			"LEVEL_TYPE": "FLAT", // vanilla's default flat recipe (bedrock, 2x dirt, grass_block) - matches what every working area's ground was verified to be, live, 2026-10-04. (TYPE picks the server software, e.g. VANILLA/PAPER - not the world generator; that's LEVEL_TYPE.) Deliberately NOT paired with GeneratorSettingsDeepStoneBand the way docs/plans/14's other call sites now are (2026-10-16): this test's whole point is matching real production's CURRENT world shape, and production itself hasn't had that plan's Part 1 step 1 (a separate, destructive, operator-gated world recreate) run against it yet - pairing it here would make this test assert a parity that doesn't exist yet. Revisit once that migration actually happens.
 			"MEMORY":     "1G",   // matches the crash reports' own "-Xmx1G -Xms1G" from before this test existed.
 		}),
 	)

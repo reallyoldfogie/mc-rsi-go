@@ -54,7 +54,7 @@ func TestLaunchLongRunSharedServer(t *testing.T) {
 	defer cancel()
 
 	server, err := EnsureServer(ctx, &settings,
-		WithExtraEnv(map[string]string{"LEVEL_TYPE": "FLAT"}),
+		WithExtraEnv(map[string]string{"LEVEL_TYPE": "FLAT", "GENERATOR_SETTINGS": GeneratorSettingsDeepStoneBand}),
 		WithViewDistance(4),
 	)
 	require.NoError(t, err)

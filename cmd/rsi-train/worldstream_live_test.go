@@ -54,7 +54,7 @@ func TestWorldStreamLive(t *testing.T) {
 	defer cancel()
 
 	server, err := rsitesting.EnsureServer(ctx, &settings,
-		rsitesting.WithExtraEnv(map[string]string{"LEVEL_TYPE": "FLAT"}),
+		rsitesting.WithExtraEnv(map[string]string{"LEVEL_TYPE": "FLAT", "GENERATOR_SETTINGS": rsitesting.GeneratorSettingsDeepStoneBand}),
 		rsitesting.WithViewDistance(4),
 	)
 	require.NoError(t, err)

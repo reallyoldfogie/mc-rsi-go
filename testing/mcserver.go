@@ -125,6 +125,21 @@ func EnsureServer(ctx context.Context, settings *mcconfig.Settings, opts ...Serv
 // (e.g. LEVEL_TYPE) as well as add new keys.
 type ServerOption func(*testenv.ServerConfig)
 
+// GeneratorSettingsDeepStoneBand is the same custom flat-world preset
+// mc-agent's own testing/framework.go uses (bedrock, 59 stone, 3 dirt, 1
+// grass - bedrock at y=-64, stone y=-63..-5, dirt y=-4..-2, grass_block at
+// y=-1, surface/feet at y=0 on a modern extended-height world). See
+// docs/plans/14-buried-block-mining-and-memory-map.md's Part 1: vanilla's
+// own LEVEL_TYPE=FLAT default (bedrock + 2 dirt + grass only, no stone at
+// all) can't support anything that needs a buried-ore stone band to dig
+// through, and that plan's step 2 calls for pairing this with every
+// existing LEVEL_TYPE=FLAT call site in this repo's own test
+// infrastructure, for parity with mc-agent's identical preset and with
+// production's own eventual GENERATOR_SETTINGS migration (that plan's
+// Part 1 step 1 - a separate, destructive, operator-gated world recreate
+// this constant does not perform or assume has already happened).
+const GeneratorSettingsDeepStoneBand = `{"layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:stone","height":59},{"block":"minecraft:dirt","height":3},{"block":"minecraft:grass_block","height":1}],"biome":"minecraft:plains"}`
+
 // WithExtraEnv merges env into a launched server's container environment
 // (itzg/minecraft-server's own env-var config surface — see
 // https://github.com/itzg/docker-minecraft-server), on top of this
