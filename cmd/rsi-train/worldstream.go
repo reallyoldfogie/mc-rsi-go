@@ -34,7 +34,7 @@ const worldStreamBlockInterval = time.Second
 // eye position and look direction, same fields agentSnapshot already
 // reports over GET /agents, just pushed instead of polled.
 type worldStreamPositionEvent struct {
-	Index int     `json:"index,omitempty"`
+	Index int     `json:"index"`
 	Type  string  `json:"type"`
 	X     float64 `json:"x"`
 	Y     float64 `json:"y"`
@@ -58,7 +58,7 @@ type worldStreamBlock struct {
 // agent.FindAllVisibleBlocksInSphere's own doc comment for how "visible"
 // is defined: real ray-traced line of sight, not just "within some box").
 type worldStreamBlocksEvent struct {
-	Index  int                `json:"index,omitempty"`
+	Index  int                `json:"index"`
 	Type   string             `json:"type"`
 	Blocks []worldStreamBlock `json:"blocks"`
 }
@@ -67,7 +67,7 @@ type worldStreamBlocksEvent struct {
 // The browser uses each entity ID to update/remove billboards without
 // accumulating stale Three.js objects.
 type worldStreamEntitiesEvent struct {
-	Index    int            `json:"index,omitempty"`
+	Index    int            `json:"index"`
 	Type     string         `json:"type"`
 	Entities []nearbyEntity `json:"entities"`
 }
@@ -77,7 +77,7 @@ type worldStreamEntitiesEvent struct {
 // parallel-envs scale-down) — lets the frontend drop back to 2D with a
 // clear reason instead of just watching the connection go quiet.
 type worldStreamGoneEvent struct {
-	Index  int    `json:"index,omitempty"`
+	Index  int    `json:"index"`
 	Type   string `json:"type"`
 	Reason string `json:"reason"`
 }

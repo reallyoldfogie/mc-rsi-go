@@ -280,7 +280,7 @@ func TestWorldStreamEntitiesEventIncludesStableIDs(t *testing.T) {
 	}
 	body, err := json.Marshal(event)
 	require.NoError(t, err)
-	assert.JSONEq(t, `{"type":"entities","entities":[{"id":42,"type":"zombie","x":1,"y":2,"z":3}]}`, string(body))
+	assert.JSONEq(t, `{"index":0,"type":"entities","entities":[{"id":42,"type":"zombie","x":1,"y":2,"z":3}]}`, string(body))
 }
 
 func TestSummarizeNearbyEntitiesUnresolvedTypeFallsBackToNumericName(t *testing.T) {
