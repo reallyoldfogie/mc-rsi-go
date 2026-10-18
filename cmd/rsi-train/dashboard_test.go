@@ -133,6 +133,9 @@ func TestServeDashboardPageServesEmbeddedHTML(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "<!doctype html>")
 	assert.Contains(t, w.Body.String(), "setInterval(poll, 250)")
 	assert.Contains(t, w.Body.String(), "enterAll3DMode")
+	assert.Contains(t, w.Body.String(), "index=all")
+	assert.Contains(t, w.Body.String(), "grid-agent-dot")
+	assert.Contains(t, w.Body.String(), "viewMode === \"3d\"")
 	assert.Contains(t, w.Body.String(), "Armor · head → feet")
 }
 

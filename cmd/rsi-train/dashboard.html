@@ -177,6 +177,8 @@
     padding: 5px 7px;
     text-shadow: 0 1px 2px #000;
   }
+  .grid-cell .grid-agent-name { vertical-align: middle; }
+  .grid-cell .grid-agent-dot { display: inline-block; margin-right: 5px; vertical-align: -1px; }
   .grid-cell.blank { border-color: rgba(138,143,153,0.35); }
   /* Sits above whichever of #plot/#camera-canvas is currently visible
      (both are absolute/inset:0 siblings within #plot-wrap) - a plain
@@ -227,8 +229,9 @@
   var selected = null;
   var latest = [];
 
-  // viewMode is one of the four combinations below. The module script owns
-  // the Three.js canvas and exposes the matching enter/exit hooks.
+  // viewMode is shared by the all-agents and selected-agent views. The
+  // selected value only changes which scene is shown, never whether the
+  // dashboard is in 2D or 3D.
   var viewMode = "2d";
 
   // setViewMode flips which canvas is visible and refreshes the toggle
@@ -237,7 +240,7 @@
   // through here rather than setting viewMode directly.
   function setViewMode(mode) {
     viewMode = mode;
-    var is3D = mode === "single-3d" || mode === "all-3d";
+    var is3D = mode === "3d";
     document.getElementById("plot").style.display = is3D ? "none" : "block";
     document.getElementById("camera-canvas").style.display = is3D ? "block" : "none";
     var btn = document.getElementById("view-toggle-btn");
@@ -254,19 +257,14 @@
   }
 
   function onViewToggleClick() {
-    if (viewMode === "single-3d" || viewMode === "all-3d") {
+    if (viewMode === "3d") {
       exitViewMode();
-    } else {
-      if (selected === null) {
-        viewMode = "all-3d";
-        setViewMode("all-3d");
-        if (window.enterAll3DMode) window.enterAll3DMode(latest);
-      } else {
-        viewMode = "single-3d";
-        setViewMode("single-3d");
-        if (window.enter3DMode) window.enter3DMode(selected);
-      }
+      return;
     }
+    viewMode = "3d";
+    setViewMode("3d");
+    if (selected === null && window.enterAll3DMode) window.enterAll3DMode(latest);
+    if (selected !== null && window.enter3DMode) window.enter3DMode(selected);
   }
 
   // onCameraGone is the module script's one hook back into this script -
@@ -401,7 +399,7 @@
     if (selected === null) {
       el.innerHTML =
         "<button id='view-toggle-btn' class='view-toggle-btn'>" +
-        ((viewMode === "all-3d") ? "Switch to 2D" : "Switch to 3D") + "</button>" +
+        ((viewMode === "3d") ? "Switch to 2D" : "Switch to 3D") + "</button>" +
         "<div id='empty'>Viewing all agents - select one to zoom in.</div>";
       document.getElementById("view-toggle-btn").onclick = onViewToggleClick;
       return;
@@ -412,7 +410,7 @@
     }
     el.innerHTML =
       "<button id='view-toggle-btn' class='view-toggle-btn'>" +
-      ((viewMode === "single-3d") ? "Switch to 2D" : "Switch to 3D") + "</button>" +
+      ((viewMode === "3d") ? "Switch to 2D" : "Switch to 3D") + "</button>" +
       stat("Agent", (a.username || ("agent-" + a.index)) + phaseBadge(a)) +
       stat("Task", a.task || "-") +
       stat("Goal", a.goal || "-") +
@@ -428,19 +426,15 @@
     document.getElementById("view-toggle-btn").onclick = onViewToggleClick;
   }
 
-  // selectAgent is renderSidebar's one entry point for changing which
-  // agent is selected. Picking "All agents" (index === null) always drops
-  // back to 2D - the 3D view has no meaning without a single bot to watch.
-  // Picking a different agent while already in 3D re-points the stream at
-  // the new one rather than silently keeping the old agent on screen.
+  // selectAgent is renderSidebar's one entry point for changing which agent
+  // is selected. The current 2D/3D mode is preserved while switching
+  // between the aggregate grid and a single-agent scene.
   function selectAgent(index) {
     selected = index;
-    if (index === null) {
-      exitViewMode();
-    } else if (viewMode === "single-3d" && window.enter3DMode) {
+    if (viewMode === "3d" && index === null && window.enterAll3DMode) {
+      window.enterAll3DMode(latest);
+    } else if (viewMode === "3d" && index !== null && window.enter3DMode) {
       window.enter3DMode(index);
-    } else if (viewMode === "all-3d") {
-      exitViewMode();
     }
     render();
   }
@@ -673,7 +667,7 @@
     // The 3D view (canvas#camera-canvas) owns the screen while active and
     // redraws itself off its own EventSource/rAF loop - no need to also
     // keep repainting the hidden 2D canvas underneath it every tick.
-    if (viewMode === "single-3d" || viewMode === "all-3d") return;
+    if (viewMode === "3d") return;
 
     var canvas = document.getElementById("plot");
     var dpr = window.devicePixelRatio || 1;
@@ -813,7 +807,7 @@
     fetch("/agents").then(function (r) { return r.json(); }).then(function (data) {
       latest = data || [];
       updateTrails();
-      if (viewMode === "all-3d" && window.updateAll3DMode) window.updateAll3DMode(latest);
+      if (viewMode === "3d" && selected === null && window.updateAll3DMode) window.updateAll3DMode(latest);
       render();
     }).catch(function () { /* transient fetch error; try again next tick */ });
   }
@@ -841,6 +835,7 @@ import * as THREE from "/vendor/three.module.min.js";
   // block helpers. activeView selects which reusable agent view they target.
   var scene = null, camera = null, blockMeshes = [];
   var activeView = null, views = {};
+  var allEventSource = null;
   var rafId = null;
 
   // PLAYER_EYE_HEIGHT matches mc-agent's own models.PlayerEyeHeight - the
@@ -1223,25 +1218,50 @@ import * as THREE from "/vendor/three.module.min.js";
     view.entityMeshes = {};
   }
 
+  function applyStreamMessage(view, msg) {
+    activate(view);
+    if (msg.type === "position") {
+      updateCameraFromPosition(msg);
+    } else if (msg.type === "blocks") {
+      rebuildBlocks(msg.blocks || []);
+    } else if (msg.type === "entities") {
+      updateEntities(view, msg.entities || []);
+    }
+  }
+
   function startView(view) {
     view.eventSource = new EventSource("/agents/world?index=" + view.index);
     view.eventSource.onmessage = function (ev) {
       var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
-      activate(view);
-      if (msg.type === "position") updateCameraFromPosition(msg);
-      else if (msg.type === "blocks") rebuildBlocks(msg.blocks || []);
-      else if (msg.type === "entities") updateEntities(view, msg.entities || []);
-      else if (msg.type === "gone") {
+      if (msg.type === "gone") {
         closeView(view); delete views[String(view.index)];
         if (!Object.keys(views).length && window.onCameraGone) window.onCameraGone();
+      } else {
+        applyStreamMessage(view, msg);
       }
     };
   }
 
-  function ensureView(index) {
+  function startAllStream() {
+    allEventSource = new EventSource("/agents/world?index=all");
+    allEventSource.onmessage = function (ev) {
+      var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.index === undefined || msg.index === null) return;
+      var key = String(msg.index);
+      if (!views[key]) views[key] = newView(msg.index);
+      if (msg.type === "gone") {
+        closeView(views[key]); delete views[key];
+      } else {
+        applyStreamMessage(views[key], msg);
+      }
+    };
+  }
+
+  function ensureView(index, startSingleStream) {
     var key = String(index);
     if (!views[key]) views[key] = newView(index);
-    if (!views[key].eventSource) startView(views[key]);
+    if (startSingleStream && !views[key].eventSource) startView(views[key]);
+    return views[key];
   }
 
   function updateGridOverlay(agents) {
@@ -1254,9 +1274,26 @@ import * as THREE from "/vendor/three.module.min.js";
       cell.className = "grid-cell" + (i >= agents.length ? " blank" : "");
       cell.style.left = (i % cols) * 100 / cols + "%"; cell.style.top = Math.floor(i / cols) * 100 / rows + "%";
       cell.style.width = 100 / cols + "%"; cell.style.height = 100 / rows + "%";
-      if (i < agents.length) cell.textContent = agents[i].username || ("agent-" + agents[i].index);
+      if (i < agents.length) {
+        var agent = agents[i];
+        var dot = document.createElement("span");
+        dot.className = "dot grid-agent-dot " + gridStatusDot(agent);
+        var name = document.createElement("span");
+        name.className = "grid-agent-name";
+        name.textContent = agent.username || ("agent-" + agent.index);
+        cell.appendChild(dot);
+        cell.appendChild(name);
+      }
       overlay.appendChild(cell);
     }
+  }
+
+  function gridStatusDot(agent) {
+    var ageMs = Date.now() - new Date(agent.polled_at).getTime();
+    if (ageMs > 5000) return "stale";
+    if (agent.last_outcome === "success") return "ok";
+    if (agent.last_outcome === "failure") return "fail";
+    return "live";
   }
 
   function renderFrame() {
@@ -1279,22 +1316,35 @@ import * as THREE from "/vendor/three.module.min.js";
   function animate() { rafId = requestAnimationFrame(animate); renderFrame(); }
   function closeAllViews() {
     Object.keys(views).forEach(function (key) { closeView(views[key]); }); views = {};
+    if (allEventSource) { allEventSource.close(); allEventSource = null; }
     document.getElementById("grid-overlay").style.display = "none";
   }
 
   window.enter3DMode = function (index) {
     if (!ensureScene()) return;
-    closeAllViews(); ensureView(index); if (!rafId) animate();
+    closeAllViews(); ensureView(index, true); if (!rafId) animate();
   };
   window.enterAll3DMode = function (agents) {
     if (!ensureScene()) return;
+    if (!allEventSource) {
+      closeAllViews();
+      startAllStream();
+    }
     var wanted = {};
-    (agents || []).forEach(function (a) { wanted[String(a.index)] = true; ensureView(a.index); });
+    (agents || []).forEach(function (a) {
+      wanted[String(a.index)] = true;
+      var view = ensureView(a.index, false);
+      // Use the fast /agents snapshot immediately; the aggregate world
+      // stream will replace it with the same position when it arrives.
+      if (Number.isFinite(a.x) && Number.isFinite(a.y) && Number.isFinite(a.z)) {
+        activate(view); updateCameraFromPosition(a);
+      }
+    });
     Object.keys(views).forEach(function (key) { if (!wanted[key]) { closeView(views[key]); delete views[key]; } });
     updateGridOverlay(agents || []); if (!rafId) animate();
   };
   window.updateAll3DMode = function (agents) {
-    if (document.getElementById("grid-overlay").style.display !== "none") window.enterAll3DMode(agents);
+    if (allEventSource) window.enterAll3DMode(agents);
   };
   window.exit3DMode = function () {
     closeAllViews(); if (rafId) { cancelAnimationFrame(rafId); rafId = null; }

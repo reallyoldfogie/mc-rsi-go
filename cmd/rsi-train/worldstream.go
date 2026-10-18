@@ -34,6 +34,7 @@ const worldStreamBlockInterval = time.Second
 // eye position and look direction, same fields agentSnapshot already
 // reports over GET /agents, just pushed instead of polled.
 type worldStreamPositionEvent struct {
+	Index int     `json:"index,omitempty"`
 	Type  string  `json:"type"`
 	X     float64 `json:"x"`
 	Y     float64 `json:"y"`
@@ -57,6 +58,7 @@ type worldStreamBlock struct {
 // agent.FindAllVisibleBlocksInSphere's own doc comment for how "visible"
 // is defined: real ray-traced line of sight, not just "within some box").
 type worldStreamBlocksEvent struct {
+	Index  int                `json:"index,omitempty"`
 	Type   string             `json:"type"`
 	Blocks []worldStreamBlock `json:"blocks"`
 }
@@ -65,6 +67,7 @@ type worldStreamBlocksEvent struct {
 // The browser uses each entity ID to update/remove billboards without
 // accumulating stale Three.js objects.
 type worldStreamEntitiesEvent struct {
+	Index    int            `json:"index,omitempty"`
 	Type     string         `json:"type"`
 	Entities []nearbyEntity `json:"entities"`
 }
@@ -74,6 +77,7 @@ type worldStreamEntitiesEvent struct {
 // parallel-envs scale-down) — lets the frontend drop back to 2D with a
 // clear reason instead of just watching the connection go quiet.
 type worldStreamGoneEvent struct {
+	Index  int    `json:"index,omitempty"`
 	Type   string `json:"type"`
 	Reason string `json:"reason"`
 }
@@ -101,7 +105,12 @@ func isAirBlockName(name string) bool {
 }
 
 func (r *agentRegistry) worldStreamHandler(w http.ResponseWriter, req *http.Request) {
-	index, err := strconv.Atoi(req.URL.Query().Get("index"))
+	indexParam := req.URL.Query().Get("index")
+	if indexParam == "all" {
+		r.worldStreamAllHandler(w, req)
+		return
+	}
+	index, err := strconv.Atoi(indexParam)
 	if err != nil {
 		http.Error(w, "index query parameter is required", http.StatusBadRequest)
 		return
@@ -181,6 +190,98 @@ func (r *agentRegistry) worldStreamHandler(w http.ResponseWriter, req *http.Requ
 				blocks = append(blocks, worldStreamBlock{X: b.X, Y: b.Y, Z: b.Z, Name: b.BlockName})
 			}
 			writeSSE(w, worldStreamBlocksEvent{Type: "blocks", Blocks: blocks})
+		}
+		flusher.Flush()
+
+		select {
+		case <-req.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// worldStreamAllHandler multiplexes every agent's world updates onto one SSE
+// connection. Browsers commonly cap the number of concurrent HTTP/1.1
+// connections per origin; opening one persistent EventSource per agent made
+// the later cells in a large All-agents grid silently starve. Every event is
+// tagged with its agent index so the browser can route it to that cell.
+func (r *agentRegistry) worldStreamAllHandler(w http.ResponseWriter, req *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ticker := time.NewTicker(worldStreamTickInterval)
+	defer ticker.Stop()
+	lastBlockScan := make(map[int]time.Time)
+	known := make(map[int]bool)
+
+	for {
+		snapshots := r.snapshot()
+		current := make(map[int]bool, len(snapshots))
+		type initializedAgent struct {
+			snapshot agentSnapshot
+		}
+		initialized := make([]initializedAgent, 0, len(snapshots))
+
+		// Send every fast-changing position/entity update before doing any
+		// expensive block ray traces. This prevents a slow early agent from
+		// starving the later cells in the grid.
+		for _, snapshot := range snapshots {
+			current[snapshot.Index] = true
+			known[snapshot.Index] = true
+			if snapshot.agent == nil {
+				continue
+			}
+			pos, yaw, pitch, ready := snapshot.agent.GetPosition()
+			if !ready {
+				continue
+			}
+			writeSSE(w, worldStreamPositionEvent{Index: snapshot.Index, Type: "position", X: pos.X, Y: pos.Y, Z: pos.Z, Yaw: yaw, Pitch: pitch})
+			writeSSE(w, worldStreamEntitiesEvent{
+				Index:    snapshot.Index,
+				Type:     "entities",
+				Entities: readNearbyEntities(snapshot.agent, pos.X, pos.Y, pos.Z),
+			})
+			initialized = append(initialized, initializedAgent{snapshot: snapshot})
+		}
+
+		for _, item := range initialized {
+			if time.Since(lastBlockScan[item.snapshot.Index]) < worldStreamBlockInterval {
+				continue
+			}
+			lastBlockScan[item.snapshot.Index] = time.Now()
+			scanCtx, cancel := context.WithTimeout(req.Context(), 5*time.Second)
+			visible, err := item.snapshot.agent.FindAllVisibleBlocksInSphere(scanCtx, worldStreamRadius)
+			cancel()
+			if err != nil {
+				log.Printf("worldstream: FindAllVisibleBlocksInSphere for agent %d: %v", item.snapshot.Index, err)
+				continue
+			}
+			blocks := make([]worldStreamBlock, 0, len(visible))
+			for _, b := range visible {
+				if isAirBlockName(b.BlockName) {
+					continue
+				}
+				blocks = append(blocks, worldStreamBlock{X: b.X, Y: b.Y, Z: b.Z, Name: b.BlockName})
+			}
+			writeSSE(w, worldStreamBlocksEvent{Index: item.snapshot.Index, Type: "blocks", Blocks: blocks})
+		}
+
+		for index := range known {
+			if current[index] {
+				continue
+			}
+			writeSSE(w, worldStreamGoneEvent{Index: index, Type: "gone", Reason: fmt.Sprintf("agent %d is no longer connected", index)})
+			delete(known, index)
+			delete(lastBlockScan, index)
 		}
 		flusher.Flush()
 
