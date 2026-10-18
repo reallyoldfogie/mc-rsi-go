@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/reallyoldfogie/mc-agent/models"
 	"github.com/reallyoldfogie/mc-bot-go/bot/screen"
@@ -130,6 +131,9 @@ func TestServeDashboardPageServesEmbeddedHTML(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Contains(t, w.Header().Get("Content-Type"), "text/html")
 	assert.Contains(t, w.Body.String(), "<!doctype html>")
+	assert.Contains(t, w.Body.String(), "setInterval(poll, 250)")
+	assert.Contains(t, w.Body.String(), "enterAll3DMode")
+	assert.Contains(t, w.Body.String(), "Armor · head → feet")
 }
 
 func TestItemIconFallbackServesBareNameDirectly(t *testing.T) {
@@ -256,9 +260,24 @@ func TestSummarizeNearbyEntitiesFiltersByRadiusAndSortsByDistance(t *testing.T) 
 	got := summarizeNearbyEntities(tracked, reg, 0, 0, 0)
 
 	assert.Equal(t, []nearbyEntity{
-		{Type: "item", X: 5, Y: 0, Z: 0},
-		{Type: "item", X: 0, Y: 0, Z: 10},
+		{ID: 11, Type: "item", X: 5, Y: 0, Z: 0},
+		{ID: 12, Type: "item", X: 0, Y: 0, Z: 10},
 	}, got)
+}
+
+func TestDashboardRefreshCadenceIsQuarterSecond(t *testing.T) {
+	assert.Equal(t, 250*time.Millisecond, agentPositionPollInterval)
+	assert.Equal(t, agentPositionPollInterval, worldStreamTickInterval)
+}
+
+func TestWorldStreamEntitiesEventIncludesStableIDs(t *testing.T) {
+	event := worldStreamEntitiesEvent{
+		Type:     "entities",
+		Entities: []nearbyEntity{{ID: 42, Type: "zombie", X: 1, Y: 2, Z: 3}},
+	}
+	body, err := json.Marshal(event)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type":"entities","entities":[{"id":42,"type":"zombie","x":1,"y":2,"z":3}]}`, string(body))
 }
 
 func TestSummarizeNearbyEntitiesUnresolvedTypeFallsBackToNumericName(t *testing.T) {

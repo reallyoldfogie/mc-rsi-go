@@ -110,19 +110,29 @@
     border-bottom: 1px solid #2a2d35;
     display: flex;
     flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
+    align-items: flex-end;
+    gap: 8px;
   }
-  .inventory-divider { flex: none; width: 1px; height: 34px; background: #2a2d35; margin: 0 2px; }
+  .inventory-group { display: flex; flex-direction: column; gap: 3px; }
+  .inventory-group-label {
+    color: #8a8f99;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  .inventory-group-slots { display: flex; gap: 3px; }
+  .inventory-divider { flex: none; width: 1px; height: 28px; background: #3a3f4a; margin: 0 2px 1px; }
   .item-chip {
     position: relative;
     flex: none;
-    width: 34px;
-    height: 34px;
+    width: 30px;
+    height: 30px;
     background: #1b1e25;
     border: 1px solid #2a2d35;
     border-radius: 3px;
   }
+  .item-chip.equipment { border-color: #5b9dff; background: #202937; }
   .item-chip img, .item-chip .badge {
     position: absolute;
     inset: 2px;
@@ -157,6 +167,17 @@
   #plot-wrap { flex: 1; min-height: 0; position: relative; }
   #plot, #camera-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   #camera-canvas { display: none; }
+  #grid-overlay { position: absolute; inset: 0; display: none; pointer-events: none; }
+  .grid-cell {
+    position: absolute;
+    border: 2px solid rgba(91,157,255,0.75);
+    color: #e4e6eb;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 7px;
+    text-shadow: 0 1px 2px #000;
+  }
+  .grid-cell.blank { border-color: rgba(138,143,153,0.35); }
   /* Sits above whichever of #plot/#camera-canvas is currently visible
      (both are absolute/inset:0 siblings within #plot-wrap) - a plain
      later sibling in source order already paints on top, no z-index
@@ -195,6 +216,7 @@
   <div id="plot-wrap">
     <canvas id="plot"></canvas>
     <canvas id="camera-canvas"></canvas>
+    <div id="grid-overlay"></div>
     <div id="stale-overlay">Connection lost - no response in 5s+</div>
   </div>
 </div>
@@ -205,12 +227,8 @@
   var selected = null;
   var latest = [];
 
-  // viewMode is "2d" (the top-down plot, always available) or "3d" (the
-  // Three.js first-person view - see the type="module" script below,
-  // which owns the canvas#camera-canvas renderer/EventSource and exposes
-  // window.enter3DMode/window.exit3DMode as this script's only hooks into
-  // it). Only ever "3d" while an agent is both selected and connected -
-  // every path that clears either forces this back to "2d" first.
+  // viewMode is one of the four combinations below. The module script owns
+  // the Three.js canvas and exposes the matching enter/exit hooks.
   var viewMode = "2d";
 
   // setViewMode flips which canvas is visible and refreshes the toggle
@@ -219,10 +237,11 @@
   // through here rather than setting viewMode directly.
   function setViewMode(mode) {
     viewMode = mode;
-    document.getElementById("plot").style.display = mode === "2d" ? "block" : "none";
-    document.getElementById("camera-canvas").style.display = mode === "3d" ? "block" : "none";
+    var is3D = mode === "single-3d" || mode === "all-3d";
+    document.getElementById("plot").style.display = is3D ? "none" : "block";
+    document.getElementById("camera-canvas").style.display = is3D ? "block" : "none";
     var btn = document.getElementById("view-toggle-btn");
-    if (btn) btn.textContent = mode === "3d" ? "Switch to 2D" : "Switch to 3D";
+    if (btn) btn.textContent = is3D ? "Switch to 2D" : "Switch to 3D";
   }
 
   // exitViewMode is the one path back to 2D from anywhere - button click,
@@ -235,11 +254,18 @@
   }
 
   function onViewToggleClick() {
-    if (viewMode === "3d") {
+    if (viewMode === "single-3d" || viewMode === "all-3d") {
       exitViewMode();
     } else {
-      setViewMode("3d");
-      if (window.enter3DMode) window.enter3DMode(selected);
+      if (selected === null) {
+        viewMode = "all-3d";
+        setViewMode("all-3d");
+        if (window.enterAll3DMode) window.enterAll3DMode(latest);
+      } else {
+        viewMode = "single-3d";
+        setViewMode("single-3d");
+        if (window.enter3DMode) window.enter3DMode(selected);
+      }
     }
   }
 
@@ -276,7 +302,7 @@
   }
 
   // statusDot is a CONNECTION-health signal - keyed off polled_at
-  // (pollOnce, dashboard.go, stamped every ~1s whenever reading this
+  // (pollOnce, dashboard.go, stamped every ~250ms whenever reading this
   // bot's live position actually succeeds), not updated_at. These two
   // used to be conflated into one "stale" dot keyed off updated_at
   // alone, which is a TRAINING-activity timestamp (only advances on an
@@ -373,7 +399,11 @@
   function renderStats(a) {
     var el = document.getElementById("stats");
     if (selected === null) {
-      el.innerHTML = "<div id='empty'>Viewing all agents - select one to zoom in.</div>";
+      el.innerHTML =
+        "<button id='view-toggle-btn' class='view-toggle-btn'>" +
+        ((viewMode === "all-3d") ? "Switch to 2D" : "Switch to 3D") + "</button>" +
+        "<div id='empty'>Viewing all agents - select one to zoom in.</div>";
+      document.getElementById("view-toggle-btn").onclick = onViewToggleClick;
       return;
     }
     if (!a) {
@@ -382,7 +412,7 @@
     }
     el.innerHTML =
       "<button id='view-toggle-btn' class='view-toggle-btn'>" +
-      (viewMode === "3d" ? "Switch to 2D" : "Switch to 3D") + "</button>" +
+      ((viewMode === "single-3d") ? "Switch to 2D" : "Switch to 3D") + "</button>" +
       stat("Agent", (a.username || ("agent-" + a.index)) + phaseBadge(a)) +
       stat("Task", a.task || "-") +
       stat("Goal", a.goal || "-") +
@@ -407,37 +437,36 @@
     selected = index;
     if (index === null) {
       exitViewMode();
-    } else if (viewMode === "3d" && window.enter3DMode) {
+    } else if (viewMode === "single-3d" && window.enter3DMode) {
       window.enter3DMode(index);
+    } else if (viewMode === "all-3d") {
+      exitViewMode();
     }
     render();
   }
 
-  // INVENTORY_MAIN_SLOTS is how many of agentSnapshot.inventory's leading
-  // entries are main-inventory slots (the rest are hotbar) - matches
-  // screen.MainSlotEnd-MainSlotStart (dashboard.go's readInventory passes
-  // Main() before Hotbar()), used only to draw a divider between the two
-  // groups, same as the real inventory screen's own gap.
-  var INVENTORY_MAIN_SLOTS = 27;
-
   function renderInventory(a) {
     var el = document.getElementById("inventory");
     el.innerHTML = "";
-    var items = a && a.inventory || [];
+    var inventory = a && a.inventory;
     el.style.display = a ? "flex" : "none";
-    items.forEach(function (it, i) {
-      if (i === INVENTORY_MAIN_SLOTS) {
-        var divider = document.createElement("div");
-        divider.className = "inventory-divider";
-        el.appendChild(divider);
-      }
+    if (!inventory) return;
 
+    function renderGroup(label, items, equipment) {
+      var group = document.createElement("div");
+      group.className = "inventory-group";
+      var heading = document.createElement("div");
+      heading.className = "inventory-group-label";
+      heading.textContent = label;
+      var slots = document.createElement("div");
+      slots.className = "inventory-group-slots";
+      (items || []).forEach(function (it) {
       var chip = document.createElement("div");
-      chip.className = "item-chip";
+      chip.className = "item-chip" + (equipment ? " equipment" : "");
 
       if (!it.name) {
         chip.title = "slot " + it.slot + " (empty)";
-        el.appendChild(chip); // empty slot: just the box, nothing in it.
+        slots.appendChild(chip); // empty slot: just the box, nothing in it.
         return;
       }
       chip.title = it.name + " ×" + it.count + " (slot " + it.slot + ")";
@@ -460,8 +489,17 @@
       chip.appendChild(img);
       chip.appendChild(badge);
       chip.appendChild(count);
-      el.appendChild(chip);
+      slots.appendChild(chip);
     });
+      group.appendChild(heading);
+      group.appendChild(slots);
+      el.appendChild(group);
+    }
+
+    renderGroup("Armor · head → feet", inventory.armor, true);
+    renderGroup("Main inventory", inventory.main, false);
+    renderGroup("Hotbar", inventory.hotbar, false);
+    renderGroup("Off hand", [inventory.offhand], true);
   }
 
   // MIN_ZOOM_RADIUS is the smallest half-window (in blocks) the per-agent
@@ -471,6 +509,31 @@
   // area stays in view. The actual radius grows beyond this to fit the
   // bot/spawn/target bounding box - see zoomRadiusFor.
   var MIN_ZOOM_RADIUS = 24;
+
+  // Entity icons use the same embedded pixel-art asset set as inventory
+  // icons. Vanilla spawn eggs are a useful, version-stable head/icon-like
+  // fallback for common mobs; the colored marker and label remain visible
+  // for entities without a matching egg.
+  var entityIconCache = {};
+  function entityIconURL(type) {
+    return "/icons/" + encodeURIComponent(type.replace(/^minecraft:/, "")) + "_spawn_egg.png";
+  }
+  function drawEntityIcon(ctx, e, x, y, size) {
+    var key = e.type || "unknown";
+    var icon = entityIconCache[key];
+    if (icon === undefined) {
+      icon = entityIconCache[key] = new Image();
+      icon.onload = function () { renderPlot(); };
+      icon.onerror = function () { entityIconCache[key] = null; renderPlot(); };
+      icon.src = entityIconURL(key);
+    }
+    if (icon && icon.complete && icon.naturalWidth) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
+      return true;
+    }
+    return false;
+  }
 
   // ZOOM_PADDING_FRACTION leaves a little breathing room around the
   // bot/spawn/target bounding box, so a marker right at the edge of a
@@ -610,7 +673,7 @@
     // The 3D view (canvas#camera-canvas) owns the screen while active and
     // redraws itself off its own EventSource/rAF loop - no need to also
     // keep repainting the hidden 2D canvas underneath it every tick.
-    if (viewMode === "3d") return;
+    if (viewMode === "single-3d" || viewMode === "all-3d") return;
 
     var canvas = document.getElementById("plot");
     var dpr = window.devicePixelRatio || 1;
@@ -660,22 +723,27 @@
 
     drawGrid(ctx, w, h, centerX, centerZ, scale);
 
-    // Nearby entities (dropped items, mobs, ...) only make sense once
-    // zoomed to a single bot - at the all-agents scale they'd be
-    // indistinguishable from the bot's own dot. Drawn before the agents
-    // themselves so a bot's own dot/trail/label always reads on top.
-    if (sel && sel.nearby) {
-      sel.nearby.forEach(function (e) {
+    // Nearby entities (dropped items, mobs, ...) are drawn before the
+    // agents themselves so a bot's own dot/trail/label always reads on top.
+    // In All agents mode each agent contributes its own nearby list to the
+    // shared world-space plot.
+    var entityAgents = sel ? [sel] : visible;
+    entityAgents.forEach(function (entityAgent) {
+      (entityAgent.nearby || []).forEach(function (e) {
         var p = toCanvas(e);
+        var iconSize = Math.max(10, Math.min(22, 8 + scale * 0.25));
+        var hasIcon = drawEntityIcon(ctx, e, p[0], p[1], iconSize);
         ctx.beginPath();
-        ctx.arc(p[0], p[1], 3, 0, Math.PI * 2);
-        ctx.fillStyle = "#d9a24b";
-        ctx.fill();
+        if (!hasIcon) {
+          ctx.arc(p[0], p[1], 4, 0, Math.PI * 2);
+          ctx.fillStyle = "#d9a24b";
+          ctx.fill();
+        }
         ctx.fillStyle = "rgba(217,162,75,0.8)";
         ctx.font = "10px sans-serif";
-        ctx.fillText(e.type, p[0] + 6, p[1] + 3);
+        ctx.fillText(e.type, p[0] + iconSize / 2 + 3, p[1] + 3);
       });
-    }
+    });
 
     // Spawn/Target markers only make sense once zoomed to a single bot -
     // same reasoning as nearby entities above. Drawn before the agent
@@ -745,13 +813,14 @@
     fetch("/agents").then(function (r) { return r.json(); }).then(function (data) {
       latest = data || [];
       updateTrails();
+      if (viewMode === "all-3d" && window.updateAll3DMode) window.updateAll3DMode(latest);
       render();
     }).catch(function () { /* transient fetch error; try again next tick */ });
   }
 
   window.addEventListener("resize", renderPlot);
   poll();
-  setInterval(poll, 1000);
+  setInterval(poll, 250);
 })();
 </script>
 <script type="module">
@@ -767,10 +836,12 @@ import * as THREE from "/vendor/three.module.min.js";
   "use strict";
 
   var canvas = document.getElementById("camera-canvas");
-  var renderer = null, scene = null, camera = null, boxGeometry = null;
+  var renderer = null, boxGeometry = null;
+  // scene/camera/blockMeshes are temporary aliases used by the existing
+  // block helpers. activeView selects which reusable agent view they target.
+  var scene = null, camera = null, blockMeshes = [];
+  var activeView = null, views = {};
   var rafId = null;
-  var eventSource = null;
-  var blockMeshes = [];
 
   // PLAYER_EYE_HEIGHT matches mc-agent's own models.PlayerEyeHeight - the
   // worldstream's "position" events report the bot's feet position (the
@@ -1008,11 +1079,12 @@ import * as THREE from "/vendor/three.module.min.js";
     // name still expects to reuse.
     blockMeshes.forEach(function (mesh) { scene.remove(mesh); });
     blockMeshes = [];
+    if (activeView) activeView.blockMeshes = blockMeshes;
   }
 
   // rebuildBlocks replaces every block instance each "blocks" event,
-  // rather than diffing against the previous tick - worldStreamHandler
-  // itself already resends the full visible set every tick (see its own
+  // rather than diffing against the previous event - worldStreamHandler
+  // resends the full visible set on each block scan (see its own
   // doc comment on why: FindAllVisibleBlocksInSphere's ray-trace is
   // already the expensive part), so matching that here keeps this layer
   // just as simple. One InstancedMesh per distinct block name found this
@@ -1078,61 +1150,156 @@ import * as THREE from "/vendor/three.module.min.js";
   }
 
   function ensureScene() {
-    if (renderer) return;
+    if (renderer) return true;
     boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     chestBodyGeometry = new THREE.BoxGeometry(CHEST_FOOTPRINT, CHEST_BODY_H, CHEST_FOOTPRINT);
     chestLidGeometry = new THREE.BoxGeometry(CHEST_FOOTPRINT, CHEST_LID_H, CHEST_FOOTPRINT);
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0c10);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+    } catch (e) {
+      var overlay = document.getElementById("grid-overlay");
+      overlay.innerHTML = "<div class='grid-cell' style='left:0;top:0;width:100%;height:100%;text-align:center;padding-top:20%'>3D view unavailable in this browser</div>";
+      overlay.style.display = "block";
+      return false;
+    }
+    renderer.setClearColor(0x0a0c10, 1);
+    return true;
+  }
+
+  function activate(view) {
+    activeView = view;
+    scene = view.scene;
+    camera = view.camera;
+    blockMeshes = view.blockMeshes;
+  }
+
+  function newView(index) {
+    var view = { index: index, scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(70, 1, 0.1, 200), blockMeshes: [], entityMeshes: {}, eventSource: null };
+    view.scene.background = new THREE.Color(0x0a0c10);
+    view.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
     var sun = new THREE.DirectionalLight(0xffffff, 0.8);
     sun.position.set(50, 80, 30);
-    scene.add(sun);
-    camera = new THREE.PerspectiveCamera(70, 1, 0.1, 200);
-    renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+    view.scene.add(sun);
+    return view;
   }
 
-  function resizeRenderer() {
+  var entityMaterialCache = {};
+  function entityMaterial(type) {
+    if (entityMaterialCache[type]) return entityMaterialCache[type];
+    var material = new THREE.SpriteMaterial({ color: 0xd9a24b });
+    entityMaterialCache[type] = material;
+    textureLoader.load("/icons/" + encodeURIComponent(type) + "_spawn_egg.png", function (tex) {
+      tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+      material.map = tex; material.color.set(0xffffff); material.needsUpdate = true;
+    }, undefined, function () {});
+    return material;
+  }
+
+  function updateEntities(view, entities) {
+    activate(view);
+    var seen = {};
+    (entities || []).forEach(function (e) {
+      var id = String(e.id), type = stripMCPrefix(e.type || "unknown");
+      seen[id] = true;
+      var sprite = view.entityMeshes[id];
+      if (!sprite) {
+        sprite = new THREE.Sprite(entityMaterial(type));
+        sprite.scale.set(0.9, 0.9, 0.9);
+        view.entityMeshes[id] = sprite; view.scene.add(sprite);
+      }
+      sprite.position.set(e.x, e.y + 0.7, e.z);
+      sprite.material = entityMaterial(type);
+    });
+    Object.keys(view.entityMeshes).forEach(function (id) {
+      if (seen[id]) return;
+      view.scene.remove(view.entityMeshes[id]); delete view.entityMeshes[id];
+    });
+  }
+
+  function closeView(view) {
+    if (view.eventSource) { view.eventSource.close(); view.eventSource = null; }
+    activate(view); disposeBlockMeshes();
+    Object.keys(view.entityMeshes).forEach(function (id) { view.scene.remove(view.entityMeshes[id]); });
+    view.entityMeshes = {};
+  }
+
+  function startView(view) {
+    view.eventSource = new EventSource("/agents/world?index=" + view.index);
+    view.eventSource.onmessage = function (ev) {
+      var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      activate(view);
+      if (msg.type === "position") updateCameraFromPosition(msg);
+      else if (msg.type === "blocks") rebuildBlocks(msg.blocks || []);
+      else if (msg.type === "entities") updateEntities(view, msg.entities || []);
+      else if (msg.type === "gone") {
+        closeView(view); delete views[String(view.index)];
+        if (!Object.keys(views).length && window.onCameraGone) window.onCameraGone();
+      }
+    };
+  }
+
+  function ensureView(index) {
+    var key = String(index);
+    if (!views[key]) views[key] = newView(index);
+    if (!views[key].eventSource) startView(views[key]);
+  }
+
+  function updateGridOverlay(agents) {
+    var overlay = document.getElementById("grid-overlay"); overlay.innerHTML = "";
+    overlay.style.display = agents.length ? "block" : "none";
+    if (!agents.length) return;
+    var cols = Math.ceil(Math.sqrt(agents.length)), rows = Math.ceil(agents.length / cols);
+    for (var i = 0; i < rows * cols; i++) {
+      var cell = document.createElement("div");
+      cell.className = "grid-cell" + (i >= agents.length ? " blank" : "");
+      cell.style.left = (i % cols) * 100 / cols + "%"; cell.style.top = Math.floor(i / cols) * 100 / rows + "%";
+      cell.style.width = 100 / cols + "%"; cell.style.height = 100 / rows + "%";
+      if (i < agents.length) cell.textContent = agents[i].username || ("agent-" + agents[i].index);
+      overlay.appendChild(cell);
+    }
+  }
+
+  function renderFrame() {
     if (!renderer) return;
     var w = canvas.clientWidth || 1, h = canvas.clientHeight || 1;
-    renderer.setSize(w, h, false);
-    camera.aspect = w / h;
-    camera.updateProjectionMatrix();
+    renderer.setSize(w, h, false); renderer.setScissorTest(true); renderer.clear();
+    var keys = Object.keys(views); if (!keys.length) return;
+    var cols = keys.length === 1 ? 1 : Math.ceil(Math.sqrt(keys.length));
+    var rows = keys.length === 1 ? 1 : Math.ceil(keys.length / cols);
+    var cellW = w / cols, cellH = h / rows;
+    keys.forEach(function (key, i) {
+      var view = views[key]; activate(view);
+      camera.aspect = cellW / cellH; camera.updateProjectionMatrix();
+      var x = (i % cols) * cellW, y = h - (Math.floor(i / cols) + 1) * cellH;
+      renderer.setViewport(x, y, cellW, cellH); renderer.setScissor(x, y, cellW, cellH);
+      renderer.render(scene, camera);
+    });
   }
 
-  function animate() {
-    rafId = requestAnimationFrame(animate);
-    resizeRenderer();
-    renderer.render(scene, camera);
+  function animate() { rafId = requestAnimationFrame(animate); renderFrame(); }
+  function closeAllViews() {
+    Object.keys(views).forEach(function (key) { closeView(views[key]); }); views = {};
+    document.getElementById("grid-overlay").style.display = "none";
   }
 
   window.enter3DMode = function (index) {
-    ensureScene();
-    if (eventSource) eventSource.close();
-    if (!rafId) animate();
-    eventSource = new EventSource("/agents/world?index=" + index);
-    eventSource.onmessage = function (ev) {
-      var msg;
-      try { msg = JSON.parse(ev.data); } catch (e) { return; }
-      if (msg.type === "position") updateCameraFromPosition(msg);
-      else if (msg.type === "blocks") rebuildBlocks(msg.blocks);
-      else if (msg.type === "gone") {
-        window.exit3DMode();
-        if (window.onCameraGone) window.onCameraGone();
-      }
-    };
+    if (!ensureScene()) return;
+    closeAllViews(); ensureView(index); if (!rafId) animate();
   };
-
-  // exit3DMode is idempotent - called from a button click, a deselect, a
-  // re-point to a different agent, and the "gone" handler above, any of
-  // which might fire when there's nothing currently open.
+  window.enterAll3DMode = function (agents) {
+    if (!ensureScene()) return;
+    var wanted = {};
+    (agents || []).forEach(function (a) { wanted[String(a.index)] = true; ensureView(a.index); });
+    Object.keys(views).forEach(function (key) { if (!wanted[key]) { closeView(views[key]); delete views[key]; } });
+    updateGridOverlay(agents || []); if (!rafId) animate();
+  };
+  window.updateAll3DMode = function (agents) {
+    if (document.getElementById("grid-overlay").style.display !== "none") window.enterAll3DMode(agents);
+  };
   window.exit3DMode = function () {
-    if (eventSource) { eventSource.close(); eventSource = null; }
-    if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
-    if (scene) disposeBlockMeshes();
+    closeAllViews(); if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
   };
-
-  window.addEventListener("resize", resizeRenderer);
+  window.addEventListener("resize", renderFrame);
 })();
 </script>
 </body>

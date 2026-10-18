@@ -106,10 +106,10 @@ func (h itemIconFallback) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // agentPositionPollInterval is how often agentRegistry.runPoller refreshes
-// every bot's position/health from its live agent. Independent of (and much
-// slower than) the per-tick rate mc-agent's own movement executor polls at —
-// this is for a human watching a dashboard, not control logic.
-const agentPositionPollInterval = time.Second
+// every bot's dashboard state from its live agent. Independent of the
+// per-tick rate mc-agent's own movement executor polls at — this is for a
+// human watching a dashboard, not control logic.
+const agentPositionPollInterval = 250 * time.Millisecond
 
 // agentSnapshot is one bot's point-in-time state for the dashboard's
 // GET /agents endpoint. Two different writers keep it current:
@@ -128,20 +128,20 @@ type agentSnapshot struct {
 	// connection and agentRegistry slot, one after another, so without
 	// this field the dashboard has no way to show which one is currently
 	// happening; it otherwise looks like an ordinary training episode.
-	Phase       string           `json:"phase"`
-	Goal        string           `json:"goal"`
-	LastAction  string           `json:"last_action"`
-	EpisodeStep int              `json:"episode_step"`
-	LastOutcome string           `json:"last_outcome"`
-	X           float64          `json:"x"`
-	Y           float64          `json:"y"`
-	Z           float64          `json:"z"`
-	Yaw         float64          `json:"yaw"`
-	Pitch       float64          `json:"pitch"`
-	Health      float32          `json:"health"`
-	Food        int32            `json:"food"`
-	Inventory   []inventoryEntry `json:"inventory"`
-	Nearby      []nearbyEntity   `json:"nearby"`
+	Phase       string             `json:"phase"`
+	Goal        string             `json:"goal"`
+	LastAction  string             `json:"last_action"`
+	EpisodeStep int                `json:"episode_step"`
+	LastOutcome string             `json:"last_outcome"`
+	X           float64            `json:"x"`
+	Y           float64            `json:"y"`
+	Z           float64            `json:"z"`
+	Yaw         float64            `json:"yaw"`
+	Pitch       float64            `json:"pitch"`
+	Health      float32            `json:"health"`
+	Food        int32              `json:"food"`
+	Inventory   *inventorySnapshot `json:"inventory"`
+	Nearby      []nearbyEntity     `json:"nearby"`
 	// Spawn is where this episode started — not something rlenv exposes
 	// directly (its own resolved reset position is unexported, same
 	// reason Goal's own doc comment gives for "goto <loc>" not being a
@@ -169,10 +169,10 @@ type agentSnapshot struct {
 	// misread "mid-step" as "disconnected").
 	UpdatedAt time.Time `json:"updated_at"`
 	// PolledAt is stamped by pollOnce every time it successfully reads
-	// this bot's live position (runs once a second regardless of
+	// this bot's live position (runs four times a second regardless of
 	// whether an RL step is in progress) - the connection-health signal
 	// UpdatedAt isn't: a healthy bot mid-mine keeps refreshing this
-	// every second even while UpdatedAt sits unchanged for the whole
+	// every 250ms even while UpdatedAt sits unchanged for the whole
 	// step's duration.
 	PolledAt time.Time `json:"polled_at"`
 
@@ -200,23 +200,25 @@ type vec3 struct {
 	Z float64 `json:"z"`
 }
 
-// inventoryEntry is one inventory slot (main inventory or hotbar) for the
-// dashboard's inventory strip - the zero value represents an empty slot,
-// shown as an empty box so the strip reads as "this bot's whole inventory,
-// slot for slot," not just a compacted list of what it's holding. Name has
-// its "minecraft:" prefix already stripped, matching itemIconsFS's own
-// filenames.
+// inventoryEntry is one inventory slot for the dashboard. The zero value
+// represents an empty slot, shown as an empty box so the dashboard reads as
+// the bot's whole inventory, slot for slot, rather than a compacted list.
 type inventoryEntry struct {
-	// Slot is this entry's 1-based position in the displayed bar (1-27
-	// are main-inventory slots, 28-36 are hotbar slots, matching the
-	// Main()-then-Hotbar() order summarizeInventory builds entries in) —
-	// not mc-agent/mc-bot-go's own raw protocol slot numbers (screen.
-	// MainSlotStart=9, HotbarSlotStart=36, with the crafting grid and
-	// armor ahead of those), which would be confusing here since this
-	// strip never shows those other slot kinds at all.
+	// Slot is 1-based within its displayed group, not the raw protocol slot.
 	Slot  int    `json:"slot"`
 	Name  string `json:"name"`
 	Count int    `json:"count"`
+}
+
+// inventorySnapshot keeps equipment visually separate from the main
+// inventory and hotbar. Armor is ordered head, chest, legs, feet, matching
+// screen.Inventory.Armor(). Offhand is a single slot rather than a one-item
+// array so the browser can label it unambiguously.
+type inventorySnapshot struct {
+	Armor   []inventoryEntry `json:"armor"`
+	Main    []inventoryEntry `json:"main"`
+	Hotbar  []inventoryEntry `json:"hotbar"`
+	Offhand inventoryEntry   `json:"offhand"`
 }
 
 // agentRegistry is the dashboard's live view of every connected bot,
@@ -361,6 +363,7 @@ const (
 // bot's own position, for the dashboard's zoomed single-agent view -
 // context for "what is around this bot," not just where the bot itself is.
 type nearbyEntity struct {
+	ID   int32   `json:"id"`
 	Type string  `json:"type"`
 	X    float64 `json:"x"`
 	Y    float64 `json:"y"`
@@ -414,7 +417,7 @@ func summarizeNearbyEntities(tracked map[int32]models.TrackedEntityInfo, reg mod
 			name = fmt.Sprintf("entity-%d", info.EntityType)
 		}
 		candidates = append(candidates, candidate{
-			nearbyEntity: nearbyEntity{Type: name, X: info.X, Y: info.Y, Z: info.Z},
+			nearbyEntity: nearbyEntity{ID: info.EntityID, Type: name, X: info.X, Y: info.Y, Z: info.Z},
 			distSq:       distSq,
 		})
 	}
@@ -430,12 +433,12 @@ func summarizeNearbyEntities(tracked map[int32]models.TrackedEntityInfo, reg mod
 	return out
 }
 
-// readInventory sums a's main inventory + hotbar slots by item name, or
-// returns nil if a's screen/item-name subsystems aren't ready yet (mirrors
+// readInventory reads the grouped player inventory, or returns nil if a's
+// screen/item-name subsystems aren't ready yet (mirrors
 // GetInventory/GetItemManager's own "nil means not ready" convention —
 // neither is a new network call, both just read state mc-agent already
 // tracks from the connection's own packet stream, same as GetPosition).
-func readInventory(a models.Agent) []inventoryEntry {
+func readInventory(a models.Agent) *inventorySnapshot {
 	inv := a.GetInventory()
 	if inv == nil {
 		return nil
@@ -444,7 +447,16 @@ func readInventory(a models.Agent) []inventoryEntry {
 	if itemMgr == nil {
 		return nil
 	}
-	return summarizeInventory(itemMgr, inv.Main(), inv.Hotbar())
+	offhand := inventoryEntry{}
+	if slot := inv.Offhand(); slot != nil {
+		offhand = summarizeInventory(itemMgr, []screen.Slot{*slot})[0]
+	}
+	return &inventorySnapshot{
+		Armor:   summarizeInventory(itemMgr, inv.Armor()),
+		Main:    summarizeInventory(itemMgr, inv.Main()),
+		Hotbar:  summarizeInventory(itemMgr, inv.Hotbar()),
+		Offhand: offhand,
+	}
 }
 
 // summarizeInventory returns one entry PER SLOT (including empty ones, as

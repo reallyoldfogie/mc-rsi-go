@@ -24,6 +24,12 @@ const worldStreamRadius = 24
 // to notice" tradeoff.
 const worldStreamTickInterval = agentPositionPollInterval
 
+// worldStreamBlockInterval is intentionally slower than position/entity
+// updates. Ray-tracing the visible block set is the expensive part of the
+// stream and does not need to run four times per second to make a fast-moving
+// agent view feel responsive.
+const worldStreamBlockInterval = time.Second
+
 // worldStreamPositionEvent is one "position" SSE message — the bot's own
 // eye position and look direction, same fields agentSnapshot already
 // reports over GET /agents, just pushed instead of polled.
@@ -55,6 +61,14 @@ type worldStreamBlocksEvent struct {
 	Blocks []worldStreamBlock `json:"blocks"`
 }
 
+// worldStreamEntitiesEvent is the current tracked-entity set near the bot.
+// The browser uses each entity ID to update/remove billboards without
+// accumulating stale Three.js objects.
+type worldStreamEntitiesEvent struct {
+	Type     string         `json:"type"`
+	Entities []nearbyEntity `json:"entities"`
+}
+
 // worldStreamGoneEvent is the final message sent before the handler
 // returns because the requested agent index no longer resolves (a
 // parallel-envs scale-down) — lets the frontend drop back to 2D with a
@@ -65,7 +79,8 @@ type worldStreamGoneEvent struct {
 }
 
 // worldStreamHandler serves GET /agents/world?index=N: a Server-Sent
-// Events stream of that bot's own live position and visible-block data,
+// Events stream of that bot's own live position, nearby entities, and
+// visible-block data,
 // read straight off the same models.Agent connection already driving its
 // training — no separate spectator bot, no RCON, no third-party
 // Minecraft-version data of any kind. SSE rather than WebSocket because
@@ -106,6 +121,7 @@ func (r *agentRegistry) worldStreamHandler(w http.ResponseWriter, req *http.Requ
 
 	ticker := time.NewTicker(worldStreamTickInterval)
 	defer ticker.Stop()
+	lastBlockScan := time.Time{}
 
 	for {
 		agent, ok := r.agentAt(index)
@@ -118,7 +134,21 @@ func (r *agentRegistry) worldStreamHandler(w http.ResponseWriter, req *http.Requ
 		pos, yaw, pitch, initialized := agent.GetPosition()
 		if initialized {
 			writeSSE(w, worldStreamPositionEvent{Type: "position", X: pos.X, Y: pos.Y, Z: pos.Z, Yaw: yaw, Pitch: pitch})
+			writeSSE(w, worldStreamEntitiesEvent{
+				Type:     "entities",
+				Entities: readNearbyEntities(agent, pos.X, pos.Y, pos.Z),
+			})
 		}
+
+		if time.Since(lastBlockScan) < worldStreamBlockInterval {
+			select {
+			case <-req.Context().Done():
+				return
+			case <-ticker.C:
+			}
+			continue
+		}
+		lastBlockScan = time.Now()
 
 		// Bounded independently of the tick interval: a single slow
 		// ray-trace (e.g. a momentarily overloaded host) should time out
