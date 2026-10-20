@@ -418,6 +418,7 @@
       stat("Episode step", a.episode_step) +
       stat("Last step", stepFreshnessText(a)) +
       stat("Last outcome", a.last_outcome || "in progress") +
+      stat("Termination reason", a.last_termination_reason || "-") +
       stat("Position", a.x.toFixed(1) + ", " + a.y.toFixed(1) + ", " + a.z.toFixed(1)) +
       stat("Yaw / pitch", a.yaw.toFixed(0) + "° / " + a.pitch.toFixed(0) + "°") +
       stat("Health", a.health.toFixed(1) + " / 20") +
@@ -513,13 +514,16 @@
     return "/icons/" + encodeURIComponent(type.replace(/^minecraft:/, "")) + "_spawn_egg.png";
   }
   function drawEntityIcon(ctx, e, x, y, size) {
-    var key = e.type || "unknown";
+    var type = e.type || "unknown";
+    var itemName = type === "item" ? (e.item_name || "") : "";
+    if (type === "item" && !itemName) return false;
+    var key = type === "item" ? "item:" + itemName : type;
     var icon = entityIconCache[key];
     if (icon === undefined) {
       icon = entityIconCache[key] = new Image();
       icon.onload = function () { renderPlot(); };
       icon.onerror = function () { entityIconCache[key] = null; renderPlot(); };
-      icon.src = entityIconURL(key);
+      icon.src = type === "item" ? "/icons/" + encodeURIComponent(itemName) + ".png" : entityIconURL(type);
     }
     if (icon && icon.complete && icon.naturalWidth) {
       ctx.imageSmoothingEnabled = false;
@@ -735,7 +739,9 @@
         }
         ctx.fillStyle = "rgba(217,162,75,0.8)";
         ctx.font = "10px sans-serif";
-        ctx.fillText(e.type, p[0] + iconSize / 2 + 3, p[1] + 3);
+        var label = e.type;
+        if (e.type === "item" && e.item_name) label = e.item_name + (e.item_count > 1 ? " ×" + e.item_count : "");
+        ctx.fillText(label, p[0] + iconSize / 2 + 3, p[1] + 3);
       });
     });
 
@@ -1179,11 +1185,16 @@ import * as THREE from "/vendor/three.module.min.js";
   }
 
   var entityMaterialCache = {};
-  function entityMaterial(type) {
-    if (entityMaterialCache[type]) return entityMaterialCache[type];
+  function entityMaterial(type, itemName) {
+    var cacheKey = type === "item" && itemName ? "item:" + itemName : type;
+    if (entityMaterialCache[cacheKey]) return entityMaterialCache[cacheKey];
     var material = new THREE.SpriteMaterial({ color: 0xd9a24b });
-    entityMaterialCache[type] = material;
-    textureLoader.load("/icons/" + encodeURIComponent(type) + "_spawn_egg.png", function (tex) {
+    entityMaterialCache[cacheKey] = material;
+    if (type === "item" && !itemName) return material;
+    var iconURL = type === "item"
+      ? "/icons/" + encodeURIComponent(itemName) + ".png"
+      : "/icons/" + encodeURIComponent(type) + "_spawn_egg.png";
+    textureLoader.load(iconURL, function (tex) {
       tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
       material.map = tex; material.color.set(0xffffff); material.needsUpdate = true;
     }, undefined, function () {});
@@ -1194,16 +1205,17 @@ import * as THREE from "/vendor/three.module.min.js";
     activate(view);
     var seen = {};
     (entities || []).forEach(function (e) {
-      var id = String(e.id), type = stripMCPrefix(e.type || "unknown");
+      var id = String(e.id), type = stripMCPrefix(e.type || "unknown"), itemName = e.item_name || "";
       seen[id] = true;
       var sprite = view.entityMeshes[id];
       if (!sprite) {
-        sprite = new THREE.Sprite(entityMaterial(type));
-        sprite.scale.set(0.9, 0.9, 0.9);
+        sprite = new THREE.Sprite(entityMaterial(type, itemName));
+        var spriteSize = type === "item" ? 0.65 : 0.9;
+        sprite.scale.set(spriteSize, spriteSize, spriteSize);
         view.entityMeshes[id] = sprite; view.scene.add(sprite);
       }
       sprite.position.set(e.x, e.y + 0.7, e.z);
-      sprite.material = entityMaterial(type);
+      sprite.material = entityMaterial(type, itemName);
     });
     Object.keys(view.entityMeshes).forEach(function (id) {
       if (seen[id]) return;

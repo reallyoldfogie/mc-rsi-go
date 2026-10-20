@@ -30,10 +30,15 @@ describes for running a training session:
 ./rsi-train -checkpoint-dir ./checkpoints -mc-agent-config ./my-config.json
 ```
 
-`monitoring/prometheus.yml` already points at `host.docker.internal:9400`, which reaches
-`rsi-train` running as a normal process on the same machine as Docker (this works the same way on
-Docker Desktop and on plain Docker Engine/WSL2 — see `docker-compose.yml`'s `extra_hosts`). If you
-run several training processes at once, give each a distinct `-metrics-addr` port and add a
+`monitoring/prometheus.yml` points at `host.docker.internal:9400` for the plain trainer and
+`:9401` for the recurrent trainer. These reach `rsi-train` processes running normally on the same
+machine as Docker (this works the same way on Docker Desktop and on plain Docker Engine/WSL2 — see
+`docker-compose.yml`'s `extra_hosts`). The agent-monitoring dashboard is served by the same
+metrics listener: use `http://localhost:9400/dashboard` for a plain run or
+`http://localhost:9401/dashboard` for the recurrent run. If the plain trainer is stopped, `:9400`
+will correctly refuse the connection.
+
+If you run several training processes at once, give each a distinct `-metrics-addr` port and add a
 `static_configs` entry per port in `prometheus.yml` (restart Prometheus after editing it:
 `docker compose restart prometheus`).
 

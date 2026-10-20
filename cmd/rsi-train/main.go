@@ -212,6 +212,10 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Record the complete trainer-owned CLI configuration at startup. This
+	// deliberately logs paths and values, not the contents of mc-agent's
+	// config (which may contain an RCON password).
+	log.Printf("command-line flags: %+v", f)
 
 	trainerSettings := crlconfig.Default()
 	if f.trainerConfigPath != "" {
@@ -297,6 +301,11 @@ func run(args []string) error {
 		agents.add(c.username, c.agent)
 		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, targetOffsetForEpisode: c.targetOffsetForEpisode, registry: agents, index: i}
 	}
+	if state, ok := loadPersistedTrainingState(f.checkpointDir + "/interim"); ok && len(state.Environments) > 0 {
+		if err := restoreEnvironmentStates(envs, state.Environments); err != nil {
+			log.Printf("recovery: environment state unavailable, continuing with safe reset: %v", err)
+		}
+	}
 	metricParallelEnvs.Set(float64(len(connected)))
 
 	// Self-versioning by construction, matching mc-agent's own
@@ -324,7 +333,8 @@ func run(args []string) error {
 	// made generic in place - runRecurrentRounds mirrors it for
 	// *actorcritic.RecurrentParams instead.
 	if trainerSettings.RecurrentChunkLen > 0 {
-		return runRecurrentRounds(ctx, stop, f, trainerSettings, connected, envs, environmentID, restartReq)
+		return runRecurrentRounds(ctx, stop, f, trainerSettings, connected, envs, environmentID, restartReq,
+			envCountReq, envConfirmer, mcSettings, sharedOriginBase, curriculumPool, episodeTask, agents, exporter)
 	}
 
 	teacherParams, rec, err := loadOrInitTeacher(f.checkpointDir, environmentID, envs[0].ObservationSize(), trainerSettings.HiddenSize, envs[0].ActionSpace(), f.hiddenLayers)
@@ -387,17 +397,20 @@ func run(args []string) error {
 	// just below, can close over them directly.
 	var roundDurationTotal, epochDurationTotal float64
 	epochsCount := 0
+	var rngSource *rand.PCG
+	var latestOptimizerState *actorcritic.AdamState
 
 	interimDir := filepath.Join(f.checkpointDir, "interim")
 	cfg := leapfrog.Config[*actorcritic.Params]{
-		Trainer:             trainerSettings,
-		EpochsPerGeneration: f.epochsPerGeneration,
-		EvalEpisodes:        f.evalEpisodes,
-		EvalEpisodeLen:      f.evalEpisodeLen,
-		WinZScore:           float32(f.winZScore),
-		MinWinMargin:        float32(f.minWinMargin),
-		EvalGreedy:          f.evalGreedy,
-		OnBeforeEvaluation:  markEvaluationInProgress(pairedEvalTaskReseeder(evalTaskReseeders(connected))),
+		Trainer:              trainerSettings,
+		EpochsPerGeneration:  f.epochsPerGeneration,
+		EvalEpisodes:         f.evalEpisodes,
+		EvalEpisodeLen:       f.evalEpisodeLen,
+		WinZScore:            float32(f.winZScore),
+		MinWinMargin:         float32(f.minWinMargin),
+		EvalGreedy:           f.evalGreedy,
+		ResumeOptimizerState: nil,
+		OnBeforeEvaluation:   markEvaluationInProgress(pairedEvalTaskReseeder(evalTaskReseeders(connected))),
 		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.Params) {
 			madeEpochProgress = true
 			latestParams = params
@@ -424,6 +437,7 @@ func run(args []string) error {
 			metricCurrentEpoch.Set(float64(stats.Epoch))
 			metricEpochTrajectoriesStarted.Set(0)
 			metricEpochAvgReturn.Set(float64(stats.AverageReturn))
+			recordEpochDiagnostics(stats)
 			metricEpochsTotal.Inc()
 			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
 			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
@@ -468,6 +482,21 @@ func run(args []string) error {
 			}
 		},
 	}
+	cfg.OnOptimizerState = func(stats ppo.EpochStats, params *actorcritic.Params, optimizer actorcritic.AdamState) {
+		optimizerCopy := optimizer
+		latestOptimizerState = &optimizerCopy
+		if f.checkpointInterval <= 0 || (stats.Epoch+1)%f.checkpointInterval != 0 || rngSource == nil {
+			return
+		}
+		rngState, err := rngSource.MarshalBinary()
+		if err != nil {
+			log.Printf("  saving RNG state: %v", err)
+			return
+		}
+		if err := savePersistedTrainingState(interimDir, persistedTrainingState{SchemaVersion: 1, ParentGeneration: rec.Generation, Epoch: stats.Epoch, Optimizer: &optimizer, RNG: rngState, Environments: captureEnvironmentStates(envs)}); err != nil {
+			log.Printf("  saving continuation state: %v", err)
+		}
+	}
 
 	if resumedParams, resumedEpoch, resumedMetadata := loadResumableStudent(interimDir, environmentID, rec.Generation); resumedParams != nil {
 		cfg.ResumeStudent = resumedParams
@@ -486,6 +515,9 @@ func run(args []string) error {
 		metricBestReturnAllTime.Set(float64(progress.BestReturn))
 		log.Printf("resuming round 1's student training from interim checkpoint: epoch %d, generation %d, best return %.3f, total updates %d",
 			resumedEpoch, rec.Generation, resumedMetadata.BestReturn, resumedMetadata.TotalUpdates)
+		if state, ok := loadPersistedTrainingState(interimDir); ok && state.ParentGeneration == rec.Generation && state.Epoch == resumedEpoch && state.Optimizer != nil {
+			cfg.ResumeOptimizerState = state.Optimizer
+		}
 	}
 
 	// Restores the "Teacher vs. Student reward per round" / "Student
@@ -533,7 +565,13 @@ func run(args []string) error {
 		seedTaskEpisodeCounts(state.TaskEpisodes)
 	}
 
-	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
+	rngSource = rand.NewPCG(uint64(time.Now().UnixNano()), 0)
+	if state, ok := loadPersistedTrainingState(interimDir); ok && len(state.RNG) > 0 {
+		if err := rngSource.UnmarshalBinary(state.RNG); err != nil {
+			log.Printf("recovery: ignoring invalid RNG state: %v", err)
+		}
+	}
+	rng := rand.New(rngSource)
 
 	for round := startRound; f.maxRounds == 0 || round <= f.maxRounds; round++ {
 		if err := ctx.Err(); err != nil {
@@ -590,6 +628,7 @@ func run(args []string) error {
 		// this itself.
 		cfg.ResumeStudent = nil
 		cfg.ResumeStudentStartEpoch = 0
+		cfg.ResumeOptimizerState = nil
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("round %d interrupted: %v", round, err)
@@ -665,6 +704,11 @@ func run(args []string) error {
 		return fmt.Errorf("saving final recovery checkpoint: %w", err)
 	} else {
 		log.Printf("saved final recovery checkpoint: %s", filepath.Join(interimDir, "final.json"))
+		if latestOptimizerState != nil && rngSource != nil {
+			if rngState, err := rngSource.MarshalBinary(); err == nil {
+				_ = savePersistedTrainingState(interimDir, persistedTrainingState{SchemaVersion: 1, ParentGeneration: rec.Generation, Epoch: progress.Epoch, Optimizer: latestOptimizerState, RNG: rngState, Environments: captureEnvironmentStates(envs)})
+			}
+		}
 	}
 
 	return nil
@@ -1211,31 +1255,21 @@ func loadOrInitTeacherRecurrent(checkpointDir, environmentID string, observation
 // point for why everything up to there is shared unchanged by both
 // paths.
 //
-// Deliberately narrower than run()'s own loop for now (see the
-// warm-start plan this was built from, docs/plans - "Explicitly
-// deferred"): no interim checkpoint save/resume (-checkpoint-interval is
-// logged as ignored here, not silently broken), no manual checkpoint
-// export endpoint (cmd/rsi-train/export.go's checkpointExporter is
-// *actorcritic.Params-only), and no live -parallel-envs rescaling
-// mid-run. Each is real, separate future work for the recurrent path,
-// not an oversight - a restart of a recurrent run always resumes from
-// the latest generation lineage.Save actually wrote (same as a plain run
-// that hasn't completed even one epoch yet), never from a mid-round
-// student.
-func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, trainerSettings crlconfig.Settings, connected []connectedEnvironment, envs []rl.Environment, environmentID string, restartReq *restartRequest) error {
-	if f.checkpointInterval > 0 {
-		log.Printf("recurrent mode: -checkpoint-interval is not yet supported; interim checkpoints will not be saved")
-	}
-	if f.metricsAddr != "" {
-		log.Printf("recurrent mode: the /checkpoint/export endpoint is not yet supported and will always report not-ready")
-	}
-	log.Printf("recurrent mode: live -parallel-envs rescaling is not yet supported; running with %d environments for the whole run", len(envs))
+// The recurrent loop mirrors the plain loop's lifecycle: it supports
+// between-round environment scaling, epoch-boundary interim/final
+// checkpoints, optional optimizer/RNG/environment continuation state,
+// paired evaluation reseeding, recovery cleanup, and model-aware export.
+// The model JSON remains additive and uses cRL-go's recurrent codec; the
+// continuation sidecar is optional so older weights-only saves remain valid.
+func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, trainerSettings crlconfig.Settings, connected []connectedEnvironment, envs []rl.Environment, environmentID string, restartReq *restartRequest, envCountReq *envCountRequest, envConfirmer *parallelEnvsConfirmer, mcSettings mcconfig.Settings, sharedOriginBase [3]float64, curriculumPool *curriculum.Pool, episodeTask string, agents *agentRegistry, exporter *checkpointExporter) error {
+	log.Printf("recurrent mode: running with %d environments; scaling is applied between rounds", len(envs))
 
 	teacherParams, rec, err := loadOrInitTeacherRecurrent(f.checkpointDir, environmentID, envs[0].ObservationSize(), trainerSettings.HiddenSize, envs[0].ActionSpace(), f.hiddenLayers)
 	if err != nil {
 		return err
 	}
 	log.Printf("starting from generation %d (provenance=%s, recurrent)", rec.Generation, rec.Provenance)
+	exporter.setRecurrentTeacher(teacherParams, rec)
 	startHealth := measureNetworkHealth(teacherParams.Trunk)
 	recordNetworkHealth(startHealth)
 	log.Printf("policy network health: %s active, logit std %.3f", formatLayerActive(startHealth.LayerActive), startHealth.LogitStd)
@@ -1252,12 +1286,26 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 	metricEpochTrajectoriesStarted.Set(0)
 	progress := rec.Metadata
 	metricBestReturnAllTime.Set(float64(progress.BestReturn))
+	interimDir := filepath.Join(f.checkpointDir, "interim")
+	var latestParams *actorcritic.RecurrentParams
+	madeEpochProgress := false
+	var latestOptimizerState *actorcritic.AdamState
+
+	var resumeParams *actorcritic.RecurrentParams
+	var resumeEpoch int
+	if p, epoch, metadata := loadResumableRecurrentStudent(interimDir, environmentID, rec.Generation); p != nil {
+		resumeParams, resumeEpoch = p, epoch
+		progress = metadata
+		log.Printf("resuming recurrent student from interim checkpoint: epoch %d, generation %d, best return %.3f, total updates %d", epoch, rec.Generation, metadata.BestReturn, metadata.TotalUpdates)
+	}
 
 	networkDead := false
 	deadEpochs := 0
 
 	// See run()'s own lastEpochEnd for what this feeds and why.
 	var lastEpochEnd time.Time
+	var roundDurationTotal, epochDurationTotal float64
+	epochsCount := 0
 
 	cfg := leapfrog.Config[*actorcritic.RecurrentParams]{
 		Trainer:             trainerSettings,
@@ -1267,8 +1315,18 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 		WinZScore:           float32(f.winZScore),
 		MinWinMargin:        float32(f.minWinMargin),
 		EvalGreedy:          f.evalGreedy,
-		OnBeforeEvaluation:  markEvaluationInProgress(pairedEvalTaskReseeder(evalTaskReseeders(connected))),
+		ResumeStudent:       resumeParams,
+		ResumeStudentStartEpoch: func() int {
+			if resumeParams != nil {
+				return resumeEpoch + 1
+			}
+			return 0
+		}(),
+		OnBeforeEvaluation: markEvaluationInProgress(pairedEvalTaskReseeder(evalTaskReseeders(connected))),
 		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.RecurrentParams) {
+			madeEpochProgress = true
+			latestParams = params
+			exporter.setRecurrentStudent(params, environmentID, progress, rec.Generation)
 			progress.Epoch = stats.Epoch
 			progress.TotalUpdates += stats.UpdateCount
 			if stats.AverageReturn > progress.BestReturn {
@@ -1291,10 +1349,23 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 			metricCurrentEpoch.Set(float64(stats.Epoch))
 			metricEpochTrajectoriesStarted.Set(0)
 			metricEpochAvgReturn.Set(float64(stats.AverageReturn))
+			recordEpochDiagnostics(stats)
 			metricEpochsTotal.Inc()
 			metricEpochSamplesTotal.Add(float64(stats.SampleCount))
 			metricGradientUpdatesTotal.Add(float64(stats.UpdateCount))
-			metricEpochDurationSeconds.Observe(time.Since(lastEpochEnd).Seconds())
+			thisEpochDuration := time.Since(lastEpochEnd).Seconds()
+			metricEpochDurationSeconds.Observe(thisEpochDuration)
+			epochDurationTotal += thisEpochDuration
+			epochsCount++
+			metricEpochDurationSecondsLifetimeTotal.Set(epochDurationTotal)
+			if err := saveLifetimeMetricsState(interimDir, lifetimeMetricsState{
+				RoundDurationSeconds: roundDurationTotal,
+				EpochDurationSeconds: epochDurationTotal,
+				Epochs:               epochsCount,
+				TaskEpisodes:         snapshotTaskEpisodeCounts(),
+			}); err != nil {
+				log.Printf("  epoch %d: persisting recurrent lifetime-metrics state: %v", stats.Epoch, err)
+			}
 			lastEpochEnd = time.Now()
 			if restartReq.take() {
 				log.Printf("  restart requested; stopping after epoch %d", stats.Epoch)
@@ -1303,12 +1374,87 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 		},
 	}
 
-	rng := rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))
+	if resumeParams != nil {
+		if state, ok := loadPersistedTrainingState(interimDir); ok && state.ParentGeneration == rec.Generation && state.Epoch == resumeEpoch && state.Optimizer != nil {
+			cfg.ResumeOptimizerState = state.Optimizer
+		}
+	}
+	rngSource := rand.NewPCG(uint64(time.Now().UnixNano()), 0)
+	if state, ok := loadPersistedTrainingState(interimDir); ok && len(state.RNG) > 0 {
+		if err := rngSource.UnmarshalBinary(state.RNG); err != nil {
+			log.Printf("recurrent recovery: ignoring invalid RNG state: %v", err)
+		}
+	}
+	rng := rand.New(rngSource)
+	// Restore restart-visible round/evaluation/lifetime panels. These files
+	// are optional, preserving compatibility with older recurrent runs.
+	if state, ok := loadRoundEvalState(interimDir); ok {
+		recordRoundEvaluation(leapfrog.Result[*actorcritic.RecurrentParams]{
+			TeacherReward: state.TeacherReward,
+			StudentReward: state.StudentReward,
+			EvalEpisodes:  state.EvalEpisodes,
+			TeacherStd:    state.TeacherStd,
+			StudentStd:    state.StudentStd,
+			MeanDiff:      state.MeanDiff,
+			DiffStdErr:    state.DiffStdErr,
+		})
+	}
+	startRound := 1
+	wonCount, lostCount := 0, 0
+	if state, ok := loadRoundCounterState(interimDir); ok {
+		startRound = state.Round + 1
+		wonCount, lostCount = state.Won, state.Lost
+		metricRoundsTotal.WithLabelValues("won").Add(float64(wonCount))
+		metricRoundsTotal.WithLabelValues("lost").Add(float64(lostCount))
+	}
+	if state, ok := loadLifetimeMetricsState(interimDir); ok {
+		roundDurationTotal = state.RoundDurationSeconds
+		epochDurationTotal = state.EpochDurationSeconds
+		epochsCount = state.Epochs
+		metricRoundDurationSecondsLifetimeTotal.Set(roundDurationTotal)
+		metricEpochDurationSecondsLifetimeTotal.Set(epochDurationTotal)
+		metricEpochsTotal.Add(float64(epochsCount))
+		seedTaskEpisodeCounts(state.TaskEpisodes)
+	}
+	cfg.OnOptimizerState = func(stats ppo.EpochStats, params *actorcritic.RecurrentParams, optimizer actorcritic.AdamState) {
+		optimizerCopy := optimizer
+		latestOptimizerState = &optimizerCopy
+		if f.checkpointInterval <= 0 || (stats.Epoch+1)%f.checkpointInterval != 0 {
+			return
+		}
+		if err := saveInterimRecurrentCheckpoint(interimDir, params, environmentID, stats.Epoch, progress, rec.Generation); err != nil {
+			log.Printf("  saving recurrent interim checkpoint: %v", err)
+			return
+		}
+		rngState, err := rngSource.MarshalBinary()
+		if err != nil {
+			log.Printf("  saving recurrent RNG state: %v", err)
+			return
+		}
+		if err := savePersistedTrainingState(interimDir, persistedTrainingState{SchemaVersion: 1, ParentGeneration: rec.Generation, Epoch: stats.Epoch, Optimizer: &optimizer, RNG: rngState, Environments: captureEnvironmentStates(envs)}); err != nil {
+			log.Printf("  saving recurrent continuation state: %v", err)
+		}
+	}
 
-	for round := 1; f.maxRounds == 0 || round <= f.maxRounds; round++ {
+	for round := startRound; f.maxRounds == 0 || round <= f.maxRounds; round++ {
 		if err := ctx.Err(); err != nil {
 			log.Printf("stopping before round %d: %v", round, err)
 			break
+		}
+
+		if n, ok := envCountReq.take(); ok {
+			newConnected, newEnvs, rcErr := reconcileEnvCount(ctx, stop, connected, envs, n,
+				mcSettings, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks,
+				curriculumPool, f.packetLogDir(), f.episodeLimits(), episodeTask, agents, &sharedOriginBase)
+			if rcErr != nil {
+				log.Printf("recurrent round %d: scaling to %d parallel envs failed, continuing with %d: %v", round, n, len(connected), rcErr)
+			} else {
+				connected, envs = newConnected, newEnvs
+				cfg.OnBeforeEvaluation = markEvaluationInProgress(pairedEvalTaskReseeder(evalTaskReseeders(connected)))
+				metricParallelEnvs.Set(float64(len(connected)))
+				envConfirmer.scheduleConfirm(len(connected))
+				log.Printf("recurrent round %d: scaled to %d parallel envs", round, len(connected))
+			}
 		}
 
 		metricCurrentRound.Set(float64(round))
@@ -1319,6 +1465,9 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 		lastEpochEnd = start
 		result, err := leapfrog.Round(ctx, envs, teacherParams, cfg, leapfrog.RecurrentSeams, rng)
 		evaluationInProgress.Store(false)
+		cfg.ResumeStudent = nil
+		cfg.ResumeOptimizerState = nil
+		cfg.ResumeStudentStartEpoch = 0
 		if err != nil {
 			if ctx.Err() != nil {
 				log.Printf("round %d interrupted: %v", round, err)
@@ -1328,7 +1477,20 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 		}
 		elapsed := time.Since(start).Round(time.Second)
 		metricRoundDurationSeconds.Observe(elapsed.Seconds())
+		roundDurationTotal += elapsed.Seconds()
+		metricRoundDurationSecondsLifetimeTotal.Set(roundDurationTotal)
 		recordRoundEvaluation(result)
+		if err := saveRoundEvalState(interimDir, result); err != nil {
+			log.Printf("recurrent round %d: persisting round-eval state: %v", round, err)
+		}
+		if err := saveLifetimeMetricsState(interimDir, lifetimeMetricsState{
+			RoundDurationSeconds: roundDurationTotal,
+			EpochDurationSeconds: epochDurationTotal,
+			Epochs:               epochsCount,
+			TaskEpisodes:         snapshotTaskEpisodeCounts(),
+		}); err != nil {
+			log.Printf("recurrent round %d: persisting lifetime-metrics state: %v", round, err)
+		}
 
 		if result.StudentWon {
 			rec = lineage.Record{
@@ -1345,18 +1507,39 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 				return fmt.Errorf("round %d: saving generation %d: %w", round, rec.Generation, err)
 			}
 			teacherParams = result.StudentParams
+			latestParams = teacherParams
+			exporter.setRecurrentTeacher(teacherParams, rec)
 			metricRoundsTotal.WithLabelValues("won").Inc()
 			metricGeneration.Set(float64(rec.Generation))
+			wonCount++
 		} else {
 			metricRoundsTotal.WithLabelValues("lost").Inc()
+			lostCount++
+		}
+		if err := saveRoundCounterState(interimDir, roundCounterState{Round: round, Won: wonCount, Lost: lostCount}); err != nil {
+			log.Printf("recurrent round %d: persisting round-counter state: %v", round, err)
 		}
 
 		log.Printf("round %d (%s): teacher=%.3f student=%.3f studentWon=%v generation=%d (n=%d/side, std teacher=%.2f student=%.2f, paired diff=%+.3f ± %.3f)",
 			round, elapsed, result.TeacherReward, result.StudentReward, result.StudentWon, rec.Generation,
 			result.EvalEpisodes, result.TeacherStd, result.StudentStd, result.MeanDiff, result.DiffStdErr)
+		clearInterimCheckpoints(interimDir)
+		madeEpochProgress = false
 	}
 	if networkDead {
 		return errNetworkDead
+	}
+	if !madeEpochProgress {
+		log.Printf("no recurrent epoch completed this process's lifetime; leaving existing recovery checkpoint in %s untouched", interimDir)
+	} else if err := saveFinalRecurrentCheckpoint(interimDir, latestParams, environmentID, progress, rec.Generation); err != nil {
+		return fmt.Errorf("saving final recurrent recovery checkpoint: %w", err)
+	} else {
+		log.Printf("saved final recurrent recovery checkpoint: %s", filepath.Join(interimDir, "final-recurrent.json"))
+		if latestOptimizerState != nil {
+			if rngState, err := rngSource.MarshalBinary(); err == nil {
+				_ = savePersistedTrainingState(interimDir, persistedTrainingState{SchemaVersion: 1, ParentGeneration: rec.Generation, Epoch: progress.Epoch, Optimizer: latestOptimizerState, RNG: rngState, Environments: captureEnvironmentStates(envs)})
+			}
+		}
 	}
 	return nil
 }
@@ -1381,6 +1564,45 @@ func saveInterimCheckpoint(dir string, params *actorcritic.Params, environmentID
 	})
 }
 
+func saveInterimRecurrentCheckpoint(dir string, params *actorcritic.RecurrentParams, environmentID string, epoch int, metadata checkpoint.Metadata, parentGeneration int) error {
+	if err := saveResumeState(dir, parentGeneration); err != nil {
+		return fmt.Errorf("saving resume state: %w", err)
+	}
+	return checkpoint.Save(dir, "interim-recurrent", epoch, func(path string) error {
+		return params.SaveFile(path, environmentID, metadata)
+	})
+}
+
+func saveFinalRecurrentCheckpoint(dir string, params *actorcritic.RecurrentParams, environmentID string, metadata checkpoint.Metadata, parentGeneration int) error {
+	if params == nil {
+		return fmt.Errorf("recurrent params are nil")
+	}
+	if err := saveResumeState(dir, parentGeneration); err != nil {
+		return fmt.Errorf("saving resume state: %w", err)
+	}
+	return saveParamsAtomicallyRecurrent(filepath.Join(dir, "final-recurrent.json"), params, environmentID, metadata)
+}
+
+func saveParamsAtomicallyRecurrent(path string, params *actorcritic.RecurrentParams, environmentID string, metadata checkpoint.Metadata) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := params.Save(tmp, environmentID, metadata); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
 func saveFinalCheckpoint(dir string, params *actorcritic.Params, environmentID string, metadata checkpoint.Metadata, parentGeneration int) error {
 	if params == nil {
 		return fmt.Errorf("params are nil")
@@ -1403,7 +1625,10 @@ func clearInterimCheckpoints(dir string) {
 	if matches, err := filepath.Glob(filepath.Join(dir, "interim-epoch-*.json")); err == nil {
 		paths = append(paths, matches...)
 	}
-	paths = append(paths, filepath.Join(dir, "final.json"), filepath.Join(dir, resumeStateFileName))
+	if recurrentMatches, err := filepath.Glob(filepath.Join(dir, "interim-recurrent-epoch-*.json")); err == nil {
+		paths = append(paths, recurrentMatches...)
+	}
+	paths = append(paths, filepath.Join(dir, "final.json"), filepath.Join(dir, "final-recurrent.json"), filepath.Join(dir, resumeStateFileName), filepath.Join(dir, "training-state.json"))
 	for _, path := range paths {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			log.Printf("clearing finished round's recovery checkpoint %s: %v", path, err)
@@ -1531,6 +1756,40 @@ func loadResumableStudent(interimDir, environmentID string, parentGeneration int
 	}
 
 	params, metadata, err := actorcritic.LoadFile(filepath.Join(interimDir, newestName), environmentID)
+	if err != nil {
+		return nil, -1, checkpoint.Metadata{}
+	}
+	return params, metadata.Epoch, metadata
+}
+
+func loadResumableRecurrentStudent(interimDir, environmentID string, parentGeneration int) (*actorcritic.RecurrentParams, int, checkpoint.Metadata) {
+	state, err := loadResumeState(interimDir)
+	if err != nil || state.ParentGeneration != parentGeneration {
+		return nil, -1, checkpoint.Metadata{}
+	}
+	entries, err := os.ReadDir(interimDir)
+	if err != nil {
+		return nil, -1, checkpoint.Metadata{}
+	}
+	var newestName string
+	var newestModTime time.Time
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || (!strings.HasPrefix(name, "interim-recurrent-epoch-") && name != "final-recurrent.json") {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if newestName == "" || info.ModTime().After(newestModTime) {
+			newestName, newestModTime = name, info.ModTime()
+		}
+	}
+	if newestName == "" {
+		return nil, -1, checkpoint.Metadata{}
+	}
+	params, metadata, err := actorcritic.RecurrentLoadFile(filepath.Join(interimDir, newestName), environmentID)
 	if err != nil {
 		return nil, -1, checkpoint.Metadata{}
 	}
@@ -1675,6 +1934,22 @@ func logCraftEconomyInventory(envName string, liveAgent rlenv.LiveAgent, selecte
 // clearing first keeps every plain craft episode self-contained instead
 // of accumulating state across hundreds of them.
 func craftIngredientSeeder(ctx context.Context, seedAgent rlenv.SeedAgent, cfg rlenv.Config) error {
+	// Plain mine tasks also arrive here with their target configured. Delegate
+	// only the mine portion to the standard seeder; craft seeding remains below
+	// so its clear-before-seed policy is not duplicated. DefaultEpisodeSeeder
+	// still honors MineTargetBuried, so buried targets do not get a visible
+	// replacement beside the bot.
+	if cfg.MineTargetBlock != "" {
+		mineCfg := rlenv.Config{
+			MineTargetBlock:  cfg.MineTargetBlock,
+			MineSearchRadius: cfg.MineSearchRadius,
+			MineRequiredTool: cfg.MineRequiredTool,
+			MineTargetBuried: cfg.MineTargetBuried,
+		}
+		if err := rlenv.DefaultEpisodeSeeder(ctx, seedAgent, mineCfg); err != nil {
+			return err
+		}
+	}
 	if cfg.CraftTargetItem == "" {
 		return nil
 	}

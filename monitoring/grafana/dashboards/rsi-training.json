@@ -1699,6 +1699,275 @@
           ]
         }
       }
+    },
+    {
+      "type": "timeseries",
+      "title": "Episode termination reasons",
+      "description": "Environment termination reasons and collector-boundary truncations. A collector_truncation means the rollout limit was reached without the environment returning Done=true.",
+      "id": 114,
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 200
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(rsi_episode_terminations_total[10m])) by (task, reason, phase)",
+          "refId": "A",
+          "legendFormat": "{{task}}/{{reason}} ({{phase}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "sortBy": "Last",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Mine action availability",
+      "description": "Action-mask counts by task, action, and legality. For mine tasks, Mine legal=false means no visible target was available; compare it with Wait legal=true to distinguish a forced wait from a policy choice.",
+      "id": 116,
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 209
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(rsi_action_mask_total{task=~\"mine|mine_far\"}[10m])) by (task, action, legal)",
+          "refId": "A",
+          "legendFormat": "{{task}}/{{action}} legal={{legal}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "sortBy": "Last",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "PPO optimization diagnostics",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 220
+      },
+      "id": 117,
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "PPO losses and entropy",
+      "description": "Mean policy loss, value loss, and entropy across real replayed rollout steps in the most recently completed epoch. Losses include the configured value coefficient and are averaged over PPO replay passes; entropy is in nats.",
+      "id": 118,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 221
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "rsi_epoch_policy_loss",
+          "refId": "A",
+          "legendFormat": "policy loss"
+        },
+        {
+          "expr": "rsi_epoch_value_loss",
+          "refId": "B",
+          "legendFormat": "value loss"
+        },
+        {
+          "expr": "rsi_epoch_entropy",
+          "refId": "C",
+          "legendFormat": "entropy"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Raw GAE advantage statistics",
+      "description": "Raw GAE advantage mean, standard deviation, minimum, and maximum before PPO batch normalization. Large spread or drifting extrema can explain noisy policy updates.",
+      "id": 119,
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 221
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "rsi_epoch_advantage_mean",
+          "refId": "A",
+          "legendFormat": "mean"
+        },
+        {
+          "expr": "rsi_epoch_advantage_std",
+          "refId": "B",
+          "legendFormat": "std"
+        },
+        {
+          "expr": "rsi_epoch_advantage_min",
+          "refId": "C",
+          "legendFormat": "min"
+        },
+        {
+          "expr": "rsi_epoch_advantage_max",
+          "refId": "D",
+          "legendFormat": "max"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Gradient norms by objective",
+      "description": "Mean L2 gradient norms per Adam update. Combined before/after-clipping norms show optimizer clipping; policy-plus-entropy versus value norms show whether a shared trunk is dominated by one objective.",
+      "id": 120,
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 230
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "targets": [
+        {
+          "expr": "rsi_epoch_gradient_norm",
+          "refId": "A",
+          "legendFormat": "before clipping"
+        },
+        {
+          "expr": "rsi_epoch_applied_gradient_norm",
+          "refId": "B",
+          "legendFormat": "after clipping"
+        },
+        {
+          "expr": "rsi_epoch_policy_gradient_norm",
+          "refId": "C",
+          "legendFormat": "policy + entropy"
+        },
+        {
+          "expr": "rsi_epoch_value_gradient_norm",
+          "refId": "D",
+          "legendFormat": "value"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "spanNulls": true
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
     }
   ],
   "templating": {

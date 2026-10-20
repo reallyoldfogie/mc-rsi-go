@@ -10,3 +10,7 @@ scrape_configs:
     # started with (default :9400).
     static_configs:
       - targets: ["host.docker.internal:9400"]
+
+  - job_name: rsi-train-recurrent
+    static_configs:
+      - targets: ["host.docker.internal:9401"]

@@ -178,6 +178,30 @@ func TestItemIconFallbackPrefersEarlierSuffixOverLater(t *testing.T) {
 	assert.Equal(t, "side-bytes", w.Body.String(), "itemIconFallbackSuffixes' own order (_side before _top) must be honored")
 }
 
+func TestItemIconFallbackMissingFaceUsesBaseTexture(t *testing.T) {
+	fsys := fstest.MapFS{"oak_log.png": &fstest.MapFile{Data: []byte("log-bytes")}}
+	h := itemIconFallback{fsys: fsys, next: http.FileServer(http.FS(fsys))}
+
+	req := httptest.NewRequest(http.MethodGet, "/oak_log_side.png", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "log-bytes", w.Body.String())
+}
+
+func TestItemIconFallbackMissingFaceUsesDirectionalVariant(t *testing.T) {
+	fsys := fstest.MapFS{"crafting_table_top.png": &fstest.MapFile{Data: []byte("top-bytes")}}
+	h := itemIconFallback{fsys: fsys, next: http.FileServer(http.FS(fsys))}
+
+	req := httptest.NewRequest(http.MethodGet, "/crafting_table_bottom.png", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "top-bytes", w.Body.String())
+}
+
 func TestItemIconFallback404sWhenNoVariantExists(t *testing.T) {
 	fsys := fstest.MapFS{}
 	h := itemIconFallback{fsys: fsys, next: http.FileServer(http.FS(fsys))}
@@ -260,12 +284,27 @@ func TestSummarizeNearbyEntitiesFiltersByRadiusAndSortsByDistance(t *testing.T) 
 		13: {EntityID: 13, EntityType: 2, X: 0, Y: 0, Z: 0, Removed: true}, // excluded
 	}
 
-	got := summarizeNearbyEntities(tracked, reg, 0, 0, 0)
+	got := summarizeNearbyEntities(tracked, reg, nil, 0, 0, 0)
 
 	assert.Equal(t, []nearbyEntity{
 		{ID: 11, Type: "item", X: 5, Y: 0, Z: 0},
 		{ID: 12, Type: "item", X: 0, Y: 0, Z: 10},
 	}, got)
+}
+
+func TestSummarizeNearbyEntitiesResolvesDroppedItem(t *testing.T) {
+	reg := fakeEntityTypeRegistry{1: "minecraft:item"}
+	items := fakeItemManager{42: "minecraft:diamond"}
+	tracked := map[int32]models.TrackedEntityInfo{
+		11: {EntityID: 11, EntityType: 1, X: 1, Y: 2, Z: 3, ItemID: 42, ItemCount: 4, HasItem: true},
+	}
+
+	got := summarizeNearbyEntities(tracked, reg, items, 0, 0, 0)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, "item", got[0].Type)
+	assert.Equal(t, "diamond", got[0].ItemName)
+	assert.Equal(t, int32(4), got[0].ItemCount)
 }
 
 func TestDashboardRefreshCadenceIsQuarterSecond(t *testing.T) {
@@ -286,7 +325,7 @@ func TestWorldStreamEntitiesEventIncludesStableIDs(t *testing.T) {
 func TestSummarizeNearbyEntitiesUnresolvedTypeFallsBackToNumericName(t *testing.T) {
 	tracked := map[int32]models.TrackedEntityInfo{1: {EntityID: 1, EntityType: 99, X: 1, Y: 0, Z: 0}}
 
-	got := summarizeNearbyEntities(tracked, fakeEntityTypeRegistry{}, 0, 0, 0)
+	got := summarizeNearbyEntities(tracked, fakeEntityTypeRegistry{}, nil, 0, 0, 0)
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "entity-99", got[0].Type)
@@ -295,7 +334,7 @@ func TestSummarizeNearbyEntitiesUnresolvedTypeFallsBackToNumericName(t *testing.
 func TestSummarizeNearbyEntitiesNilRegistryFallsBackToNumericName(t *testing.T) {
 	tracked := map[int32]models.TrackedEntityInfo{1: {EntityID: 1, EntityType: 7, X: 1, Y: 0, Z: 0}}
 
-	got := summarizeNearbyEntities(tracked, nil, 0, 0, 0)
+	got := summarizeNearbyEntities(tracked, nil, nil, 0, 0, 0)
 
 	require.Len(t, got, 1)
 	assert.Equal(t, "entity-7", got[0].Type)
@@ -311,7 +350,7 @@ func TestSummarizeNearbyEntitiesCapsAtMax(t *testing.T) {
 		tracked[i] = models.TrackedEntityInfo{EntityID: i, EntityType: 1, X: float64(i) * 0.1, Y: 0, Z: 0}
 	}
 
-	got := summarizeNearbyEntities(tracked, reg, 0, 0, 0)
+	got := summarizeNearbyEntities(tracked, reg, nil, 0, 0, 0)
 
 	assert.Len(t, got, nearbyEntityMax)
 }

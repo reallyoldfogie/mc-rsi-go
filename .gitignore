@@ -26,3 +26,10 @@
 
 /bin
 *.log
+.worktrees
+
+/libraries
+/rsi-train
+/third_party
+/versions
+
