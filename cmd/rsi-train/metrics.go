@@ -452,6 +452,7 @@ const episodeSuccessRewardThreshold float32 = 5
 // instrumentedEnvironment records episode-level health and throughput while
 // preserving optional action-mask support from the wrapped environment.
 type instrumentedEnvironment struct {
+	mu             sync.RWMutex
 	env            rl.Environment
 	task           string
 	taskForEpisode func() string
@@ -512,10 +513,20 @@ func (e *instrumentedEnvironment) currentTargetOffset() (offset [3]float64, ok b
 	return [3]float64{}, false
 }
 
-func (e *instrumentedEnvironment) ObservationSize() int { return e.env.ObservationSize() }
-func (e *instrumentedEnvironment) ActionSpace() int     { return e.env.ActionSpace() }
+func (e *instrumentedEnvironment) ObservationSize() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.env.ObservationSize()
+}
+func (e *instrumentedEnvironment) ActionSpace() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.env.ActionSpace()
+}
 
 func (e *instrumentedEnvironment) ActionMask() []bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	if masker, ok := e.env.(rl.ActionMasker); ok {
 		mask := masker.ActionMask()
 		e.actionMask = append(e.actionMask[:0], mask...)
@@ -593,6 +604,8 @@ func environmentDoneReason(env rl.Environment) string {
 }
 
 func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	e.actionMask = nil
 	task := e.currentTask()
 	if e.started {
@@ -653,6 +666,8 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 }
 
 func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (rl.StepResult, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 	task := e.currentTask()
 	phase := episodeLengthPhase()
 	metricActionsTotal.WithLabelValues(task, actionName(action)).Inc()

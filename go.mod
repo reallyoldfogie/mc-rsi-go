@@ -12,6 +12,8 @@ require (
 	github.com/stretchr/testify v1.12.1
 )
 
+replace github.com/reallyoldfogie/mc-agent => ../mc-agent/.worktrees/buried-block-mining
+
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/Tnze/go-mc v1.20.3-0.20240907175330-9a1f5431370e // indirect
@@ -61,5 +63,3 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/reallyoldfogie/mc-agent => ../../../mc-agent/.worktrees/buried-block-mining
