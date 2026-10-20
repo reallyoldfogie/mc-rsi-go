@@ -802,6 +802,8 @@ type fakeSeedAgent struct {
 	seedCraftIngredients    []string // every itemName SeedCraftIngredients was called with
 	seedCraftIngredientsErr error
 	seedNearbyBlockCalls    int
+	seedNearbyBlockName     string
+	seedNearbyBlockRadius   int
 }
 
 func (f *fakeSeedAgent) ClearInventory(ctx context.Context) error {
@@ -816,7 +818,33 @@ func (f *fakeSeedAgent) SeedCraftIngredients(ctx context.Context, itemName strin
 
 func (f *fakeSeedAgent) SeedNearbyBlock(ctx context.Context, blockName string, radius int) error {
 	f.seedNearbyBlockCalls++
+	f.seedNearbyBlockName = blockName
+	f.seedNearbyBlockRadius = radius
 	return nil
+}
+
+func TestCraftIngredientSeederSeedsAPlainMineTarget(t *testing.T) {
+	agent := &fakeSeedAgent{}
+	err := craftIngredientSeeder(context.Background(), agent, rlenv.Config{
+		MineTargetBlock:  "minecraft:dirt",
+		MineSearchRadius: 16,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 1, agent.seedNearbyBlockCalls)
+	assert.Equal(t, "minecraft:dirt", agent.seedNearbyBlockName)
+	assert.Equal(t, 16, agent.seedNearbyBlockRadius)
+	assert.Empty(t, agent.seedCraftIngredients)
+}
+
+func TestCraftIngredientSeederDoesNotSeedABuriedMineTarget(t *testing.T) {
+	agent := &fakeSeedAgent{}
+	err := craftIngredientSeeder(context.Background(), agent, rlenv.Config{
+		MineTargetBlock:  "minecraft:coal_ore",
+		MineSearchRadius: 24,
+		MineTargetBuried: true,
+	})
+	require.NoError(t, err)
+	assert.Zero(t, agent.seedNearbyBlockCalls)
 }
 
 func TestCraftIngredientSeederNoOpsWhenNoCraftTargetItem(t *testing.T) {

@@ -27,13 +27,19 @@ import (
 type checkpointExporter struct {
 	dir string
 
-	mu               sync.Mutex
-	teacherParams    *actorcritic.Params
-	teacherRec       lineage.Record
-	studentParams    *actorcritic.Params
-	studentEnvID     string
-	studentMetadata  checkpoint.Metadata
-	studentParentGen int
+	mu                        sync.Mutex
+	teacherParams             *actorcritic.Params
+	teacherRec                lineage.Record
+	studentParams             *actorcritic.Params
+	studentEnvID              string
+	studentMetadata           checkpoint.Metadata
+	studentParentGen          int
+	recurrentTeacherParams    *actorcritic.RecurrentParams
+	recurrentTeacherRec       lineage.Record
+	recurrentStudentParams    *actorcritic.RecurrentParams
+	recurrentStudentEnvID     string
+	recurrentStudentMetadata  checkpoint.Metadata
+	recurrentStudentParentGen int
 }
 
 func newCheckpointExporter(dir string) *checkpointExporter {
@@ -58,6 +64,19 @@ func (e *checkpointExporter) setStudent(params *actorcritic.Params, environmentI
 	e.studentParams, e.studentEnvID, e.studentMetadata, e.studentParentGen = params, environmentID, metadata, parentGeneration
 }
 
+func (e *checkpointExporter) setRecurrentTeacher(params *actorcritic.RecurrentParams, rec lineage.Record) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.recurrentTeacherParams, e.recurrentTeacherRec = params, rec
+}
+
+func (e *checkpointExporter) setRecurrentStudent(params *actorcritic.RecurrentParams, environmentID string, metadata checkpoint.Metadata, parentGeneration int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.recurrentStudentParams, e.recurrentStudentEnvID = params, environmentID
+	e.recurrentStudentMetadata, e.recurrentStudentParentGen = metadata, parentGeneration
+}
+
 type checkpointExportResult struct {
 	Teacher string `json:"teacher,omitempty"`
 	Student string `json:"student,omitempty"`
@@ -80,20 +99,33 @@ func (e *checkpointExporter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	teacherParams, teacherRec := e.teacherParams, e.teacherRec
 	studentParams := e.studentParams
 	studentEnvID, studentMetadata, studentParentGen := e.studentEnvID, e.studentMetadata, e.studentParentGen
+	recurrentTeacherParams, recurrentTeacherRec := e.recurrentTeacherParams, e.recurrentTeacherRec
+	recurrentStudentParams := e.recurrentStudentParams
+	recurrentStudentEnvID, recurrentStudentMetadata, recurrentStudentParentGen := e.recurrentStudentEnvID, e.recurrentStudentMetadata, e.recurrentStudentParentGen
 	e.mu.Unlock()
 
 	var result checkpointExportResult
-	if teacherParams == nil {
+	if teacherParams == nil && recurrentTeacherParams == nil {
 		result.Error = "not ready: no generation loaded yet"
 		respondJSON(w, http.StatusServiceUnavailable, result)
 		return
 	}
-	if err := lineage.Save(e.dir, teacherParams, teacherRec, lineage.PlainCodec); err != nil {
-		result.Error = fmt.Sprintf("saving generation %d: %v", teacherRec.Generation, err)
-		respondJSON(w, http.StatusInternalServerError, result)
-		return
+	if teacherParams != nil {
+		if err := lineage.Save(e.dir, teacherParams, teacherRec, lineage.PlainCodec); err != nil {
+			result.Error = fmt.Sprintf("saving generation %d: %v", teacherRec.Generation, err)
+			respondJSON(w, http.StatusInternalServerError, result)
+			return
+		}
+		result.Teacher = fmt.Sprintf("generation %d re-saved under %s", teacherRec.Generation, e.dir)
 	}
-	result.Teacher = fmt.Sprintf("generation %d re-saved under %s", teacherRec.Generation, e.dir)
+	if recurrentTeacherParams != nil {
+		if err := lineage.Save(e.dir, recurrentTeacherParams, recurrentTeacherRec, lineage.RecurrentCodec); err != nil {
+			result.Error = fmt.Sprintf("saving recurrent generation %d: %v", recurrentTeacherRec.Generation, err)
+			respondJSON(w, http.StatusInternalServerError, result)
+			return
+		}
+		result.Teacher = fmt.Sprintf("generation %d re-saved under %s", recurrentTeacherRec.Generation, e.dir)
+	}
 
 	if studentParams != nil {
 		manualDir := filepath.Join(e.dir, "manual")
@@ -105,6 +137,21 @@ func (e *checkpointExporter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		path := filepath.Join(manualDir, fmt.Sprintf("student-%s.json", time.Now().UTC().Format("20060102T150405.000Z")))
 		if err := saveParamsAtomically(path, studentParams, studentEnvID, studentMetadata); err != nil {
 			result.Error = fmt.Sprintf("saving student snapshot (parent generation %d): %v", studentParentGen, err)
+			respondJSON(w, http.StatusInternalServerError, result)
+			return
+		}
+		result.Student = path
+	}
+	if recurrentStudentParams != nil {
+		manualDir := filepath.Join(e.dir, "manual")
+		if err := os.MkdirAll(manualDir, 0o755); err != nil {
+			result.Error = fmt.Sprintf("creating %s: %v", manualDir, err)
+			respondJSON(w, http.StatusInternalServerError, result)
+			return
+		}
+		path := filepath.Join(manualDir, fmt.Sprintf("student-recurrent-%s.json", time.Now().UTC().Format("20060102T150405.000Z")))
+		if err := saveParamsAtomicallyRecurrent(path, recurrentStudentParams, recurrentStudentEnvID, recurrentStudentMetadata); err != nil {
+			result.Error = fmt.Sprintf("saving recurrent student snapshot (parent generation %d): %v", recurrentStudentParentGen, err)
 			respondJSON(w, http.StatusInternalServerError, result)
 			return
 		}

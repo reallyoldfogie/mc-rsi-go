@@ -62,4 +62,6 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-// replace github.com/reallyoldfogie/cRL-go => ../cRL-go
+replace github.com/reallyoldfogie/mc-agent => ../../../mc-agent/.worktrees/buried-block-mining
+
+replace github.com/reallyoldfogie/cRL-go => ./third_party/cRL-go

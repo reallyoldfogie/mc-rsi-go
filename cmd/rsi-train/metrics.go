@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/reallyoldfogie/cRL-go/pkg/ppo"
 	"github.com/reallyoldfogie/cRL-go/pkg/rl"
 
 	"github.com/reallyoldfogie/mc-agent/rlenv"
@@ -212,6 +214,61 @@ var (
 		Help: "Average rollout return of the most recently completed Student-training epoch.",
 	})
 
+	metricEpochPolicyLoss = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_policy_loss",
+		Help: "Mean clipped PPO policy loss across real replayed rollout steps in the most recently completed epoch, averaged over PPO passes.",
+	})
+
+	metricEpochValueLoss = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_value_loss",
+		Help: "Mean value loss (including the configured value coefficient) across real replayed rollout steps in the most recently completed epoch, averaged over PPO passes.",
+	})
+
+	metricEpochEntropy = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_entropy",
+		Help: "Mean policy entropy in nats across real replayed rollout steps in the most recently completed epoch.",
+	})
+
+	metricEpochAdvantageMean = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_advantage_mean",
+		Help: "Mean raw GAE advantage before batch normalization for the most recently completed epoch.",
+	})
+
+	metricEpochAdvantageStd = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_advantage_std",
+		Help: "Standard deviation of raw GAE advantages before batch normalization for the most recently completed epoch.",
+	})
+
+	metricEpochAdvantageMin = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_advantage_min",
+		Help: "Minimum raw GAE advantage before batch normalization for the most recently completed epoch.",
+	})
+
+	metricEpochAdvantageMax = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_advantage_max",
+		Help: "Maximum raw GAE advantage before batch normalization for the most recently completed epoch.",
+	})
+
+	metricEpochGradientNorm = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_gradient_norm",
+		Help: "Mean L2 norm of the sample-count-averaged gradient before configured clipping across Adam updates in the most recently completed epoch.",
+	})
+
+	metricEpochAppliedGradientNorm = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_applied_gradient_norm",
+		Help: "Mean L2 norm of the sample-count-averaged gradient after configured clipping across Adam updates in the most recently completed epoch.",
+	})
+
+	metricEpochPolicyGradientNorm = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_policy_gradient_norm",
+		Help: "Mean L2 norm of policy-plus-entropy objective gradients after real-timestep averaging, before clipping, across Adam updates in the most recently completed epoch.",
+	})
+
+	metricEpochValueGradientNorm = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "rsi_epoch_value_gradient_norm",
+		Help: "Mean L2 norm of value objective gradients after real-timestep averaging, before clipping, across Adam updates in the most recently completed epoch.",
+	})
+
 	metricEpochsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "rsi_epochs_total",
 		Help: "Total Student-training epochs completed across every round so far.",
@@ -231,6 +288,11 @@ var (
 		Name: "rsi_episodes_total",
 		Help: "Completed training episodes, by task and outcome.",
 	}, []string{"task", "outcome"}) // outcome: success | failure | truncated
+
+	metricEpisodeTerminationsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rsi_episode_terminations_total",
+		Help: "Episode endings by task, termination reason, and phase. Reasons from mc-agent include mine, craft, goto, chain, reward, stuck_timeout, step_timeout, and collector_truncation.",
+	}, []string{"task", "reason", "phase"})
 
 	metricEpisodesStartedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "rsi_episodes_started_total",
@@ -264,6 +326,11 @@ var (
 		Help: "Environment steps by the action the policy chose, by task. With rsi_step_duration_seconds this shows where an episode's steps go: most steps of a policy still learning a sequence are instant no-ops (Mine before the block is in view, GoToTarget after arriving, Wait), not slow ones.",
 	}, []string{"task", "action"}) // action: wait | goto | mine | craft
 
+	metricActionMaskTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rsi_action_mask_total",
+		Help: "Action-mask observations presented to the policy, by task, action, legality, and phase. Compare this with rsi_actions_total to distinguish an unavailable Mine action from a policy choosing Wait despite Mine being legal.",
+	}, []string{"task", "action", "legal", "phase"})
+
 	metricStepDurationSeconds = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "rsi_step_duration_seconds",
 		Help:    "Wall-clock duration of each environment step, by task.",
@@ -294,6 +361,22 @@ var (
 		Help: "Episodes posed by the curriculum, by task type. Only emitted when -curriculum-config is set.",
 	}, []string{"task"}) // "goto" | "mine" | "craft" | "mine_far" | "craft_far" | "chain_gather" | "chain_table" | "chain_place" | "chain_use"
 )
+
+// recordEpochDiagnostics publishes the PPO objective, advantage, and
+// optimizer signals returned by either the plain or recurrent trainer.
+func recordEpochDiagnostics(stats ppo.EpochStats) {
+	metricEpochPolicyLoss.Set(float64(stats.PolicyLoss))
+	metricEpochValueLoss.Set(float64(stats.ValueLoss))
+	metricEpochEntropy.Set(float64(stats.Entropy))
+	metricEpochAdvantageMean.Set(float64(stats.AdvantageMean))
+	metricEpochAdvantageStd.Set(float64(stats.AdvantageStd))
+	metricEpochAdvantageMin.Set(float64(stats.AdvantageMin))
+	metricEpochAdvantageMax.Set(float64(stats.AdvantageMax))
+	metricEpochGradientNorm.Set(float64(stats.GradientNorm))
+	metricEpochAppliedGradientNorm.Set(float64(stats.AppliedGradientNorm))
+	metricEpochPolicyGradientNorm.Set(float64(stats.PolicyGradientNorm))
+	metricEpochValueGradientNorm.Set(float64(stats.ValueGradientNorm))
+}
 
 // recordNetworkHealth publishes h. Labels its per-layer gauges "1", "2", ...
 // in trunk order (see networkHealth.LayerActive), whatever the network's
@@ -398,6 +481,12 @@ type instrumentedEnvironment struct {
 	// never need a nil check.
 	registry *agentRegistry
 	index    int
+
+	// actionMask is the mask presented immediately before the next Step. The
+	// PPO sampler asks for this through ActionMask before choosing its action;
+	// retaining it lets Step attribute the chosen action to the mask that
+	// actually governed that choice rather than re-reading state afterward.
+	actionMask []bool
 }
 
 func (e *instrumentedEnvironment) currentTask() string {
@@ -428,9 +517,33 @@ func (e *instrumentedEnvironment) ActionSpace() int     { return e.env.ActionSpa
 
 func (e *instrumentedEnvironment) ActionMask() []bool {
 	if masker, ok := e.env.(rl.ActionMasker); ok {
-		return masker.ActionMask()
+		mask := masker.ActionMask()
+		e.actionMask = append(e.actionMask[:0], mask...)
+		return mask
 	}
+	e.actionMask = nil
 	return nil
+}
+
+// SaveState/LoadState delegate the optional environment snapshot capability.
+// The live Minecraft environment does not currently implement it, so callers
+// record an unavailable state and recover by resetting safely. Test and other
+// stateful environments can provide exact restoration without changing the
+// rl.Environment interface.
+func (e *instrumentedEnvironment) SaveState() (json.RawMessage, error) {
+	stateful, ok := e.env.(statefulEnvironment)
+	if !ok {
+		return nil, fmt.Errorf("wrapped environment does not support snapshots")
+	}
+	return stateful.SaveState()
+}
+
+func (e *instrumentedEnvironment) LoadState(data json.RawMessage) error {
+	stateful, ok := e.env.(statefulEnvironment)
+	if !ok {
+		return fmt.Errorf("wrapped environment does not support snapshots")
+	}
+	return stateful.LoadState(data)
 }
 
 // resetRetries bounds how many extra times instrumentedEnvironment.Reset
@@ -463,11 +576,33 @@ func episodeLengthPhase() string {
 	return "training"
 }
 
+// doneReasonReporter is the optional diagnostic extension implemented by
+// mc-agent's rlenv.Environment. Keeping it optional preserves compatibility
+// with test environments and other rl.Environment implementations.
+type doneReasonReporter interface {
+	DoneReason() string
+}
+
+func environmentDoneReason(env rl.Environment) string {
+	if reporter, ok := env.(doneReasonReporter); ok {
+		if reason := reporter.DoneReason(); reason != "" {
+			return reason
+		}
+	}
+	return "unspecified_done"
+}
+
 func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, error) {
+	e.actionMask = nil
 	task := e.currentTask()
 	if e.started {
 		metricEpisodesTotal.WithLabelValues(task, "truncated").Inc()
 		metricEpisodeLengthSteps.WithLabelValues(task, "truncated", episodeLengthPhase()).Observe(float64(e.steps))
+		metricEpisodeTerminationsTotal.WithLabelValues(task, "collector_truncation", episodeLengthPhase()).Inc()
+		e.registry.updateEpisode(e.index, func(s *agentSnapshot) {
+			s.LastOutcome = "truncated"
+			s.LastTerminationReason = "collector_truncation"
+		})
 		e.steps = 0
 	}
 	var obs rl.Observation
@@ -519,7 +654,19 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 
 func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (rl.StepResult, error) {
 	task := e.currentTask()
+	phase := episodeLengthPhase()
 	metricActionsTotal.WithLabelValues(task, actionName(action)).Inc()
+	for i, legal := range e.actionMask {
+		if i >= rlenv.NumActions {
+			break
+		}
+		legalLabel := "false"
+		if legal {
+			legalLabel = "true"
+		}
+		metricActionMaskTotal.WithLabelValues(task, actionName(rl.Action(i)), legalLabel, phase).Inc()
+	}
+	e.actionMask = nil
 	start := time.Now()
 	result, err := e.env.Step(ctx, action)
 	metricStepDurationSeconds.WithLabelValues(task).Observe(time.Since(start).Seconds())
@@ -530,13 +677,16 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 	metricEpisodeStepsTotal.WithLabelValues(task).Inc()
 	e.steps++
 	outcome := ""
+	doneReason := ""
 	if result.Done {
+		doneReason = environmentDoneReason(e.env)
 		outcome = "failure"
 		if result.Reward >= episodeSuccessRewardThreshold {
 			outcome = "success"
 		}
 		metricEpisodesTotal.WithLabelValues(task, outcome).Inc()
 		metricEpisodeLengthSteps.WithLabelValues(task, outcome, episodeLengthPhase()).Observe(float64(e.steps))
+		metricEpisodeTerminationsTotal.WithLabelValues(task, doneReason, episodeLengthPhase()).Inc()
 		e.started = false
 		e.steps = 0
 	}
@@ -547,6 +697,7 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 		s.EpisodeStep = e.steps
 		if outcome != "" {
 			s.LastOutcome = outcome
+			s.LastTerminationReason = doneReason
 		}
 	})
 	return result, nil

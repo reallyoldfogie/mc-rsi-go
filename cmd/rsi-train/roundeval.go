@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/reallyoldfogie/cRL-go/pkg/actorcritic"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 )
 
@@ -55,7 +54,7 @@ func loadRoundEvalState(interimDir string) (roundEvalState, bool) {
 // saveRoundEvalState atomically (temp file plus rename, so a crash mid-write
 // can never leave a truncated/corrupt file behind) records result's
 // evaluation stats, overwriting whatever the previous round left behind.
-func saveRoundEvalState(interimDir string, result leapfrog.Result[*actorcritic.Params]) error {
+func saveRoundEvalState[P leapfrog.RecurrentOrNot](interimDir string, result leapfrog.Result[P]) error {
 	state := roundEvalState{
 		TeacherReward: result.TeacherReward,
 		StudentReward: result.StudentReward,

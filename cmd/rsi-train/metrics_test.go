@@ -57,6 +57,24 @@ func TestInstrumentedEnvironmentRecordsSuccessfulEpisode(t *testing.T) {
 	require.Contains(t, body, `rsi_episode_steps_total{task="`+task+`"}`)
 }
 
+func TestInstrumentedEnvironmentRecordsFailedEpisode(t *testing.T) {
+	task := "metrics-test-failure"
+	env := &instrumentedEnvironment{
+		env:  &metricsTestEnvironment{stepResult: rl.StepResult{Reward: 1, Done: true}},
+		task: task,
+	}
+	_, err := env.Reset(context.Background())
+	require.NoError(t, err)
+	_, err = env.Step(context.Background(), 0)
+	require.NoError(t, err)
+
+	body := gatherMetrics(t)
+	require.Contains(t, body, `rsi_episodes_total{outcome="failure",task="`+task+`"} 1`)
+	require.NotContains(t, body, `rsi_episodes_total{outcome="success",task="`+task+`"}`)
+	require.Contains(t, body, `rsi_episode_length_steps_bucket{outcome="failure",phase="training",task="`+task+`",le="1"} 1`)
+	require.Contains(t, body, `rsi_episode_terminations_total{phase="training",reason="unspecified_done",task="`+task+`"} 1`)
+}
+
 // TestInstrumentedEnvironmentRecordsStepDuration covers the per-step
 // timing histogram added to make a class of investigation (correlating
 // slow steps with retry loops or blocking sleeps deep in mc-agent, e.g.

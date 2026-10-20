@@ -113,6 +113,16 @@ your own queries.
 - **`rsi_gradient_updates_total`** — a running count of gradient-update steps applied during
   Student training. This complements samples/sec by showing how much optimizer work has actually
   completed.
+- **`rsi_epoch_policy_loss`** / **`rsi_epoch_value_loss`** / **`rsi_epoch_entropy`** — the latest
+  epoch's PPO replay diagnostics. Losses are averaged over real rollout steps and across PPO
+  replay passes; entropy is reported in nats. These are objective signals, not episode rewards.
+- **`rsi_epoch_advantage_mean`** / **`rsi_epoch_advantage_std`** / **`rsi_epoch_advantage_min`** /
+  **`rsi_epoch_advantage_max`** — raw GAE advantage statistics before the batch normalization
+  used by PPO. A large spread or drifting extrema can explain noisy policy updates even when
+  average return is unchanged.
+- **`rsi_epoch_gradient_norm`** / **`rsi_epoch_applied_gradient_norm`** — mean L2 norm of the
+  sample-count-averaged gradient before and after configured Adam gradient clipping. A large gap
+  means clipping is active; recurrent and plain paths can be compared directly using these gauges.
 - **`rsi_episodes_started_total{task}`** / **`rsi_episode_steps_total{task}`** — counts of
   successfully reset episodes and environment steps, respectively. In curriculum runs, the task
   label is the task selected for that episode (`goto`, `mine`, `craft`, their `_far` variants, or the

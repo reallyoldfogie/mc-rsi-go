@@ -69,6 +69,11 @@ type EpochTrainer[P RecurrentOrNot] interface {
 	Params() P
 }
 
+type optimizerStateTrainer interface {
+	OptimizerState() actorcritic.AdamState
+	RestoreOptimizerState(actorcritic.AdamState) error
+}
+
 // DecisionActor is the subset of actorcritic.Actor/RecurrentActor's own
 // methods evaluateEpisode needs. Reset is a no-op for the non-recurrent
 // Actor (see its own doc comment) and a real state-clearing step for
@@ -229,6 +234,10 @@ type Config[P RecurrentOrNot] struct {
 	// end. nil (the default) costs nothing extra — Round behaves exactly
 	// as it did before this field existed.
 	OnEpoch func(stats ppo.EpochStats, params P)
+	// OnOptimizerState is called with the same epoch boundary as OnEpoch.
+	// It is optional so callers remain compatible with trainers that predate
+	// optimizer-state persistence.
+	OnOptimizerState func(stats ppo.EpochStats, params P, state actorcritic.AdamState)
 
 	// OnBeforeEvaluation, if set, is called exactly twice per Round:
 	// once with EvalTeacher immediately before Teacher's evaluation
@@ -276,6 +285,7 @@ type Config[P RecurrentOrNot] struct {
 	// round's own (possibly different, if an earlier round won) teacher.
 	ResumeStudent           P
 	ResumeStudentStartEpoch int
+	ResumeOptimizerState    *actorcritic.AdamState
 }
 
 // EvalSide identifies which side of a leapfrog comparison
@@ -420,6 +430,13 @@ func trainStudent[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, 
 	if err != nil {
 		return zero, fmt.Errorf("constructing trainer: %w", err)
 	}
+	if cfg.ResumeOptimizerState != nil {
+		if restorer, ok := trainer.(optimizerStateTrainer); ok {
+			if err := restorer.RestoreOptimizerState(*cfg.ResumeOptimizerState); err != nil {
+				return zero, fmt.Errorf("restoring optimizer state: %w", err)
+			}
+		}
+	}
 
 	for epoch := startEpoch; epoch < cfg.EpochsPerGeneration; epoch++ {
 		stats, err := trainer.RunEpoch(ctx, epoch)
@@ -428,6 +445,11 @@ func trainStudent[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, 
 		}
 		if cfg.OnEpoch != nil {
 			cfg.OnEpoch(stats, trainer.Params())
+		}
+		if cfg.OnOptimizerState != nil {
+			if provider, ok := trainer.(optimizerStateTrainer); ok {
+				cfg.OnOptimizerState(stats, trainer.Params(), provider.OptimizerState())
+			}
 		}
 	}
 

@@ -75,10 +75,11 @@ func serveVendor() http.Handler {
 var itemIconFallbackSuffixes = []string{"_front", "_side", "_top", "_all"}
 
 // itemIconFallback serves a bare "<name>.png" request directly when it
-// exists, and otherwise rewrites it to the first itemIconFallbackSuffixes
-// variant that does, instead of just 404ing — without this, every
-// multi-face block-type item in the bot's inventory 404s, not just the
-// handful whose icon happens to need its own flat texture.
+// exists, and otherwise rewrites it to a matching directional variant. For
+// 3D block rendering it also handles requests for a missing face such as
+// "oak_log_side.png" by falling back to the block's real bare texture
+// "oak_log.png" (or one of its real directional variants). This keeps the
+// browser from logging a 404 for every face of a uniform-texture block.
 type itemIconFallback struct {
 	fsys fs.FS
 	next http.Handler
@@ -90,19 +91,43 @@ func (h itemIconFallback) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		h.next.ServeHTTP(w, req)
 		return
 	}
-	if _, err := fs.Stat(h.fsys, name+".png"); err == nil {
+	if resolved := h.resolveIcon(name); resolved != "" {
+		req = req.Clone(req.Context())
+		req.URL.Path = "/" + resolved
 		h.next.ServeHTTP(w, req)
 		return
 	}
+	h.next.ServeHTTP(w, req) // no variant either; let it 404 on the original path.
+}
+
+// resolveIcon returns the embedded filename that best represents name. A
+// request for a missing directional face first retries the block's bare name,
+// then the available directional variants. The exact request is always
+// preferred, so this does not interfere with genuine per-face textures.
+func (h itemIconFallback) resolveIcon(name string) string {
+	if _, err := fs.Stat(h.fsys, name+".png"); err == nil {
+		return name + ".png"
+	}
 	for _, suffix := range itemIconFallbackSuffixes {
 		if _, err := fs.Stat(h.fsys, name+suffix+".png"); err == nil {
-			req = req.Clone(req.Context())
-			req.URL.Path = "/" + name + suffix + ".png"
-			h.next.ServeHTTP(w, req)
-			return
+			return name + suffix + ".png"
 		}
 	}
-	h.next.ServeHTTP(w, req) // no variant either; let it 404 on the original path.
+	for _, face := range []string{"_top", "_bottom", "_side", "_front", "_all"} {
+		base, ok := strings.CutSuffix(name, face)
+		if !ok || base == "" {
+			continue
+		}
+		if _, err := fs.Stat(h.fsys, base+".png"); err == nil {
+			return base + ".png"
+		}
+		for _, suffix := range itemIconFallbackSuffixes {
+			if _, err := fs.Stat(h.fsys, base+suffix+".png"); err == nil {
+				return base + suffix + ".png"
+			}
+		}
+	}
+	return ""
 }
 
 // agentPositionPollInterval is how often agentRegistry.runPoller refreshes
@@ -128,20 +153,21 @@ type agentSnapshot struct {
 	// connection and agentRegistry slot, one after another, so without
 	// this field the dashboard has no way to show which one is currently
 	// happening; it otherwise looks like an ordinary training episode.
-	Phase       string             `json:"phase"`
-	Goal        string             `json:"goal"`
-	LastAction  string             `json:"last_action"`
-	EpisodeStep int                `json:"episode_step"`
-	LastOutcome string             `json:"last_outcome"`
-	X           float64            `json:"x"`
-	Y           float64            `json:"y"`
-	Z           float64            `json:"z"`
-	Yaw         float64            `json:"yaw"`
-	Pitch       float64            `json:"pitch"`
-	Health      float32            `json:"health"`
-	Food        int32              `json:"food"`
-	Inventory   *inventorySnapshot `json:"inventory"`
-	Nearby      []nearbyEntity     `json:"nearby"`
+	Phase                 string             `json:"phase"`
+	Goal                  string             `json:"goal"`
+	LastAction            string             `json:"last_action"`
+	EpisodeStep           int                `json:"episode_step"`
+	LastOutcome           string             `json:"last_outcome"`
+	LastTerminationReason string             `json:"last_termination_reason"`
+	X                     float64            `json:"x"`
+	Y                     float64            `json:"y"`
+	Z                     float64            `json:"z"`
+	Yaw                   float64            `json:"yaw"`
+	Pitch                 float64            `json:"pitch"`
+	Health                float32            `json:"health"`
+	Food                  int32              `json:"food"`
+	Inventory             *inventorySnapshot `json:"inventory"`
+	Nearby                []nearbyEntity     `json:"nearby"`
 	// Spawn is where this episode started — not something rlenv exposes
 	// directly (its own resolved reset position is unexported, same
 	// reason Goal's own doc comment gives for "goto <loc>" not being a
@@ -363,11 +389,13 @@ const (
 // bot's own position, for the dashboard's zoomed single-agent view -
 // context for "what is around this bot," not just where the bot itself is.
 type nearbyEntity struct {
-	ID   int32   `json:"id"`
-	Type string  `json:"type"`
-	X    float64 `json:"x"`
-	Y    float64 `json:"y"`
-	Z    float64 `json:"z"`
+	ID        int32   `json:"id"`
+	Type      string  `json:"type"`
+	ItemName  string  `json:"item_name,omitempty"`
+	ItemCount int32   `json:"item_count,omitempty"`
+	X         float64 `json:"x"`
+	Y         float64 `json:"y"`
+	Z         float64 `json:"z"`
 }
 
 // readNearbyEntities summarizes a's already-tracked nearby entities around
@@ -381,7 +409,7 @@ func readNearbyEntities(a models.Agent, originX, originY, originZ float64) []nea
 	if len(tracked) == 0 {
 		return nil
 	}
-	return summarizeNearbyEntities(tracked, a.GetRegistry("minecraft:entity_type"), originX, originY, originZ)
+	return summarizeNearbyEntities(tracked, a.GetRegistry("minecraft:entity_type"), a.GetItemManager(), originX, originY, originZ)
 }
 
 // summarizeNearbyEntities filters tracked to live (non-Removed) entities
@@ -391,7 +419,7 @@ func readNearbyEntities(a models.Agent, originX, originY, originZ float64) []nea
 // sorted by distance. Split out from readNearbyEntities so it's testable
 // without a models.Agent fake for the whole (large) interface - see
 // summarizeInventory's own doc comment for why this repo avoids those.
-func summarizeNearbyEntities(tracked map[int32]models.TrackedEntityInfo, reg models.CustomRegistry, originX, originY, originZ float64) []nearbyEntity {
+func summarizeNearbyEntities(tracked map[int32]models.TrackedEntityInfo, reg models.CustomRegistry, items models.ItemManager, originX, originY, originZ float64) []nearbyEntity {
 	type candidate struct {
 		nearbyEntity
 		distSq float64
@@ -416,8 +444,12 @@ func summarizeNearbyEntities(tracked map[int32]models.TrackedEntityInfo, reg mod
 		if name == "" {
 			name = fmt.Sprintf("entity-%d", info.EntityType)
 		}
+		itemName := ""
+		if name == "item" && info.HasItem && items != nil {
+			itemName = strings.TrimPrefix(items.GetItemNameByID(info.ItemID), "minecraft:")
+		}
 		candidates = append(candidates, candidate{
-			nearbyEntity: nearbyEntity{ID: info.EntityID, Type: name, X: info.X, Y: info.Y, Z: info.Z},
+			nearbyEntity: nearbyEntity{ID: info.EntityID, Type: name, ItemName: itemName, ItemCount: info.ItemCount, X: info.X, Y: info.Y, Z: info.Z},
 			distSq:       distSq,
 		})
 	}
