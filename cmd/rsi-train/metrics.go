@@ -30,6 +30,7 @@ import (
 	"github.com/reallyoldfogie/cRL-go/pkg/ppo"
 	"github.com/reallyoldfogie/cRL-go/pkg/rl"
 
+	"github.com/reallyoldfogie/mc-agent/models"
 	"github.com/reallyoldfogie/mc-agent/rlenv"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 )
@@ -424,11 +425,26 @@ func recordRoundEvaluation[P leapfrog.RecurrentOrNot](result leapfrog.Result[P])
 // not fatal — this server going down is an observability problem, not a
 // reason to stop an otherwise-healthy training run.
 func startMetricsServer(addr string, exporter *checkpointExporter, envCount *envCountRequest, restart *restartRequest, agents *agentRegistry) {
+	startMetricsServerWithGatherer(addr, exporter, envCount, restart, agents, prometheus.DefaultGatherer)
+}
+
+// startMetricsServerWithGatherer is the shared dashboard server setup with an
+// explicit Prometheus gatherer. Competition mode supplies a Gatherers value
+// containing both the existing trainer metrics and its run-scoped,
+// competitor-labelled metrics; normal training continues to use the default
+// registry through startMetricsServer above.
+func startMetricsServerWithGatherer(addr string, exporter *checkpointExporter, envCount *envCountRequest, restart *restartRequest, agents *agentRegistry, gatherer prometheus.Gatherer) {
 	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.Handler())
-	mux.Handle("/checkpoint/export", exporter)
-	mux.Handle("/config/parallel-envs", envCount)
-	mux.Handle("/control/restart-at-epoch-boundary", restart)
+	mux.Handle("/metrics", promhttp.HandlerFor(gatherer, promhttp.HandlerOpts{}))
+	if exporter != nil {
+		mux.Handle("/checkpoint/export", exporter)
+	}
+	if envCount != nil {
+		mux.Handle("/config/parallel-envs", envCount)
+	}
+	if restart != nil {
+		mux.Handle("/control/restart-at-epoch-boundary", restart)
+	}
 	mux.Handle("/agents", agents)
 	mux.HandleFunc("/agents/world", agents.worldStreamHandler)
 	mux.HandleFunc("/dashboard", serveDashboardPage)
@@ -454,6 +470,7 @@ const episodeSuccessRewardThreshold float32 = 5
 type instrumentedEnvironment struct {
 	mu             sync.RWMutex
 	env            rl.Environment
+	health         models.HealthProvider
 	task           string
 	taskForEpisode func() string
 	// goalForEpisode reports the current episode's actual success
@@ -488,6 +505,77 @@ type instrumentedEnvironment struct {
 	// retaining it lets Step attribute the chosen action to the mask that
 	// actually governed that choice rather than re-reading state afterward.
 	actionMask []bool
+
+	evaluationActive      bool
+	evaluationEpisodes    int
+	evaluationCompletions int
+}
+
+func (e *instrumentedEnvironment) replaceAgentEnvironment(env rl.Environment, health models.HealthProvider, task func() string, goal func() string, target func() ([3]float64, bool)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.env = env
+	e.health = health
+	e.taskForEpisode = task
+	e.goalForEpisode = goal
+	e.targetOffsetForEpisode = target
+	e.started = false
+	e.steps = 0
+}
+
+func (e *instrumentedEnvironment) beginCompetitionEvaluation() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.evaluationActive = true
+	e.evaluationEpisodes = 0
+	e.evaluationCompletions = 0
+}
+
+func (e *instrumentedEnvironment) endCompetitionEvaluation() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	defer func() { e.evaluationActive = false }()
+	if e.evaluationEpisodes == 0 {
+		return 0
+	}
+	return float64(e.evaluationCompletions) / float64(e.evaluationEpisodes)
+}
+
+const respawnWaitTimeout = 15 * time.Second
+
+func healthProviderForAgent(agent models.Agent) models.HealthProvider {
+	health, _ := agent.(models.HealthProvider)
+	return health
+}
+
+// waitForRespawn prevents Reset from racing mc-agent's asynchronous death
+// handling. The death has already ended the episode and been scored; this
+// only waits for the same live session to become usable before RCON setup
+// commands are issued for the next episode.
+func waitForRespawn(ctx context.Context, health models.HealthProvider) error {
+	if health == nil {
+		return nil
+	}
+	current, _, _, known := health.Health()
+	if !known || current > 0 {
+		return nil
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, respawnWaitTimeout)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		current, _, _, known = health.Health()
+		if known && current > 0 {
+			return nil
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("waiting for agent respawn: %w", waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (e *instrumentedEnvironment) currentTask() string {
@@ -603,6 +691,34 @@ func environmentDoneReason(env rl.Environment) string {
 	return "unspecified_done"
 }
 
+// CurrentTask returns the task label for the episode currently in progress
+// (the same label recorded on agentSnapshot.Task), exported so a caller
+// outside this package - pkg/leapfrog's per-episode evaluation loop, via
+// an optional interface it checks on the rl.Environment it was given - can
+// record which task an evaluation episode ran without reaching into the
+// dashboard registry.
+func (e *instrumentedEnvironment) CurrentTask() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.currentTask()
+}
+
+// DoneReason returns the wrapped environment's own last Step(Done=true)
+// reason, or "" if the wrapped environment doesn't report one or the most
+// recently completed episode never saw Done=true (ran out of steps
+// instead) - deliberately the raw, possibly-empty value rather than
+// environmentDoneReason's "unspecified_done" fallback, so a caller can
+// distinguish "ended with no reason given" from "never ended, timed out."
+// Exported for the same reason as CurrentTask.
+func (e *instrumentedEnvironment) DoneReason() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if reporter, ok := e.env.(doneReasonReporter); ok {
+		return reporter.DoneReason()
+	}
+	return ""
+}
+
 func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -620,6 +736,9 @@ func (e *instrumentedEnvironment) Reset(ctx context.Context) (rl.Observation, er
 	}
 	var obs rl.Observation
 	var err error
+	if err := waitForRespawn(ctx, e.health); err != nil {
+		return obs, err
+	}
 	for attempt := 0; attempt <= resetRetries; attempt++ {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return obs, ctxErr
@@ -698,6 +817,12 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 		outcome = "failure"
 		if result.Reward >= episodeSuccessRewardThreshold {
 			outcome = "success"
+		}
+		if e.evaluationActive {
+			e.evaluationEpisodes++
+			if outcome == "success" {
+				e.evaluationCompletions++
+			}
 		}
 		metricEpisodesTotal.WithLabelValues(task, outcome).Inc()
 		metricEpisodeLengthSteps.WithLabelValues(task, outcome, episodeLengthPhase()).Observe(float64(e.steps))

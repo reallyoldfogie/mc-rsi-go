@@ -1,0 +1,19 @@
+{
+  "connection": {
+    "address": "127.0.0.1:25565",
+    "name": "RSICompetition",
+    "version": "1.21.11",
+    "offline": true
+  },
+  "rcon": {
+    "address": "127.0.0.1:25575",
+    "password": "MC_RSI_TRAINER_2026"
+  },
+  "env": {
+    "step_timeout_seconds": 10,
+    "seed_episodes": true
+  },
+  "logging": {
+    "level": "info"
+  }
+}

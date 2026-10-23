@@ -1,0 +1,30 @@
+services:
+  minecraft:
+    image: itzg/minecraft-server:java21
+    container_name: rsi-trainer-minecraft
+    restart: unless-stopped
+    tty: true
+    stdin_open: true
+    stop_grace_period: 1m
+    ports:
+      # The trainer reaches these through its SSH local forwards. Keep the
+      # remote host firewall restricted to SSH rather than exposing these to
+      # the public Internet.
+      - "127.0.0.1:25565:25565/tcp"
+      - "127.0.0.1:25575:25575/tcp"
+    environment:
+      EULA: "TRUE"
+      VERSION: "1.21.11"
+      TYPE: "VANILLA"
+      ONLINE_MODE: "FALSE"
+      ENABLE_RCON: "TRUE"
+      RCON_PORT: "25575"
+      RCON_PASSWORD: "${RCON_PASSWORD:?Set RCON_PASSWORD in the shell or .env file}"
+      ENABLE_COMMAND_BLOCK: "TRUE"
+      SPAWN_PROTECTION: "0"
+      VIEW_DISTANCE: "3"
+      SIMULATION_DISTANCE: "3"
+      LEVEL_TYPE: "flat"
+      GENERATOR_SETTINGS: '{"layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:stone","height":59},{"block":"minecraft:dirt","height":3},{"block":"minecraft:grass_block","height":1}],"biome":"minecraft:plains"}'
+    volumes:
+      - ./data:/data

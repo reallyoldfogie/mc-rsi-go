@@ -456,36 +456,58 @@ func trainStudent[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, 
 	return trainer.Params(), nil
 }
 
+// TrainStudent clones teacherParams and trains the clone for the configured
+// number of epochs without running either side of leapfrog evaluation. It is
+// the reusable training half of Round for callers that impose their own
+// synchronization/evaluation policy, such as an architecture competition.
+// The existing Round path continues to call the private implementation and is
+// behaviorally unchanged.
+func TrainStudent[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, teacherParams P, cfg Config[P], seams Seams[P]) (P, error) {
+	if len(envs) == 0 {
+		var zero P
+		return zero, fmt.Errorf("leapfrog: at least one environment is required")
+	}
+	if teacherParams == nil {
+		var zero P
+		return zero, fmt.Errorf("leapfrog: teacher params must not be nil")
+	}
+	if err := cfg.Validate(); err != nil {
+		var zero P
+		return zero, err
+	}
+	return trainStudent(ctx, envs, teacherParams, cfg, seams)
+}
+
 // evaluate runs episodes episodes of at most episodeLen steps each
 // against env using params, greedily (see Round's doc comment), and
 // returns each episode's total reward in order.
-func evaluate[P RecurrentOrNot](ctx context.Context, env rl.Environment, params P, episodes, episodeLen int, greedy bool, seams Seams[P], rng *rand.Rand) ([]float32, error) {
+func evaluate[P RecurrentOrNot](ctx context.Context, env rl.Environment, params P, episodes, episodeLen int, greedy bool, seams Seams[P], rng *rand.Rand) ([]EpisodeResult, error) {
 	actor, err := seams.NewActor(params)
 	if err != nil {
 		return nil, fmt.Errorf("building actor: %w", err)
 	}
 
-	rewards := make([]float32, 0, episodes)
+	results := make([]EpisodeResult, 0, episodes)
 	for range episodes {
-		reward, err := evaluateEpisode(ctx, env, actor, episodeLen, greedy, rng)
+		result, err := evaluateEpisode(ctx, env, actor, episodeLen, greedy, rng)
 		if err != nil {
 			return nil, err
 		}
-		rewards = append(rewards, reward)
+		results = append(results, result)
 	}
-	return rewards, nil
+	return results, nil
 }
 
 // evaluateAll runs evaluate on every environment concurrently (each on its
 // own goroutine and its own rng, so nothing is shared but the read-only
-// params) and returns each environment's per-episode rewards, indexed by
+// params) and returns each environment's per-episode results, indexed by
 // environment. A single environment runs inline, exactly as before.
-func evaluateAll[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, params P, episodes, episodeLen int, greedy bool, seams Seams[P], rng *rand.Rand) ([][]float32, error) {
+func evaluateAll[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, params P, episodes, episodeLen int, greedy bool, seams Seams[P], rng *rand.Rand) ([][]EpisodeResult, error) {
 	rngs := make([]*rand.Rand, len(envs))
 	for i := range envs {
 		rngs[i] = rand.New(rand.NewPCG(rng.Uint64(), uint64(i)))
 	}
-	scores := make([][]float32, len(envs))
+	scores := make([][]EpisodeResult, len(envs))
 	if len(envs) == 1 {
 		s, err := evaluate(ctx, envs[0], params, episodes, episodeLen, greedy, seams, rngs[0])
 		if err != nil {
@@ -524,18 +546,46 @@ func evaluateAll[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, p
 	return scores, nil
 }
 
-// summarizeRound turns both sides' per-environment episode rewards into
+// Evaluate runs read-only policy evaluation over every supplied environment.
+// It is the public counterpart to the evaluation phase used internally by
+// Round, allowing callers such as the architecture competition to evaluate
+// final policies after a shared training deadline without starting another
+// Student-training round.
+//
+// The returned results are indexed by environment, then episode, matching
+// evaluateAll's pairing and preserving the same concurrent environment
+// behavior used by normal leapfrog evaluation.
+func Evaluate[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, params P, episodes, episodeLen int, greedy bool, seams Seams[P], rng *rand.Rand) ([][]EpisodeResult, error) {
+	if len(envs) == 0 {
+		return nil, fmt.Errorf("leapfrog: at least one environment is required")
+	}
+	if params == nil {
+		return nil, fmt.Errorf("leapfrog: policy params must not be nil")
+	}
+	if episodes <= 0 || episodeLen <= 0 {
+		return nil, fmt.Errorf("leapfrog: evaluation episodes and episode length must be positive")
+	}
+	if rng == nil {
+		return nil, fmt.Errorf("leapfrog: evaluation rng must not be nil")
+	}
+	return evaluateAll(ctx, envs, params, episodes, episodeLen, greedy, seams, rng)
+}
+
+// summarizeRound turns both sides' per-environment episode results into
 // the round's Result: means, spread, the paired difference statistics, and
 // the win decision (decideWinner's strict rule, then Config.MinWinMargin
 // and Config.WinZScore if set). Episode j on environment i is treated as
-// the same task for both sides.
-func summarizeRound[P RecurrentOrNot](teacher, student [][]float32, studentParams P, cfg Config[P]) Result[P] {
+// the same task for both sides. Only each EpisodeResult's Reward feeds the
+// comparison - Task/TerminationReason exist for the competition's
+// evaluation record (see EvaluationSummary in pkg/competition), which
+// Round's Teacher/Student comparison has no use for.
+func summarizeRound[P RecurrentOrNot](teacher, student [][]EpisodeResult, studentParams P, cfg Config[P]) Result[P] {
 	var t, s, diffs []float64
 	for i := range teacher {
 		for j := range teacher[i] {
-			t = append(t, float64(teacher[i][j]))
-			s = append(s, float64(student[i][j]))
-			diffs = append(diffs, float64(student[i][j])-float64(teacher[i][j]))
+			t = append(t, float64(teacher[i][j].Reward))
+			s = append(s, float64(student[i][j].Reward))
+			diffs = append(diffs, float64(student[i][j].Reward)-float64(teacher[i][j].Reward))
 		}
 	}
 	meanT, stdT := meanStd(t)
@@ -583,22 +633,71 @@ func meanStd(xs []float64) (mean, std float64) {
 	return mean, math.Sqrt(ss / float64(len(xs)-1))
 }
 
-// evaluateEpisode runs one evaluation episode and returns its total
-// reward, mirroring cRL-go/pkg/reinforce's own collectTrajectoryFromEnv
-// mask-lookup pattern (a type assertion to rl.ActionMasker, nil mask if
-// env doesn't implement it) so this package behaves identically to
-// training rollouts with respect to action masking. actor is already a
-// concrete DecisionActor by the time this is called, so this needs no
-// type parameter of its own — Reset is called once at episode start (see
-// DecisionActor's own doc comment for why).
-func evaluateEpisode(ctx context.Context, env rl.Environment, actor DecisionActor, episodeLen int, greedy bool, rng *rand.Rand) (float32, error) {
+// EpisodeResult is one evaluation episode's outcome: the total reward
+// Round's Teacher/Student comparison has always used, plus the task label
+// and termination reason an evaluation record (pkg/competition's
+// EvaluationSummary) needs to explain *why* that reward happened, per
+// episode, without reverse-engineering it from the reward's magnitude
+// alone (see docs/plans/21-training-competition-framework.md's evaluation
+// record extension).
+type EpisodeResult struct {
+	// Reward is the episode's total accumulated reward.
+	Reward float32
+	// Task is the task label active for this episode (e.g. "goto",
+	// "mine", "chain_place"), from an EpisodeTaskReporter environment, or
+	// "" if the environment doesn't implement one.
+	Task string
+	// TerminationReason explains how the episode ended: an
+	// EpisodeDoneReasoner environment's own reason if the episode ended
+	// via Step returning Done=true (e.g. "arrived", "died",
+	// "unspecified_done" if the environment reports Done without a
+	// reason), "timeout" if the episode instead ran every step of
+	// episodeLen without ever seeing Done=true, or "" if the environment
+	// doesn't implement EpisodeDoneReasoner.
+	TerminationReason string
+}
+
+// EpisodeTaskReporter is implemented by an rl.Environment that can name the
+// task label active for the episode that just ran - optional, mirroring
+// EpisodeDoneReasoner: an environment that doesn't implement it leaves
+// EpisodeResult.Task empty rather than failing evaluation over it.
+type EpisodeTaskReporter interface {
+	CurrentTask() string
+}
+
+// EpisodeDoneReasoner is implemented by an rl.Environment that can explain
+// why its most recent Step returning Done=true ended - optional, and
+// deliberately named differently from doneReasonReporter precedents
+// elsewhere in this codebase (e.g. cmd/rsi-train's own, mirrored) only
+// because Go doesn't let an unexported interface in one package be
+// satisfied by checking across package boundaries by name; the method
+// signature is what actually has to match.
+type EpisodeDoneReasoner interface {
+	DoneReason() string
+}
+
+// evaluateEpisode runs one evaluation episode and returns its EpisodeResult,
+// mirroring cRL-go/pkg/reinforce's own collectTrajectoryFromEnv mask-lookup
+// pattern (a type assertion to rl.ActionMasker, nil mask if env doesn't
+// implement it) so this package behaves identically to training rollouts
+// with respect to action masking. actor is already a concrete DecisionActor
+// by the time this is called, so this needs no type parameter of its own —
+// Reset is called once at episode start (see DecisionActor's own doc
+// comment for why).
+func evaluateEpisode(ctx context.Context, env rl.Environment, actor DecisionActor, episodeLen int, greedy bool, rng *rand.Rand) (EpisodeResult, error) {
 	actor.Reset()
 	observation, err := env.Reset(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("resetting environment: %w", err)
+		return EpisodeResult{}, fmt.Errorf("resetting environment: %w", err)
+	}
+
+	task := ""
+	if reporter, ok := env.(EpisodeTaskReporter); ok {
+		task = reporter.CurrentTask()
 	}
 
 	var totalReward float32
+	terminationReason := "timeout"
 	for range episodeLen {
 		var mask []bool
 		if masker, ok := env.(rl.ActionMasker); ok {
@@ -607,20 +706,26 @@ func evaluateEpisode(ctx context.Context, env rl.Environment, actor DecisionActo
 
 		decision, err := actor.ActWithInfo(observation, mask, rng)
 		if err != nil {
-			return 0, fmt.Errorf("deciding action: %w", err)
+			return EpisodeResult{}, fmt.Errorf("deciding action: %w", err)
 		}
 
 		result, err := env.Step(ctx, evalAction(decision, greedy))
 		if err != nil {
-			return 0, fmt.Errorf("stepping environment: %w", err)
+			return EpisodeResult{}, fmt.Errorf("stepping environment: %w", err)
 		}
 		totalReward += result.Reward
 		observation = result.Observation
 		if result.Done {
+			terminationReason = "unspecified_done"
+			if reporter, ok := env.(EpisodeDoneReasoner); ok {
+				if reason := reporter.DoneReason(); reason != "" {
+					terminationReason = reason
+				}
+			}
 			break
 		}
 	}
-	return totalReward, nil
+	return EpisodeResult{Reward: totalReward, Task: task, TerminationReason: terminationReason}, nil
 }
 
 // evalAction is the action an evaluation step takes: the sampled one, or with

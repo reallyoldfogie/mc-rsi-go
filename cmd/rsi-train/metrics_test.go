@@ -26,6 +26,34 @@ type metricsTestEnvironment struct {
 	onReset    func()
 }
 
+type respawnTestHealth struct{ ready chan struct{} }
+
+func (h respawnTestHealth) Health() (float32, int32, float32, bool) {
+	select {
+	case <-h.ready:
+		return 20, 20, 5, true
+	default:
+		return 0, 20, 0, true
+	}
+}
+
+func TestWaitForRespawnWaitsForHealthToRecover(t *testing.T) {
+	health := respawnTestHealth{ready: make(chan struct{})}
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		close(health.ready)
+	}()
+	require.NoError(t, waitForRespawn(context.Background(), health))
+}
+
+func TestWaitForRespawnHonorsContext(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	health := respawnTestHealth{ready: make(chan struct{})}
+	err := waitForRespawn(ctx, health)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 func (e *metricsTestEnvironment) Reset(context.Context) (rl.Observation, error) {
 	if e.onReset != nil {
 		e.onReset()
@@ -55,6 +83,46 @@ func TestInstrumentedEnvironmentRecordsSuccessfulEpisode(t *testing.T) {
 	require.Contains(t, body, `rsi_episodes_started_total{task="`+task+`"}`)
 	require.Contains(t, body, `rsi_episodes_total{outcome="success",task="`+task+`"}`)
 	require.Contains(t, body, `rsi_episode_steps_total{task="`+task+`"}`)
+}
+
+// doneReasonTestEnvironment adds an explicit DoneReason() to
+// metricsTestEnvironment so TestInstrumentedEnvironmentExposesCurrentTaskAndDoneReason
+// can exercise instrumentedEnvironment.DoneReason's pass-through branch - the
+// plain metricsTestEnvironment used elsewhere in this file implements
+// neither doneReasonReporter nor leapfrog.EpisodeDoneReasoner.
+type doneReasonTestEnvironment struct {
+	metricsTestEnvironment
+	reason string
+}
+
+func (e *doneReasonTestEnvironment) DoneReason() string { return e.reason }
+
+// TestInstrumentedEnvironmentExposesCurrentTaskAndDoneReason covers the two
+// exported accessors pkg/leapfrog's per-episode evaluation loop relies on
+// (via its own EpisodeTaskReporter/EpisodeDoneReasoner duck-typed
+// interfaces) to record each competition evaluation episode's task label
+// and termination reason without reaching into the dashboard registry.
+func TestInstrumentedEnvironmentExposesCurrentTaskAndDoneReason(t *testing.T) {
+	task := "metrics-test-reporter"
+	noReason := &instrumentedEnvironment{env: &metricsTestEnvironment{}, task: task}
+	assert.Equal(t, task, noReason.CurrentTask())
+	assert.Equal(t, "", noReason.DoneReason(), "the wrapped environment doesn't implement DoneReason")
+
+	withReason := &instrumentedEnvironment{env: &doneReasonTestEnvironment{reason: "arrived"}, task: task}
+	assert.Equal(t, "arrived", withReason.DoneReason())
+}
+
+func TestInstrumentedEnvironmentTracksCompetitionCompletion(t *testing.T) {
+	env := &instrumentedEnvironment{
+		env:  &metricsTestEnvironment{stepResult: rl.StepResult{Reward: 10, Done: true}},
+		task: "metrics-test-eval",
+	}
+	env.beginCompetitionEvaluation()
+	_, err := env.Reset(context.Background())
+	require.NoError(t, err)
+	_, err = env.Step(context.Background(), 0)
+	require.NoError(t, err)
+	assert.Equal(t, 1.0, env.endCompetitionEvaluation())
 }
 
 func TestInstrumentedEnvironmentRecordsFailedEpisode(t *testing.T) {

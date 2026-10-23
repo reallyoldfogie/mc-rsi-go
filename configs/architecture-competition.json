@@ -1,0 +1,31 @@
+{
+  "run_id": "architecture-competition",
+  "mc_agent_config": "./mc-agent-config.json",
+  "trainer_config": "./trainer-config.json",
+  "curriculum_config": "./curriculum.json",
+  "checkpoint_root": "./runs/architecture-competition",
+  "training": {
+    "duration": "24h",
+    "evaluation_start_delay": "30s",
+    "epochs_per_generation": 50,
+    "evaluation_seed": [424242, 424243, 424244],
+    "evaluation_episodes": 20,
+    "evaluation_episode_len": 200,
+    "eval_greedy": false
+  },
+  "server": {
+    "shared": true,
+    "separation_chunks": 16,
+    "auto_reset_origin": true
+  },
+  "competitors": [
+    {"id":"basic", "display_name":"Basic", "hidden_layers":2, "hidden_size":128, "recurrent":false},
+    {"id":"wide", "display_name":"Wide", "hidden_layers":2, "hidden_size":256, "recurrent":false},
+    {"id":"deep", "display_name":"Deep", "hidden_layers":3, "hidden_size":128, "recurrent":false},
+    {"id":"deep-wide", "display_name":"Deep and wide", "hidden_layers":3, "hidden_size":256, "recurrent":false},
+    {"id":"recurrent", "display_name":"Recurrent", "hidden_layers":2, "hidden_size":128, "recurrent":true, "recurrent_chunk_len":16},
+    {"id":"recurrent-wide", "display_name":"Recurrent wide", "hidden_layers":2, "hidden_size":256, "recurrent":true, "recurrent_chunk_len":16},
+    {"id":"recurrent-deep", "display_name":"Recurrent deep", "hidden_layers":3, "hidden_size":128, "recurrent":true, "recurrent_chunk_len":16},
+    {"id":"recurrent-deep-wide", "display_name":"Recurrent deep and wide", "hidden_layers":3, "hidden_size":256, "recurrent":true, "recurrent_chunk_len":16}
+  ]
+}

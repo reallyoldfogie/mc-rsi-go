@@ -146,7 +146,14 @@ const agentPositionPollInterval = 250 * time.Millisecond
 type agentSnapshot struct {
 	Index    int    `json:"index"`
 	Username string `json:"username"`
-	Task     string `json:"task"`
+	// Competition identity is empty for normal single-run training. Keeping
+	// these fields in the common snapshot lets the existing dashboard render
+	// competition runs without a second viewer or endpoint.
+	RunID        string `json:"run_id,omitempty"`
+	CompetitorID string `json:"competitor_id,omitempty"`
+	DisplayName  string `json:"display_name,omitempty"`
+	Architecture string `json:"architecture,omitempty"`
+	Task         string `json:"task"`
 	// Phase is "training" or "eval" (metrics.go's own episodeLengthPhase,
 	// which this mirrors) — training rollout collection and a round's
 	// teacher/student evaluation episodes run through this exact same bot
@@ -268,6 +275,30 @@ func (r *agentRegistry) add(username string, agent models.Agent) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.bots = append(r.bots, &agentSnapshot{Index: len(r.bots), Username: username, agent: agent})
+}
+
+// addCompetition registers a bot with the stable identity used by the
+// competition manifest and Prometheus labels. The ordinary add path remains
+// unchanged for normal rsi-train runs.
+func (r *agentRegistry) addCompetition(username string, agent models.Agent, runID, competitorID, displayName, architecture string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.bots = append(r.bots, &agentSnapshot{
+		Index: len(r.bots), Username: username, RunID: runID,
+		CompetitorID: competitorID, DisplayName: displayName,
+		Architecture: architecture, agent: agent,
+	})
+}
+
+func (r *agentRegistry) replaceAgent(index int, agent models.Agent) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if index >= 0 && index < len(r.bots) {
+		r.bots[index].agent = agent
+	}
 }
 
 // truncate drops every entry at index >= n. A no-op if n >= the current

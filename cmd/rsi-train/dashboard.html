@@ -361,7 +361,9 @@
       var dot = document.createElement("div");
       dot.className = "dot " + statusDot(a);
       var text = document.createElement("div");
-      text.innerHTML = "<div class='name'>" + (a.username || ("agent-" + a.index)) + phaseBadge(a) + "</div>" +
+      var agentName = a.display_name || a.competitor_id || a.username || ("agent-" + a.index);
+      text.innerHTML = "<div class='name'>" + agentName + phaseBadge(a) + "</div>" +
+        (a.competitor_id ? "<div class='task'>" + a.competitor_id + " · " + (a.username || "") + "</div>" : "") +
         "<div class='task'>" + (a.task || "-") + "</div>";
       row.appendChild(dot);
       row.appendChild(text);
@@ -1292,7 +1294,7 @@ import * as THREE from "/vendor/three.module.min.js";
         dot.className = "dot grid-agent-dot " + gridStatusDot(agent);
         var name = document.createElement("span");
         name.className = "grid-agent-name";
-        name.textContent = agent.username || ("agent-" + agent.index);
+        name.textContent = agent.display_name || agent.competitor_id || agent.username || ("agent-" + agent.index);
         cell.appendChild(dot);
         cell.appendChild(name);
       }

@@ -380,6 +380,17 @@ func (e *scriptedEnv) Step(context.Context, rl.Action) (rl.StepResult, error) {
 func (e *scriptedEnv) ObservationSize() int { return 1 }
 func (e *scriptedEnv) ActionSpace() int     { return 2 }
 
+// episodeResults wraps rewards as EpisodeResults with no task label or
+// termination reason, for tests that only care about the reward side of
+// evaluateAll/summarizeRound's now-richer per-episode type.
+func episodeResults(rewards ...float32) []EpisodeResult {
+	results := make([]EpisodeResult, len(rewards))
+	for i, r := range rewards {
+		results[i] = EpisodeResult{Reward: r}
+	}
+	return results
+}
+
 func TestEvaluateAllRunsEveryEnvironmentAndKeepsPerEnvironmentOrder(t *testing.T) {
 	a := &scriptedEnv{rewards: []float32{1, 2, 3}}
 	b := &scriptedEnv{rewards: []float32{10, 20, 30}}
@@ -388,15 +399,25 @@ func TestEvaluateAllRunsEveryEnvironmentAndKeepsPerEnvironmentOrder(t *testing.T
 	scores, err := evaluateAll(context.Background(), []rl.Environment{a, b}, params, 3, 5, true, PlainSeams, rand.New(rand.NewPCG(3, 4)))
 	require.NoError(t, err)
 
-	assert.Equal(t, [][]float32{{1, 2, 3}, {10, 20, 30}}, scores, "each environment evaluates EvalEpisodes episodes, in order, concurrently")
+	// scriptedEnv's Step always returns Done=true on the first step and
+	// implements neither EpisodeTaskReporter nor EpisodeDoneReasoner, so
+	// every episode's Task is "" and its TerminationReason is the
+	// Done=true-but-unreported default, "unspecified_done".
+	want := [][]EpisodeResult{episodeResults(1, 2, 3), episodeResults(10, 20, 30)}
+	for _, env := range want {
+		for i := range env {
+			env[i].TerminationReason = "unspecified_done"
+		}
+	}
+	assert.Equal(t, want, scores, "each environment evaluates EvalEpisodes episodes, in order, concurrently")
 }
 
 // TestSummarizeRoundPairedStatistics: the paired difference, its standard
 // error and the win rules, on hand-computable numbers.
 func TestSummarizeRoundPairedStatistics(t *testing.T) {
 	params := actorcritic.NewParams(rand.New(rand.NewPCG(1, 2)), 1, 4, 2, 2)
-	teacher := [][]float32{{10, 10, 10, 10}}
-	student := [][]float32{{11, 11, 11, 11}} // +1 every pair: zero spread, so any z-score is beaten
+	teacher := [][]EpisodeResult{episodeResults(10, 10, 10, 10)}
+	student := [][]EpisodeResult{episodeResults(11, 11, 11, 11)} // +1 every pair: zero spread, so any z-score is beaten
 
 	result := summarizeRound(teacher, student, params, Config[*actorcritic.Params]{})
 	assert.True(t, result.StudentWon)
@@ -406,8 +427,8 @@ func TestSummarizeRoundPairedStatistics(t *testing.T) {
 
 	// A noisy tie: same mean advantage of +1, but per-pair differences swing
 	// wildly, so a 1.645 z-score must reject what the plain rule accepts.
-	noisyTeacher := [][]float32{{10, 10, 10, 10}}
-	noisyStudent := [][]float32{{20, 0, 18, 6}} // mean 11, diffs +10 -10 +8 -4
+	noisyTeacher := [][]EpisodeResult{episodeResults(10, 10, 10, 10)}
+	noisyStudent := [][]EpisodeResult{episodeResults(20, 0, 18, 6)} // mean 11, diffs +10 -10 +8 -4
 	plain := summarizeRound(noisyTeacher, noisyStudent, params, Config[*actorcritic.Params]{})
 	assert.True(t, plain.StudentWon, "the unguarded rule promotes on any positive mean difference")
 	guarded := summarizeRound(noisyTeacher, noisyStudent, params, Config[*actorcritic.Params]{WinZScore: 1.645})

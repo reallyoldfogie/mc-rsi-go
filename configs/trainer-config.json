@@ -1,0 +1,8 @@
+{
+  "_comment": "Copied from the active multi-step-2026-10-17-recurrent-cold-deep training session. This is the shared PPO baseline; architecture-specific hidden size/recurrent settings are supplied by the competition definition.",
+  "learning_rate": 0.001,
+  "entropy_coef": 0.01,
+  "hidden_size": 128,
+  "recurrent_chunk_len": 32,
+  "minibatch_size": 16
+}

@@ -50,11 +50,13 @@ import (
 	"github.com/reallyoldfogie/mc-agent/utils"
 	rofutils "github.com/reallyoldfogie/mc-bot-go/utils"
 
+	competitioncfg "github.com/reallyoldfogie/mc-rsi-trainer/pkg/competition"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/curriculum"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/curriculum/rlenvadapter"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/leapfrog"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/lineage"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/parallelenv"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/sshtunnel"
 )
 
 func main() {
@@ -102,6 +104,12 @@ type flags struct {
 	curriculumConfigPath         string
 	metricsAddr                  string
 	hiddenLayers                 int
+	competitionConfigPath        string
+	sshTarget                    string
+	sshRemoteServerPort          int
+	sshRemoteRCONPort            int
+	sshLocalServerPort           int
+	sshLocalRCONPort             int
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -134,14 +142,23 @@ func parseFlags(args []string) (flags, error) {
 	fs.StringVar(&f.curriculumConfigPath, "curriculum-config", "", "optional path to a pkg/curriculum pool JSON file (target_offsets/mine_target_blocks/mine_search_radius/craft_target_items) — if set, each environment's Config.TaskSelector picks a fresh task+goal every episode (pkg/curriculum/rlenvadapter.Select) instead of -mc-agent-config's single static env.target_offset/mine/craft settings for the whole run. Unset preserves that static-Config behavior exactly.")
 	fs.StringVar(&f.metricsAddr, "metrics-addr", ":9400", "address to serve Prometheus metrics on (see monitoring/README.md); empty disables the metrics server entirely")
 	fs.IntVar(&f.hiddenLayers, "hidden-layers", 2, "number of hidden layers in a freshly-created generation-0 policy network (docs/plans/20-configurable-depth-step-memory-and-dynamic-architecture.md Part A); only used when -checkpoint-dir has no existing generation to resume — an existing checkpoint's own depth always wins, whatever this flag says, including one produced by cmd/deepen-checkpoint with a depth other than 2. 2 is the default this repo has always used.")
+	fs.StringVar(&f.competitionConfigPath, "competition-config", "", "run configuration-driven architecture competition mode from this JSON file; when set, -checkpoint-dir and -mc-agent-config are taken from the competition config")
+	fs.StringVar(&f.sshTarget, "ssh-target", "", "open an SSH-managed tunnel to user@host (or ssh://user@host), forwarding the remote Minecraft and RCON ports for this run")
+	fs.IntVar(&f.sshRemoteServerPort, "ssh-remote-server-port", sshtunnel.DefaultMinecraftPort, "remote Minecraft port reached through -ssh-target")
+	fs.IntVar(&f.sshRemoteRCONPort, "ssh-remote-rcon-port", sshtunnel.DefaultRCONPort, "remote RCON port reached through -ssh-target")
+	fs.IntVar(&f.sshLocalServerPort, "ssh-local-server-port", 0, "local Minecraft tunnel port; 0 chooses a free port")
+	fs.IntVar(&f.sshLocalRCONPort, "ssh-local-rcon-port", 0, "local RCON tunnel port; 0 chooses a free port")
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}
-	if f.checkpointDir == "" {
+	if f.competitionConfigPath == "" && f.checkpointDir == "" {
 		return flags{}, fmt.Errorf("rsi-train: -checkpoint-dir is required")
 	}
-	if f.mcAgentConfigPath == "" {
+	if f.competitionConfigPath == "" && f.mcAgentConfigPath == "" {
 		return flags{}, fmt.Errorf("rsi-train: -mc-agent-config is required")
+	}
+	if f.competitionConfigPath != "" && f.sshTarget != "" {
+		return flags{}, fmt.Errorf("rsi-train: configure the competition SSH tunnel in the competition JSON, not -ssh-target")
 	}
 	if f.epochsPerGeneration <= 0 {
 		return flags{}, fmt.Errorf("rsi-train: -epochs-per-generation must be positive, got %d", f.epochsPerGeneration)
@@ -204,6 +221,14 @@ func parseFlags(args []string) (flags, error) {
 	if f.hiddenLayers <= 0 {
 		return flags{}, fmt.Errorf("rsi-train: -hidden-layers must be positive, got %d", f.hiddenLayers)
 	}
+	if f.sshTarget != "" {
+		if f.sshRemoteServerPort <= 0 || f.sshRemoteRCONPort <= 0 || f.sshLocalServerPort < 0 || f.sshLocalRCONPort < 0 {
+			return flags{}, fmt.Errorf("rsi-train: SSH tunnel ports must be positive remotely and non-negative locally")
+		}
+		if f.sshLocalServerPort != 0 && f.sshLocalServerPort == f.sshLocalRCONPort {
+			return flags{}, fmt.Errorf("rsi-train: SSH local Minecraft and RCON ports must differ")
+		}
+	}
 	return f, nil
 }
 
@@ -216,6 +241,9 @@ func run(args []string) error {
 	// deliberately logs paths and values, not the contents of mc-agent's
 	// config (which may contain an RCON password).
 	log.Printf("command-line flags: %+v", f)
+	if f.competitionConfigPath != "" {
+		return runCompetition(f)
+	}
 
 	trainerSettings := crlconfig.Default()
 	if f.trainerConfigPath != "" {
@@ -257,6 +285,21 @@ func run(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	var tunnel *sshtunnel.Tunnel
+	if f.sshTarget != "" {
+		tunnel, err = sshtunnel.Start(ctx, sshtunnel.Config{
+			Target: f.sshTarget, RemoteServerPort: f.sshRemoteServerPort,
+			RemoteRCONPort: f.sshRemoteRCONPort, LocalServerPort: f.sshLocalServerPort,
+			LocalRCONPort: f.sshLocalRCONPort,
+		})
+		if err != nil {
+			return err
+		}
+		defer tunnel.Close()
+		mcSettings.Connection.Address = tunnel.MinecraftAddress()
+		mcSettings.RCON.Address = tunnel.RCONAddress()
+		log.Printf("SSH tunnel active: Minecraft=%s RCON=%s", mcSettings.Connection.Address, mcSettings.RCON.Address)
+	}
 	// Safe to start before any bot is registered — pollOnce on zero bots
 	// is a no-op (see agentRegistry.runPoller's own doc comment) — and
 	// stops with the same ctx everything else in run() stops with.
@@ -272,6 +315,9 @@ func run(args []string) error {
 	if persisted, ok := loadPersistedParallelEnvs(f.checkpointDir); ok {
 		log.Printf("using persisted parallel-envs count %d (overriding -parallel-envs=%d)", persisted, f.parallelEnvs)
 		initialParallelEnvs = persisted
+	}
+	if f.sshTarget != "" && initialParallelEnvs > 1 && !f.sharedServer {
+		return fmt.Errorf("rsi-train: one SSH tunnel can support multiple environments only with -shared-server")
 	}
 
 	connected, sharedOriginBase, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumPool, f.packetLogDir(), f.episodeLimits())
@@ -299,7 +345,7 @@ func run(args []string) error {
 	}
 	for i, c := range connected {
 		agents.add(c.username, c.agent)
-		envs[i] = &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, targetOffsetForEpisode: c.targetOffsetForEpisode, registry: agents, index: i}
+		envs[i] = &instrumentedEnvironment{env: c.env, health: healthProviderForAgent(c.agent), task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, targetOffsetForEpisode: c.targetOffsetForEpisode, registry: agents, index: i}
 	}
 	if state, ok := loadPersistedTrainingState(f.checkpointDir + "/interim"); ok && len(state.Environments) > 0 {
 		if err := restoreEnvironmentStates(envs, state.Environments); err != nil {
@@ -2004,11 +2050,22 @@ type connectedEnvironment struct {
 	// wiring for why this exists: pinning Teacher's and Student's eval
 	// episodes to the identical task sequence each round.
 	reseedEvalTasks func(seed1, seed2 uint64)
+	// setEvaluationPlan switches this environment's TaskSelector to consume
+	// one immutable competition plan in order. nil when curriculum selection is
+	// disabled; normal rsi-train behavior remains RNG-driven.
+	setEvaluationPlan func(*competitioncfg.EvaluationPlan)
 	// stopWatch is closed right before this environment's agent is closed
 	// intentionally (reconcileEnvCount's scale-down path), telling its
 	// watchForUnexpectedExit goroutine this wasn't an unexpected exit, so
 	// it must return without stopping the whole run. Always non-nil.
 	stopWatch chan struct{}
+	// reconnect rebuilds this environment's bot and RL wrapper after a
+	// recoverable connection loss. It is competition-only; normal training
+	// retains its existing fail-fast lifecycle.
+	reconnect func(context.Context) (connectedEnvironment, error)
+	// updateDashboardAgent swaps the live agent behind the stable dashboard
+	// identity after reconnecting.
+	updateDashboardAgent func(models.Agent)
 }
 
 // packetLogDir is the directory the per-bot packet logs go in, or "" when
@@ -2053,7 +2110,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 			return nil, [3]float64{}, fmt.Errorf("applying shared-server gamerules: %w", err)
 		}
 	}
-	return connectEnvironmentRange(ctx, base, 0, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits, nil)
+	return connectEnvironmentRange(ctx, base, 0, n, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits, nil)
 }
 
 // connectEnvironmentRange connects environments at indices [start, n) out
@@ -2076,7 +2133,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 // later call adding more bots (reconcileEnvCount, growing an already-
 // running set) can pass the SAME value back in rather than letting a new
 // bot's own index-start position become a second, inconsistent base.
-func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits, sharedOriginBase *[3]float64) ([]connectedEnvironment, [3]float64, error) {
+func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start, n, total int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits, sharedOriginBase *[3]float64) ([]connectedEnvironment, [3]float64, error) {
 	connected := make([]connectedEnvironment, 0, n-start)
 	closeAll := func() {
 		for _, c := range connected {
@@ -2092,9 +2149,9 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 	for i := start; i < n; i++ {
 		var settings mcconfig.Settings
 		if sharedServer {
-			settings = parallelenv.DeriveSharedServerSettings(base, i, n)
+			settings = parallelenv.DeriveSharedServerSettings(base, i, total)
 		} else {
-			settings = parallelenv.DeriveSettings(base, i, n)
+			settings = parallelenv.DeriveSettings(base, i, total)
 		}
 		suffix := ""
 		if n > 1 {
@@ -2149,6 +2206,9 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			// anything itself for those).
 			envCfg.Seeder = craftIngredientSeeder
 			var taskMu sync.RWMutex
+			var evaluationPlanMu sync.Mutex
+			var evaluationPlan *competitioncfg.EvaluationPlan
+			var evaluationIndex int
 			selectedTask := taskName(settings.Env)
 			selectedGoal := goalForSettings(settings.Env)
 			selectedTargetOffset, selectedHasTarget := targetOffsetForSettings(settings.Env)
@@ -2173,6 +2233,27 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			// field combination — is what names this episode's task and
 			// goal; see rlenvadapter.TaskSelector's own doc comment for why.
 			envCfg.TaskSelector = func(_ int, _ *oldrand.Rand) rlenv.TaskOverride {
+				evaluationPlanMu.Lock()
+				if evaluationPlan != nil {
+					if evaluationIndex >= len(evaluationPlan.Scenarios) {
+						evaluationPlanMu.Unlock()
+						return rlenv.TaskOverride{}
+					}
+					scenario := evaluationPlan.Scenarios[evaluationIndex]
+					evaluationIndex++
+					evaluationPlanMu.Unlock()
+					taskMu.Lock()
+					selectedTask = scenario.Task
+					selectedGoal = scenario.Goal
+					selectedTargetOffset = scenario.Override.TargetOffset
+					selectedHasTarget = !scenario.Override.GoToTargetDisabled
+					taskMu.Unlock()
+					recordTaskSelection(selectedTask)
+					logCraftEconomyInventory(settings.Connection.Name, liveAgent, selectedTask, scenario.Override)
+					return scenario.Override
+				}
+				evaluationPlanMu.Unlock()
+
 				task := rlenvadapter.Select(*curriculumPool, taskRNG)
 				override := task.ToOverride()
 				taskMu.Lock()
@@ -2217,8 +2298,21 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 				goalForEpisode:         goalForEpisode,
 				targetOffsetForEpisode: targetOffsetForEpisode,
 				reseedEvalTasks:        taskPCG.Seed,
-				stopWatch:              make(chan struct{}),
+				setEvaluationPlan: func(plan *competitioncfg.EvaluationPlan) {
+					evaluationPlanMu.Lock()
+					evaluationPlan = plan
+					evaluationIndex = 0
+					evaluationPlanMu.Unlock()
+				},
+				stopWatch: make(chan struct{}),
 			})
+			connected[len(connected)-1].reconnect = func(reconnectCtx context.Context) (connectedEnvironment, error) {
+				fresh, _, err := connectEnvironmentRange(reconnectCtx, base, i, i+1, total, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits, &resolvedBase)
+				if err != nil {
+					return connectedEnvironment{}, err
+				}
+				return fresh[0], nil
+			}
 			continue
 		}
 		env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
@@ -2237,6 +2331,13 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 			targetOffsetForEpisode: func() ([3]float64, bool) { return targetOffsetForSettings(settings.Env) },
 			stopWatch:              make(chan struct{}),
 		})
+		connected[len(connected)-1].reconnect = func(reconnectCtx context.Context) (connectedEnvironment, error) {
+			fresh, _, err := connectEnvironmentRange(reconnectCtx, base, i, i+1, total, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits, &resolvedBase)
+			if err != nil {
+				return connectedEnvironment{}, err
+			}
+			return fresh[0], nil
+		}
 	}
 	return connected, resolvedBase, nil
 }
@@ -2273,7 +2374,7 @@ func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected [
 		return connected[:n], envs[:n], nil
 	}
 
-	added, _, err := connectEnvironmentRange(ctx, base, current, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits, sharedOriginBase)
+	added, _, err := connectEnvironmentRange(ctx, base, current, n, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits, sharedOriginBase)
 	if err != nil {
 		return connected, envs, fmt.Errorf("connecting %d additional environment(s): %w", n-current, err)
 	}
@@ -2282,7 +2383,7 @@ func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected [
 		index := len(connected)
 		agents.add(c.username, c.agent)
 		connected = append(connected, c)
-		envs = append(envs, &instrumentedEnvironment{env: c.env, task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, targetOffsetForEpisode: c.targetOffsetForEpisode, registry: agents, index: index})
+		envs = append(envs, &instrumentedEnvironment{env: c.env, health: healthProviderForAgent(c.agent), task: episodeTask, taskForEpisode: c.taskForEpisode, goalForEpisode: c.goalForEpisode, targetOffsetForEpisode: c.targetOffsetForEpisode, registry: agents, index: index})
 	}
 	return connected, envs, nil
 }
@@ -2294,7 +2395,13 @@ func reconcileEnvCount(ctx context.Context, stop context.CancelFunc, connected [
 // intentional (see reconcileEnvCount's scale-down path, the only place
 // that happens). Safe to call for every connectedEnvironment, including
 // ones added well after startup.
-func watchForUnexpectedExit(ctx context.Context, stop context.CancelFunc, c connectedEnvironment) {
+func watchForUnexpectedExit(ctx context.Context, stop context.CancelFunc, c connectedEnvironment, onExit ...func()) {
+	watchForUnexpectedExitWithPolicy(ctx, stop, c, true, onExit...)
+}
+
+// watchForUnexpectedExitWithPolicy keeps normal training fail-fast, while
+// competition mode can scope a genuine connection failure to its competitor.
+func watchForUnexpectedExitWithPolicy(ctx context.Context, stop context.CancelFunc, c connectedEnvironment, stopRun bool, onExit ...func()) {
 	done := c.agent.Done()
 	if done == nil {
 		return
@@ -2304,7 +2411,13 @@ func watchForUnexpectedExit(ctx context.Context, stop context.CancelFunc, c conn
 		case <-ctx.Done():
 		case <-c.stopWatch:
 		case <-done:
-			stop()
+			log.Printf("training agent exited unexpectedly: username=%s context_err=%v", c.username, ctx.Err())
+			if len(onExit) > 0 && onExit[0] != nil {
+				onExit[0]()
+			}
+			if stopRun {
+				stop()
+			}
 		}
 	}()
 }

@@ -42,6 +42,18 @@ func TestAgentRegistryAddAssignsSequentialIndices(t *testing.T) {
 	assert.Equal(t, "bot-1", snap[1].Username)
 }
 
+func TestAgentRegistryCompetitionIdentityIsVisible(t *testing.T) {
+	r := newAgentRegistry()
+	r.addCompetition("rsi-basic-0", nil, "run-1", "basic", "Basic", "architecture=basic:layers=2:width=128:mode=plain:chunk=0")
+
+	snap := r.snapshot()
+	require.Len(t, snap, 1)
+	assert.Equal(t, "run-1", snap[0].RunID)
+	assert.Equal(t, "basic", snap[0].CompetitorID)
+	assert.Equal(t, "Basic", snap[0].DisplayName)
+	assert.Contains(t, snap[0].Architecture, "layers=2")
+}
+
 func TestAgentRegistryTruncateDropsHighestIndexed(t *testing.T) {
 	r := newAgentRegistry()
 	r.add("bot-0", nil)

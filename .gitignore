@@ -18,6 +18,10 @@
 /cmd/*/libraries/
 /cmd/*/logs/
 /cmd/*/versions/
+/libraries/
+/versions/
+/logs/
+/configs/runs/
 
 # Real training run outputs (checkpoints, logs, mc-agent-config.json) -
 # runtime artifacts, not source, and can be large (one JSON file per
