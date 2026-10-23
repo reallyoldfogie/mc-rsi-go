@@ -32,6 +32,9 @@ func ResolveTrainerSettings(cfg Config, competitor Competitor) (crlconfig.Settin
 	} else {
 		settings.RecurrentChunkLen = 0
 	}
+	if competitor.TrainingSeed != 0 {
+		settings.Seed = competitor.TrainingSeed
+	}
 	if err := settings.Validate(); err != nil {
 		return crlconfig.Settings{}, fmt.Errorf("trainer settings for %q: %w", competitor.ID, err)
 	}

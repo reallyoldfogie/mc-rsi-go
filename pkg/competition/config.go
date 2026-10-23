@@ -132,6 +132,17 @@ type Competitor struct {
 	Recurrent         bool   `json:"recurrent"`
 	RecurrentChunkLen int    `json:"recurrent_chunk_len"`
 	TrainerConfig     string `json:"trainer_config,omitempty"`
+	// TrainingSeed overrides the common or competitor trainer config's own
+	// seed when non-zero (0 means "use whatever the loaded trainer config
+	// specifies" - see crlconfig.Default's own non-zero default, so an
+	// unset TrainingSeed is never silently mistaken for a deliberate
+	// seed-0 run). This is what lets a competition config run the same
+	// architecture against itself under different initializations - e.g.
+	// three competitor entries with identical hidden_layers/hidden_size/
+	// recurrent, distinct ids, and distinct TrainingSeed values - to tell
+	// a structurally broken architecture from one unlucky init, without
+	// maintaining a near-duplicate trainer-config file per seed.
+	TrainingSeed uint64 `json:"training_seed,omitempty"`
 }
 
 // LoadFile loads and validates a competition definition. Relative paths are

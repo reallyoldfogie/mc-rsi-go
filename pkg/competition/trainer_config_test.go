@@ -22,6 +22,29 @@ func TestResolveTrainerSettingsAppliesArchitectureFields(t *testing.T) {
 	assert.Equal(t, 12, settings.RecurrentChunkLen)
 }
 
+func TestResolveTrainerSettingsOverridesSeedWhenTrainingSeedIsSet(t *testing.T) {
+	cfg := validConfig()
+	competitor := cfg.Competitors[0]
+	competitor.TrainingSeed = 12345
+
+	settings, err := ResolveTrainerSettings(cfg, competitor)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(12345), settings.Seed)
+}
+
+func TestResolveTrainerSettingsLeavesSeedAloneWhenTrainingSeedIsUnset(t *testing.T) {
+	dir := t.TempDir()
+	trainerPath := filepath.Join(dir, "trainer.json")
+	require.NoError(t, os.WriteFile(trainerPath, []byte(`{"seed": 777}`), 0o644))
+	cfg := validConfig()
+	competitor := cfg.Competitors[0]
+	competitor.TrainerConfig = trainerPath
+
+	settings, err := ResolveTrainerSettings(cfg, competitor)
+	require.NoError(t, err)
+	assert.Equal(t, uint64(777), settings.Seed, "TrainingSeed==0 must not clobber the trainer config's own seed")
+}
+
 func TestResolveTrainerSettingsLoadsCompetitorOverride(t *testing.T) {
 	dir := t.TempDir()
 	trainerPath := filepath.Join(dir, "trainer.json")
