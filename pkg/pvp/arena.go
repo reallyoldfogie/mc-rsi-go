@@ -41,18 +41,27 @@ type MatchArena struct {
 	ParticipantNames []string
 }
 
-// ResetMatch implements MatchReset (barrier.go): heals, re-equips, and
-// repositions every named participant in the match, managed and
-// unmanaged alike - an unmanaged participant has no Reset() call of its
-// own to synchronize on, so it is reset purely by this RCON side effect
-// (COMBAT_COMPETITION_PLAN.md's "Unmanaged participants" section).
+// ResetMatch implements MatchReset (barrier.go): repositions, then
+// heals and re-equips, every named participant in the match, managed
+// and unmanaged alike - an unmanaged participant has no Reset() call of
+// its own to synchronize on, so it is reset purely by this RCON side
+// effect (COMBAT_COMPETITION_PLAN.md's "Unmanaged participants"
+// section). Teleport runs first deliberately: SeedMatchReset's own
+// VerifyPlayerNearPosition gate (mc-agent's agent/rl_seed.go) refuses to
+// touch anyone currently outside Radius of Center, which a participant
+// who hasn't been moved to the arena yet - true for every participant
+// except whichever one the arena's own origin was derived from, on the
+// very first round - would otherwise always fail. Found live: the
+// second of two freshly connected combatants spawned well outside the
+// arena and SeedMatchReset refused it before this fix reordered the two
+// calls.
 func (a MatchArena) ResetMatch(ctx context.Context) error {
 	for _, name := range a.ParticipantNames {
-		if err := a.Controller.SeedMatchReset(ctx, name, a.Weapon, a.Center, a.Radius); err != nil {
-			return fmt.Errorf("reset %q: %w", name, err)
-		}
 		if _, err := a.RCON.Teleport(ctx, name, a.Center.X, a.Center.Y, a.Center.Z).Exec(ctx); err != nil {
 			return fmt.Errorf("teleport %q: %w", name, err)
+		}
+		if err := a.Controller.SeedMatchReset(ctx, name, a.Weapon, a.Center, a.Radius); err != nil {
+			return fmt.Errorf("reset %q: %w", name, err)
 		}
 	}
 	return nil
@@ -101,6 +110,15 @@ func MatchOrigin(base models.V3, matchIndex, separationChunks int) models.V3 {
 // between a death and respawn) is skipped for that tick rather than
 // treated as an error, matching VerifyPlayerNearPosition's own "not
 // found is not an error" convention.
+//
+// Checks ctx.Err() before each per-name RCON call, not just once per
+// tick: found live that a dead/unreachable RCON connection (the
+// underlying library's read doesn't itself respect ctx cancellation,
+// so a single call can block for several real seconds before timing
+// out) otherwise keeps this loop making one doomed call after another,
+// for every name, every tick, for as long as ctx takes to actually be
+// checked again - visibly still retrying minutes after the caller's own
+// context had already been canceled.
 func EnforceContainment(ctx context.Context, rcon testenv.RCONHelper, names []string, center models.V3, radius float64, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -110,6 +128,9 @@ func EnforceContainment(ctx context.Context, rcon testenv.RCONHelper, names []st
 			return
 		case <-ticker.C:
 			for _, name := range names {
+				if ctx.Err() != nil {
+					return
+				}
 				x, y, z, err := rcon.GetEntityPos(ctx, name)
 				if err != nil {
 					continue

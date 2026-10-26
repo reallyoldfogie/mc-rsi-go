@@ -207,6 +207,71 @@ func TestEnforceContainment_LeavesParticipantInsideRadiusAlone(t *testing.T) {
 	}
 }
 
+// blockingFirstCallRCON is a testenv.RCON whose Exec call for
+// blockOnSubstring blocks until released, so a test can cancel ctx while
+// that call is still "in flight" and confirm a caller checks ctx before
+// issuing its next call, rather than only between ticks. Every other
+// call (including testenv.NewRCONHelper's own hidden version-detection
+// probe on construction) returns immediately.
+type blockingFirstCallRCON struct {
+	mu               sync.Mutex
+	cmds             []string
+	released         chan struct{}
+	blockOnSubstring string
+}
+
+func (f *blockingFirstCallRCON) Exec(ctx context.Context, cmd string) (string, error) {
+	f.mu.Lock()
+	f.cmds = append(f.cmds, cmd)
+	shouldBlock := strings.Contains(cmd, f.blockOnSubstring)
+	f.mu.Unlock()
+	if shouldBlock {
+		<-f.released
+	}
+	return "", nil
+}
+
+func (f *blockingFirstCallRCON) Close() error                        { return nil }
+func (f *blockingFirstCallRCON) Reconnect(ctx context.Context) error { return nil }
+
+func (f *blockingFirstCallRCON) commands() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.cmds...)
+}
+
+func TestEnforceContainment_StopsBetweenNamesOnceContextCanceled(t *testing.T) {
+	fake := &blockingFirstCallRCON{released: make(chan struct{}), blockOnSubstring: "Alice"}
+	rcon := testenv.NewRCONHelper(fake)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		EnforceContainment(ctx, rcon, []string{"Alice", "Bob"}, models.V3{}, 10, time.Hour)
+		close(done)
+	}()
+
+	// Give EnforceContainment's first tick time to start its first
+	// GetEntityPos call (which blocks in blockingFirstCallRCON until
+	// released), then cancel ctx while that call is still outstanding.
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	time.Sleep(50 * time.Millisecond)
+	close(fake.released)
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("EnforceContainment did not return after ctx was canceled")
+	}
+
+	for _, cmd := range fake.commands() {
+		if strings.Contains(cmd, "Bob") {
+			t.Fatalf("Bob should never have been queried once ctx was canceled mid-tick; commands = %v", fake.commands())
+		}
+	}
+}
+
 func TestSetWorldBorder_IssuesCenterAndSizeCommands(t *testing.T) {
 	rcon, fake := newFakeRCONHelper(nil)
 	if err := SetWorldBorder(context.Background(), rcon, models.V3{X: 5, Y: 64, Z: -5}, 50); err != nil {
