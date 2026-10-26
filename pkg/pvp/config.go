@@ -138,6 +138,15 @@ type Participant struct {
 	HiddenSize        int  `json:"hidden_size,omitempty"`
 	Recurrent         bool `json:"recurrent,omitempty"`
 	RecurrentChunkLen int  `json:"recurrent_chunk_len,omitempty"`
+
+	// CheckpointPath is a Phase 2 (pkg/tournament) concern only - an
+	// already-trained checkpoint a competition entry loads for pure
+	// inference play. Phase 1's own training path (this package's own
+	// Config/MatchConfig.Validate) neither sets nor checks it; left here
+	// rather than duplicated onto a parallel participant type so
+	// pkg/tournament can reuse this type as-is. See
+	// docs/plans/20-combat-pvp-competition.md.
+	CheckpointPath string `json:"checkpoint_path,omitempty"`
 }
 
 // MatchConfig is one arena's roster. Every participant - managed and
@@ -248,7 +257,7 @@ func (c Config) Validate() error {
 	if time.Duration(c.Training.CheckpointInterval) <= 0 {
 		return fmt.Errorf("training.checkpoint_interval must be positive")
 	}
-	if err := c.Server.World.validate(); err != nil {
+	if err := c.Server.World.Validate(); err != nil {
 		return fmt.Errorf("server.world: %w", err)
 	}
 	if len(c.Matches) == 0 {
@@ -271,7 +280,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
-func (w WorldSource) validate() error {
+func (w WorldSource) Validate() error {
 	switch w.Kind {
 	case WorldSourceExisting:
 		if strings.TrimSpace(w.MCAgentConfig) == "" {
@@ -291,7 +300,7 @@ func (m MatchConfig) validate(totalMatches int) error {
 	if m.Weapon == "" {
 		return fmt.Errorf("weapon must not be empty")
 	}
-	if err := m.Arena.validate(totalMatches); err != nil {
+	if err := m.Arena.Validate(totalMatches); err != nil {
 		return fmt.Errorf("arena: %w", err)
 	}
 	if len(m.Participants) < 2 {
@@ -340,7 +349,7 @@ func (m MatchConfig) validate(totalMatches int) error {
 	return nil
 }
 
-func (a ArenaConfig) validate(totalMatches int) error {
+func (a ArenaConfig) Validate(totalMatches int) error {
 	if a.Radius <= 0 {
 		return fmt.Errorf("radius must be positive")
 	}
