@@ -115,9 +115,19 @@ func (b *matchBarrier) arriveAtReset(ctx context.Context) error {
 // shared matchBarrier. It implements rl.Environment unchanged, so
 // cRL-go/pkg/ppo.Trainer has no awareness that combat synchronization
 // exists at all - see docs/plans/19-combat-pvp-training.md.
+//
+// It also records the most recent Observation it has seen
+// (LastObservation), independent of training/inference concerns - used by
+// pkg/pvp/outcome.go to read a managed participant's own health at round
+// end for per-game win/loss determination (docs/plans/20-combat-pvp-competition.md),
+// without mc-agent needing any new surface for that (COMBAT_COMPETITION_PLAN.md
+// finding 3).
 type matchEnvironment struct {
 	inner   rl.Environment
 	barrier *matchBarrier
+
+	mu   sync.Mutex
+	last rl.Observation
 }
 
 func newMatchEnvironment(inner rl.Environment, barrier *matchBarrier) *matchEnvironment {
@@ -126,6 +136,20 @@ func newMatchEnvironment(inner rl.Environment, barrier *matchBarrier) *matchEnvi
 
 func (m *matchEnvironment) ObservationSize() int { return m.inner.ObservationSize() }
 func (m *matchEnvironment) ActionSpace() int     { return m.inner.ActionSpace() }
+
+// LastObservation returns the Observation from the most recent Step or
+// Reset call. Zero-valued if neither has been called yet.
+func (m *matchEnvironment) LastObservation() rl.Observation {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.last
+}
+
+func (m *matchEnvironment) setLastObservation(obs rl.Observation) {
+	m.mu.Lock()
+	m.last = obs
+	m.mu.Unlock()
+}
 
 // Step always takes the real action against the underlying environment -
 // skipping it to "fast forward" to Done would desync mc-agent's own
@@ -140,6 +164,7 @@ func (m *matchEnvironment) Step(ctx context.Context, action rl.Action) (rl.StepR
 	if err != nil {
 		return result, err
 	}
+	m.setLastObservation(result.Observation)
 	if result.Done {
 		m.barrier.markDone()
 	} else if m.barrier.isDone() {
@@ -156,5 +181,9 @@ func (m *matchEnvironment) Reset(ctx context.Context) (rl.Observation, error) {
 	if err := m.barrier.arriveAtReset(ctx); err != nil {
 		return rl.Observation{}, err
 	}
-	return m.inner.Reset(ctx)
+	obs, err := m.inner.Reset(ctx)
+	if err == nil {
+		m.setLastObservation(obs)
+	}
+	return obs, err
 }
