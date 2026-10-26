@@ -54,7 +54,7 @@ type ParticipantSession struct {
 // EnvironmentID matches - a mismatch is a hard error, never a silent
 // re-init, so a config change can't accidentally resume into an
 // incompatible checkpoint), or initializing fresh params otherwise. env
-// should already be wrapped in a matchEnvironment (barrier.go) by the
+// should already be wrapped in a MatchEnvironment (barrier.go) by the
 // caller - this constructor has no awareness that match synchronization
 // exists.
 func NewParticipantSession(participantID string, p Participant, checkpointPath string, checkpointInterval time.Duration, settings crlconfig.Settings, env rl.Environment) (*ParticipantSession, error) {

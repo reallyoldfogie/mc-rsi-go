@@ -63,7 +63,7 @@ func countingReset(calls *int32) MatchResetFunc {
 
 func TestMatchEnvironment_SiblingDeathForcesOtherDone(t *testing.T) {
 	var resetCalls int32
-	barrier := newMatchBarrier(2, countingReset(&resetCalls))
+	barrier := NewMatchBarrier(2, countingReset(&resetCalls))
 
 	dyingUnderlying := &scriptedEnv{steps: []rl.StepResult{
 		{Observation: rl.Observation{Values: []float32{1}}, Reward: 1, Done: true}, // dies on step 0
@@ -73,8 +73,8 @@ func TestMatchEnvironment_SiblingDeathForcesOtherDone(t *testing.T) {
 		{Observation: rl.Observation{Values: []float32{1}}, Reward: 1, Done: false},
 	}}
 
-	dying := newMatchEnvironment(dyingUnderlying, barrier)
-	surviving := newMatchEnvironment(survivingUnderlying, barrier)
+	dying := NewMatchEnvironment(dyingUnderlying, barrier)
+	surviving := NewMatchEnvironment(survivingUnderlying, barrier)
 
 	ctx := context.Background()
 
@@ -135,7 +135,7 @@ func TestMatchEnvironment_SiblingDeathForcesOtherDone(t *testing.T) {
 
 func TestMatchBarrier_ResetBlocksUntilAllArrive(t *testing.T) {
 	var resetCalls int32
-	barrier := newMatchBarrier(3, countingReset(&resetCalls))
+	barrier := NewMatchBarrier(3, countingReset(&resetCalls))
 
 	ctx := context.Background()
 	done := make(chan struct{}, 2)
@@ -166,7 +166,7 @@ func TestMatchBarrier_ResetBlocksUntilAllArrive(t *testing.T) {
 
 func TestMatchBarrier_IsCyclicAcrossMultipleRounds(t *testing.T) {
 	var resetCalls int32
-	barrier := newMatchBarrier(2, countingReset(&resetCalls))
+	barrier := NewMatchBarrier(2, countingReset(&resetCalls))
 	ctx := context.Background()
 
 	for round := 1; round <= 3; round++ {
@@ -189,14 +189,14 @@ func TestMatchBarrier_IsCyclicAcrossMultipleRounds(t *testing.T) {
 
 func TestMatchBarrier_PropagatesResetError(t *testing.T) {
 	wantErr := fmt.Errorf("boom")
-	barrier := newMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return wantErr }))
+	barrier := NewMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return wantErr }))
 	if err := barrier.arriveAtReset(context.Background()); err != wantErr {
 		t.Fatalf("arriveAtReset error = %v, want %v", err, wantErr)
 	}
 }
 
 func TestMatchBarrier_ContextCancellationUnblocksWaiter(t *testing.T) {
-	barrier := newMatchBarrier(2, MatchResetFunc(func(ctx context.Context) error { return nil }))
+	barrier := NewMatchBarrier(2, MatchResetFunc(func(ctx context.Context) error { return nil }))
 	ctx, cancel := context.WithCancel(context.Background())
 
 	errCh := make(chan error, 1)

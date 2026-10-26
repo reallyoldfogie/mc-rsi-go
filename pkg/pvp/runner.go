@@ -254,7 +254,7 @@ func runMatch(ctx context.Context, rt *matchRuntime, cfg Config, trainerSettings
 		ParticipantNames: rt.participantNames,
 	}
 	managed := rt.config.ManagedParticipants()
-	barrier := newMatchBarrier(len(managed), arena)
+	barrier := NewMatchBarrier(len(managed), arena)
 
 	checkpointDir := filepath.Join(cfg.CheckpointRoot, rt.config.ID)
 	if err := os.MkdirAll(checkpointDir, 0o755); err != nil {
@@ -264,7 +264,7 @@ func runMatch(ctx context.Context, rt *matchRuntime, cfg Config, trainerSettings
 	sessions := make([]*ParticipantSession, 0, len(managed))
 	for _, p := range managed {
 		connected := rt.connected[p.ID]
-		wrapped := newMatchEnvironment(connected.Env, barrier)
+		wrapped := NewMatchEnvironment(connected.Env, barrier)
 		checkpointPath := filepath.Join(checkpointDir, p.ID+".json")
 		session, err := NewParticipantSession(p.ID, p, checkpointPath, time.Duration(cfg.Training.CheckpointInterval), trainerSettings, wrapped)
 		if err != nil {

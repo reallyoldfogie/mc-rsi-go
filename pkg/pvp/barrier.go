@@ -27,12 +27,12 @@ type MatchResetFunc func(ctx context.Context) error
 
 func (f MatchResetFunc) ResetMatch(ctx context.Context) error { return f(ctx) }
 
-// matchBarrier synchronizes episode boundaries across every managed
+// MatchBarrier synchronizes episode boundaries across every managed
 // participant in one match - see docs/plans/19-combat-pvp-training.md's
 // "The one genuinely new primitive" section for the full design rationale.
 // It is cyclic: safe to reuse round after round. The zero value is not
-// usable; construct with newMatchBarrier.
-type matchBarrier struct {
+// usable; construct with NewMatchBarrier.
+type MatchBarrier struct {
 	size  int
 	reset MatchReset
 
@@ -43,13 +43,13 @@ type matchBarrier struct {
 	resetErr error
 }
 
-func newMatchBarrier(size int, reset MatchReset) *matchBarrier {
-	return &matchBarrier{size: size, reset: reset, release: make(chan struct{})}
+func NewMatchBarrier(size int, reset MatchReset) *MatchBarrier {
+	return &MatchBarrier{size: size, reset: reset, release: make(chan struct{})}
 }
 
 // markDone records that the match's shared episode has ended. Idempotent -
 // whichever sibling's Step notices first wins; later calls are no-ops.
-func (b *matchBarrier) markDone() {
+func (b *MatchBarrier) markDone() {
 	b.mu.Lock()
 	b.done = true
 	b.mu.Unlock()
@@ -57,7 +57,7 @@ func (b *matchBarrier) markDone() {
 
 // isDone reports whether any sibling has already ended this round's
 // episode, so a caller's own Step result can be forced to match.
-func (b *matchBarrier) isDone() bool {
+func (b *MatchBarrier) isDone() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.done
@@ -79,7 +79,7 @@ func (b *matchBarrier) isDone() bool {
 // short for this round (not decremented on the way out), which is fine
 // precisely because nothing should call arriveAtReset again after
 // cancellation.
-func (b *matchBarrier) arriveAtReset(ctx context.Context) error {
+func (b *MatchBarrier) arriveAtReset(ctx context.Context) error {
 	b.mu.Lock()
 	b.waiting++
 	last := b.waiting == b.size
@@ -109,10 +109,10 @@ func (b *matchBarrier) arriveAtReset(ctx context.Context) error {
 	}
 }
 
-// matchEnvironment wraps one managed participant's underlying
+// MatchEnvironment wraps one managed participant's underlying
 // rl.Environment (in practice an mc-agent rlenv.Environment), synchronizing
 // episode boundaries with every other participant in the same match via a
-// shared matchBarrier. It implements rl.Environment unchanged, so
+// shared MatchBarrier. It implements rl.Environment unchanged, so
 // cRL-go/pkg/ppo.Trainer has no awareness that combat synchronization
 // exists at all - see docs/plans/19-combat-pvp-training.md.
 //
@@ -122,30 +122,30 @@ func (b *matchBarrier) arriveAtReset(ctx context.Context) error {
 // end for per-game win/loss determination (docs/plans/20-combat-pvp-competition.md),
 // without mc-agent needing any new surface for that (COMBAT_COMPETITION_PLAN.md
 // finding 3).
-type matchEnvironment struct {
+type MatchEnvironment struct {
 	inner   rl.Environment
-	barrier *matchBarrier
+	barrier *MatchBarrier
 
 	mu   sync.Mutex
 	last rl.Observation
 }
 
-func newMatchEnvironment(inner rl.Environment, barrier *matchBarrier) *matchEnvironment {
-	return &matchEnvironment{inner: inner, barrier: barrier}
+func NewMatchEnvironment(inner rl.Environment, barrier *MatchBarrier) *MatchEnvironment {
+	return &MatchEnvironment{inner: inner, barrier: barrier}
 }
 
-func (m *matchEnvironment) ObservationSize() int { return m.inner.ObservationSize() }
-func (m *matchEnvironment) ActionSpace() int     { return m.inner.ActionSpace() }
+func (m *MatchEnvironment) ObservationSize() int { return m.inner.ObservationSize() }
+func (m *MatchEnvironment) ActionSpace() int     { return m.inner.ActionSpace() }
 
 // LastObservation returns the Observation from the most recent Step or
 // Reset call. Zero-valued if neither has been called yet.
-func (m *matchEnvironment) LastObservation() rl.Observation {
+func (m *MatchEnvironment) LastObservation() rl.Observation {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.last
 }
 
-func (m *matchEnvironment) setLastObservation(obs rl.Observation) {
+func (m *MatchEnvironment) setLastObservation(obs rl.Observation) {
 	m.mu.Lock()
 	m.last = obs
 	m.mu.Unlock()
@@ -159,7 +159,7 @@ func (m *matchEnvironment) setLastObservation(obs rl.Observation) {
 // participant's Trainer proceeds to Reset at most one live tick later than
 // the sibling that actually ended it - an approximation of "ends together,"
 // not literal same-tick synchrony (see docs/plans/19-combat-pvp-training.md).
-func (m *matchEnvironment) Step(ctx context.Context, action rl.Action) (rl.StepResult, error) {
+func (m *MatchEnvironment) Step(ctx context.Context, action rl.Action) (rl.StepResult, error) {
 	result, err := m.inner.Step(ctx, action)
 	if err != nil {
 		return result, err
@@ -177,7 +177,7 @@ func (m *matchEnvironment) Step(ctx context.Context, action rl.Action) (rl.StepR
 // returns the underlying environment's own fresh Reset observation once the
 // shared match-wide world reset (heal/re-equip/reposition every named
 // participant) has completed exactly once for this round.
-func (m *matchEnvironment) Reset(ctx context.Context) (rl.Observation, error) {
+func (m *MatchEnvironment) Reset(ctx context.Context) (rl.Observation, error) {
 	if err := m.barrier.arriveAtReset(ctx); err != nil {
 		return rl.Observation{}, err
 	}

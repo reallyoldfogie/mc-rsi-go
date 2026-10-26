@@ -15,8 +15,8 @@ import (
 // ConnectedParticipant is one managed participant's live connection: the
 // underlying mc-agent models.Agent (also an RCONMatchController - see
 // arena.go) and its rlenv.Environment, not yet wrapped in a
-// matchEnvironment (the caller does that once the match's shared
-// matchBarrier exists).
+// MatchEnvironment (the caller does that once the match's shared
+// MatchBarrier exists).
 type ConnectedParticipant struct {
 	Participant Participant
 	Username    string
@@ -115,13 +115,17 @@ func ConnectManagedParticipant(ctx context.Context, p Participant, settings mcco
 		resolvedOrigin = pos
 	}
 
+	// Starts from rlenv.DefaultConfig() rather than a zero-value Config:
+	// ArrivalThreshold/StepTimeout are validated as mandatory (> 0) by
+	// rlenv.New regardless of whether this Environment poses the goto
+	// task they belong to - combat training never uses them itself, but
+	// still needs some positive value to pass validation.
 	originCopy := [3]float64{resolvedOrigin.X, resolvedOrigin.Y, resolvedOrigin.Z}
-	envCfg := rlenv.Config{
-		CombatTargetMobType:  "minecraft:player",
-		CombatIncludePlayers: true,
-		CombatRadius:         radius,
-		ResetOrigin:          &originCopy,
-	}
+	envCfg := rlenv.DefaultConfig()
+	envCfg.CombatTargetMobType = "minecraft:player"
+	envCfg.CombatIncludePlayers = true
+	envCfg.CombatRadius = radius
+	envCfg.ResetOrigin = &originCopy
 	env, err := rlenv.New(liveAgent, actions.NewRegistry(), envCfg)
 	if err != nil {
 		_ = a.Close(context.Background())

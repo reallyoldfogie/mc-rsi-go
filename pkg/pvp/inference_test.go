@@ -29,8 +29,8 @@ func TestInferenceSession_PlaysGameAgainstRealCheckpoint(t *testing.T) {
 		t.Fatalf("Checkpoint: %v", err)
 	}
 
-	barrier := newMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return nil }))
-	wrapped := newMatchEnvironment(newTestEnv(t), barrier)
+	barrier := NewMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return nil }))
+	wrapped := NewMatchEnvironment(newTestEnv(t), barrier)
 
 	inferenceSession, err := NewInferenceSession("p1", participant, checkpointPath, true, wrapped, 1)
 	if err != nil {
@@ -72,8 +72,8 @@ func TestInferenceSession_MismatchedCheckpointIsAHardError(t *testing.T) {
 
 	differentArchitecture := testParticipant()
 	differentArchitecture.HiddenLayers = 3
-	barrier := newMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return nil }))
-	wrapped := newMatchEnvironment(newTestEnv(t), barrier)
+	barrier := NewMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return nil }))
+	wrapped := NewMatchEnvironment(newTestEnv(t), barrier)
 
 	_, err = NewInferenceSession("p1", differentArchitecture, checkpointPath, true, wrapped, 1)
 	if err == nil {
@@ -86,8 +86,8 @@ func TestInferenceSession_MismatchedCheckpointIsAHardError(t *testing.T) {
 
 func TestInferenceSession_RejectsMissingCheckpoint(t *testing.T) {
 	dir := t.TempDir()
-	barrier := newMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return nil }))
-	wrapped := newMatchEnvironment(newTestEnv(t), barrier)
+	barrier := NewMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return nil }))
+	wrapped := NewMatchEnvironment(newTestEnv(t), barrier)
 
 	_, err := NewInferenceSession("p1", testParticipant(), filepath.Join(dir, "does-not-exist.json"), true, wrapped, 1)
 	if err == nil {
@@ -112,8 +112,8 @@ func TestInferenceSession_RecurrentParticipantUsesRecurrentParams(t *testing.T) 
 		t.Fatalf("Checkpoint: %v", err)
 	}
 
-	barrier := newMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return nil }))
-	wrapped := newMatchEnvironment(newTestEnv(t), barrier)
+	barrier := NewMatchBarrier(1, MatchResetFunc(func(ctx context.Context) error { return nil }))
+	wrapped := NewMatchEnvironment(newTestEnv(t), barrier)
 	inferenceSession, err := NewInferenceSession("p1", participant, checkpointPath, true, wrapped, 1)
 	if err != nil {
 		t.Fatalf("NewInferenceSession: %v", err)

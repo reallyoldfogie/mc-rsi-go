@@ -24,7 +24,7 @@ type InferenceSession struct {
 	EnvironmentID string
 	Greedy        bool
 
-	env             *matchEnvironment
+	env             *MatchEnvironment
 	recurrent       bool
 	plainParams     *actorcritic.Params
 	recurrentParams *actorcritic.RecurrentParams
@@ -33,12 +33,12 @@ type InferenceSession struct {
 
 // NewInferenceSession loads a frozen checkpoint (hard error on an
 // environment-ID mismatch, same as NewParticipantSession) and wraps env
-// (already a matchEnvironment, built the same way a Phase 1 training
+// (already a MatchEnvironment, built the same way a Phase 1 training
 // session's environment is). greedy selects deterministic (argmax) vs.
 // sampled action selection - COMBAT_COMPETITION_PLAN.md doesn't mandate
 // one; a competition result is more reproducible with greedy on, but the
 // choice is left to the caller.
-func NewInferenceSession(participantID string, p Participant, checkpointPath string, greedy bool, env *matchEnvironment, seed uint64) (*InferenceSession, error) {
+func NewInferenceSession(participantID string, p Participant, checkpointPath string, greedy bool, env *MatchEnvironment, seed uint64) (*InferenceSession, error) {
 	environmentID := EnvironmentID(p, env.ObservationSize(), env.ActionSpace())
 	s := &InferenceSession{
 		ParticipantID: participantID,

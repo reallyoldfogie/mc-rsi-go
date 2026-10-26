@@ -42,7 +42,7 @@ type GameOutcome struct {
 
 // ParticipantHealth is one participant's health reading at round end -
 // the only input ComputeGameOutcome needs, from either a managed
-// participant's own matchEnvironment.LastObservation() or an unmanaged
+// participant's own MatchEnvironment.LastObservation() or an unmanaged
 // one's RCON-read health (ReadHealthRCON).
 type ParticipantHealth struct {
 	Team      Team
@@ -50,7 +50,7 @@ type ParticipantHealth struct {
 }
 
 // HealthFromObservation extracts a managed participant's own health from
-// its matchEnvironment's most recent Observation - see
+// its MatchEnvironment's most recent Observation - see
 // combatHealthObservationIndex's own doc comment.
 func HealthFromObservation(obs rl.Observation) float64 {
 	if combatHealthObservationIndex >= len(obs.Values) {
