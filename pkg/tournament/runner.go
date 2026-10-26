@@ -29,6 +29,17 @@ type PairingOutcome struct {
 // needing concurrent-match bookkeeping (pkg/pvp's own MatchOrigin exists
 // for a future multi-match-at-once extension, not used here).
 func Run(ctx context.Context, cfg Config) (*Bracket, error) {
+	return RunWithObservability(ctx, cfg, nil, nil)
+}
+
+// RunWithObservability behaves exactly like Run, additionally recording
+// per-game/per-pairing/bracket-progress metrics (COMBAT_COMPETITION_PLAN.md
+// Phase 3 item 1) if metrics is non-nil, and publishing a live,
+// dashboard-safe snapshot of bracket progress (Phase 3 item 2) after every
+// change if status is non-nil. The caller constructs both itself (via
+// NewMetrics/NewLiveStatus) so it can start serving them (e.g. via
+// StartDashboardServer) before this call blocks for the whole tournament.
+func RunWithObservability(ctx context.Context, cfg Config, metrics *Metrics, status *LiveStatus) (*Bracket, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -55,6 +66,9 @@ func Run(ctx context.Context, cfg Config) (*Bracket, error) {
 	if err != nil {
 		return nil, err
 	}
+	if status != nil {
+		status.Refresh(bracket, nil)
+	}
 
 	botIndex := 0
 	for {
@@ -62,9 +76,15 @@ func Run(ctx context.Context, cfg Config) (*Bracket, error) {
 		if !ok {
 			break
 		}
+		if metrics != nil {
+			metrics.SetBracketRound(pairing.Round)
+		}
+		if status != nil {
+			status.Refresh(bracket, pairing)
+		}
 		a := competitorsByID[pairing.CompetitorA]
 		b := competitorsByID[pairing.CompetitorB]
-		outcome, err := runPairing(ctx, cfg, base, &botIndex, a, b)
+		outcome, err := runPairing(ctx, cfg, base, &botIndex, a, b, metrics)
 		if err != nil {
 			return bracket, fmt.Errorf("tournament: pairing %q vs %q: %w", a.ID, b.ID, err)
 		}
@@ -74,11 +94,23 @@ func Run(ctx context.Context, cfg Config) (*Bracket, error) {
 		if err := results.RecordPairing(pairing, outcome); err != nil {
 			return bracket, err
 		}
+		if metrics != nil {
+			metrics.RecordPairing(a.ID, b.ID)
+		}
+		if status != nil {
+			status.Refresh(bracket, nil)
+		}
 	}
 
 	champion, _ := bracket.Champion()
 	if err := results.Finalize(champion); err != nil {
 		return bracket, err
+	}
+	if metrics != nil {
+		metrics.SetChampionDecided(champion != "")
+	}
+	if status != nil {
+		status.Refresh(bracket, nil)
 	}
 	return bracket, nil
 }
@@ -93,7 +125,7 @@ func Run(ctx context.Context, cfg Config) (*Bracket, error) {
 // this package's own live test does) - found live when a 1v1 pairing's
 // ComputeGameOutcome saw both participants sharing one empty Team and
 // rejected it as only one team being represented.
-func runPairing(ctx context.Context, cfg Config, base mcconfig.Settings, botIndex *int, a, b Competitor) (PairingOutcome, error) {
+func runPairing(ctx context.Context, cfg Config, base mcconfig.Settings, botIndex *int, a, b Competitor, metrics *Metrics) (PairingOutcome, error) {
 	for i := range a.Participants {
 		a.Participants[i].Team = a.ID
 	}
@@ -223,6 +255,9 @@ func runPairing(ctx context.Context, cfg Config, base mcconfig.Settings, botInde
 			return PairingOutcome{}, fmt.Errorf("game %d: %w", gameIndex, err)
 		}
 		outcome.Games = append(outcome.Games, game)
+		if metrics != nil {
+			metrics.RecordGame(a.ID, b.ID, game)
+		}
 		switch game.Winner {
 		case a.ID:
 			outcome.GamesWonA++

@@ -21,14 +21,15 @@ import (
 
 func main() {
 	configPath := flag.String("config", "", "path to a tournament config JSON file (see pkg/tournament.Config)")
+	dashboardAddr := flag.String("dashboard-addr", "", "if set, serve a live scoreboard page (/), bracket status JSON (/status), and run-scoped Prometheus metrics (/metrics) on this address (COMBAT_COMPETITION_PLAN.md Phase 3)")
 	flag.Parse()
 
-	if err := run(*configPath); err != nil {
+	if err := run(*configPath, *dashboardAddr); err != nil {
 		log.Fatalf("rsi-pvp-compete: %v", err)
 	}
 }
 
-func run(configPath string) error {
+func run(configPath, dashboardAddr string) error {
 	if configPath == "" {
 		return fmt.Errorf("-config is required")
 	}
@@ -38,11 +39,22 @@ func run(configPath string) error {
 		return err
 	}
 
+	var metrics *tournament.Metrics
+	var status *tournament.LiveStatus
+	if dashboardAddr != "" {
+		metrics, err = tournament.NewMetrics(cfg.RunID)
+		if err != nil {
+			return err
+		}
+		status = tournament.NewLiveStatus(cfg.RunID)
+		tournament.StartDashboardServer(dashboardAddr, status, metrics)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	log.Printf("rsi-pvp-compete: starting run %q with %d competitors", cfg.RunID, len(cfg.Competitors))
-	bracket, err := tournament.Run(ctx, cfg)
+	bracket, err := tournament.RunWithObservability(ctx, cfg, metrics, status)
 	if err != nil {
 		return err
 	}
