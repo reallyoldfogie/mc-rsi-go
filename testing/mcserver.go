@@ -320,12 +320,27 @@ func launchServer(ctx context.Context, settings *mcconfig.Settings, host string,
 		return nil, fmt.Errorf("mcserver: waiting for server to become ready: %w", err)
 	}
 
+	// inst.HostServerPort/HostRCONPort, not the pre-Start port/rconPort
+	// locals above, are this server's real, reachable ports: in SSH
+	// tunnel mode (DOCKER_HOST=ssh://...), Manager.Start silently
+	// overrides whatever HostServerPort/HostRCONPort the passed-in cfg
+	// requested with its own freeLocalPort() choices (see
+	// testenv/manager.go's own comment on why - the local-forwarded port
+	// and the remote-bound port must be the same number, which a
+	// caller-supplied value could break). WaitReady's own successful RCON
+	// check above already went through inst, which is why it worked
+	// despite that override; writing the stale pre-Start ports back into
+	// settings here produced a server address nothing was actually
+	// listening on - found live via pkg/pvp's own smoke test failing
+	// with "connection refused" immediately after this function's own
+	// readiness log line claimed the server was ready.
 	settings.Connection.Version = version
-	settings.RCON.Address = net.JoinHostPort(rconHost, strconv.Itoa(rconPort))
+	settings.Connection.Address = net.JoinHostPort(host, strconv.Itoa(inst.HostServerPort))
+	settings.RCON.Address = net.JoinHostPort(rconHost, strconv.Itoa(inst.HostRCONPort))
 	settings.RCON.Password = rconPassword
 
-	log.Printf("mcserver: server ready at %s:%d (RCON at %s)", host, port, settings.RCON.Address)
-	return &ManagedServer{Host: host, Port: port, Version: version, launched: true, mgr: mgr, inst: inst}, nil
+	log.Printf("mcserver: server ready at %s (RCON at %s)", settings.Connection.Address, settings.RCON.Address)
+	return &ManagedServer{Host: host, Port: inst.HostServerPort, Version: version, launched: true, mgr: mgr, inst: inst}, nil
 }
 
 // resolveRCONAddress splits an already-configured RCON address, or — if
