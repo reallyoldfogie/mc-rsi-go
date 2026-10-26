@@ -85,7 +85,21 @@ func Run(ctx context.Context, cfg Config) (*Bracket, error) {
 
 // runPairing connects every managed participant on both competitors,
 // forms the two teams, and plays games until the pairing is decided.
+//
+// Sets every participant's Team to its own Competitor's ID directly
+// here, rather than relying on LoadFile having already done so: LoadFile
+// is the file-loading path's own convenience, but Run must behave
+// correctly for a Config any caller assembled directly in Go too (as
+// this package's own live test does) - found live when a 1v1 pairing's
+// ComputeGameOutcome saw both participants sharing one empty Team and
+// rejected it as only one team being represented.
 func runPairing(ctx context.Context, cfg Config, base mcconfig.Settings, botIndex *int, a, b Competitor) (PairingOutcome, error) {
+	for i := range a.Participants {
+		a.Participants[i].Team = a.ID
+	}
+	for i := range b.Participants {
+		b.Participants[i].Team = b.ID
+	}
 	all := append(append([]pvp.Participant{}, a.Participants...), b.Participants...)
 	totalBots := 0
 	for _, p := range all {
