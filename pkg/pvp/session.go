@@ -43,6 +43,11 @@ type ParticipantSession struct {
 	EnvironmentID      string
 	CheckpointPath     string
 	CheckpointInterval time.Duration
+	// Metrics, if set, records this session's own epoch/checkpoint/
+	// stopped state (COMBAT_COMPETITION_PLAN.md Phase 3 item 1) - nil is
+	// a valid, fully supported "metrics disabled" state, never
+	// dereferenced unconditionally.
+	Metrics *ParticipantMetrics
 
 	recurrent        bool
 	plainTrainer     *ppo.Trainer
@@ -136,10 +141,16 @@ func (s *ParticipantSession) RunEpoch(ctx context.Context, epoch int) (ppo.Epoch
 // live checkpoint per participant, not a history of generations.
 func (s *ParticipantSession) Checkpoint(epoch int, stats ppo.EpochStats) error {
 	metadata := checkpoint.Metadata{Epoch: epoch, TotalUpdates: stats.UpdateCount}
+	var err error
 	if s.recurrent {
-		return s.recurrentTrainer.Params().SaveFile(s.CheckpointPath, s.EnvironmentID, metadata)
+		err = s.recurrentTrainer.Params().SaveFile(s.CheckpointPath, s.EnvironmentID, metadata)
+	} else {
+		err = actorcritic.SaveFile(s.CheckpointPath, s.plainTrainer.Params(), s.EnvironmentID, metadata)
 	}
-	return actorcritic.SaveFile(s.CheckpointPath, s.plainTrainer.Params(), s.EnvironmentID, metadata)
+	if err == nil && s.Metrics != nil {
+		s.Metrics.CheckpointSaved()
+	}
+	return err
 }
 
 // Train runs epochs continuously, checkpointing every CheckpointInterval
@@ -150,6 +161,10 @@ func (s *ParticipantSession) Checkpoint(epoch int, stats ppo.EpochStats) error {
 // saved before returning, regardless of how the loop ended, so training
 // progress is never lost on a clean shutdown.
 func (s *ParticipantSession) Train(ctx context.Context) error {
+	if s.Metrics != nil {
+		s.Metrics.SetStopped(false)
+		defer s.Metrics.SetStopped(true)
+	}
 	epoch := 0
 	lastCheckpoint := time.Now()
 	var lastStats ppo.EpochStats
@@ -161,6 +176,9 @@ func (s *ParticipantSession) Train(ctx context.Context) error {
 		}
 		lastStats = stats
 		epoch++
+		if s.Metrics != nil {
+			s.Metrics.EpochCompleted(stats.SampleCount, stats.UpdateCount)
+		}
 		if time.Since(lastCheckpoint) >= s.CheckpointInterval {
 			if err := s.Checkpoint(epoch, stats); err != nil {
 				return fmt.Errorf("pvp: checkpointing %s at epoch %d: %w", s.ParticipantID, epoch, err)

@@ -54,6 +54,17 @@ func (rt *matchRuntime) close() {
 // of failing loudly on an accepted-but-unimplemented path rather than
 // silently doing something unintended.
 func Run(ctx context.Context, cfg Config) error {
+	return RunWithMetrics(ctx, cfg, nil)
+}
+
+// RunWithMetrics behaves exactly like Run, additionally recording every
+// managed participant's own epoch/checkpoint/stopped metrics
+// (COMBAT_COMPETITION_PLAN.md Phase 3 item 1) if metrics is non-nil. The
+// caller constructs metrics via NewMetrics(cfg.RunID) itself, rather
+// than this function constructing one internally, so it can start
+// serving metrics.Registry (e.g. via /metrics) before this call blocks
+// for the whole training run.
+func RunWithMetrics(ctx context.Context, cfg Config, metrics *Metrics) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -147,7 +158,7 @@ func Run(ctx context.Context, cfg Config) error {
 		wg.Add(1)
 		go func(i int, rt *matchRuntime) {
 			defer wg.Done()
-			errs[i] = runMatch(trainCtx, rt, cfg, trainerSettings)
+			errs[i] = runMatch(trainCtx, rt, cfg, trainerSettings, metrics)
 		}(i, rt)
 	}
 	wg.Wait()
@@ -244,7 +255,7 @@ func startContainment(ctx context.Context, rt *matchRuntime) error {
 
 // runMatch builds the match's synchronized barrier and trains every
 // managed participant's session concurrently until ctx is done.
-func runMatch(ctx context.Context, rt *matchRuntime, cfg Config, trainerSettings crlconfig.Settings) error {
+func runMatch(ctx context.Context, rt *matchRuntime, cfg Config, trainerSettings crlconfig.Settings, metrics *Metrics) error {
 	arena := MatchArena{
 		Controller:       rt.controller,
 		RCON:             rt.rcon,
@@ -269,6 +280,9 @@ func runMatch(ctx context.Context, rt *matchRuntime, cfg Config, trainerSettings
 		session, err := NewParticipantSession(p.ID, p, checkpointPath, time.Duration(cfg.Training.CheckpointInterval), trainerSettings, wrapped)
 		if err != nil {
 			return fmt.Errorf("building session for %q: %w", p.ID, err)
+		}
+		if metrics != nil {
+			session.Metrics = metrics.Participant(p.ID)
 		}
 		sessions = append(sessions, session)
 	}
