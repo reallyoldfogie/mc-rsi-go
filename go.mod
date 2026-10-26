@@ -1,6 +1,6 @@
 module github.com/reallyoldfogie/mc-rsi-trainer
 
-go 1.27.0
+go 1.27.3
 
 exclude (
 	github.com/buger/jsonparser v1.1.1
@@ -16,6 +16,13 @@ require (
 	github.com/reallyoldfogie/mc-client-test-go v0.2.0
 	github.com/stretchr/testify v1.12.1
 )
+
+// Temporary, for combat-competition Phase 1 development only: mc-agent's
+// Phase 0 prerequisites (SeedMatchTeam, SaveInventorySnapshot/Restore,
+// team-aware targeting) live on mc-agent's own combat-competition branch,
+// not yet merged/published. Remove this once that branch merges and a new
+// mc-agent version is tagged.
+replace github.com/reallyoldfogie/mc-agent => /home/reallyoldfogie/src/github.com/reallyoldfogie/mc-agent/.worktrees/combat-competition
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
