@@ -3,6 +3,10 @@ package tournament
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -21,6 +25,82 @@ func writeJSONFile(t *testing.T, path string, v any) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(path, data, 0o644))
+}
+
+// freeLocalAddr returns a "127.0.0.1:<port>" address with an OS-assigned
+// free port, for a live test's own throwaway dashboard server. Binding a
+// listener and immediately closing it to learn the port carries a small,
+// accepted TOCTOU race (another process could grab the port before
+// StartDashboardServer gets to it) - fine for an isolated test run, not
+// a pattern for anything load-bearing.
+func freeLocalAddr(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := l.Addr().String()
+	require.NoError(t, l.Close())
+	return addr
+}
+
+// seedCheckpoints runs a short pkg/pvp training burst, just long enough
+// to produce one valid, loadable checkpoint per participantID - shared by
+// every pkg/tournament live test that needs real (if barely-trained)
+// checkpoints to play inference games against, rather than each
+// duplicating this setup. Who happens to fight whom during this seeding
+// free-for-all doesn't matter; only that every checkpoint file ends up
+// written and environment-ID-compatible with what a tournament config
+// built from its returned paths expects. Returns a checkpointPath(id)
+// lookup function.
+func seedCheckpoints(t *testing.T, ctx context.Context, mcConfigPath, dir string, participantIDs []string) func(id string) string {
+	t.Helper()
+	checkpointDir := filepath.Join(dir, "seed-checkpoints")
+
+	seedParticipants := make([]pvp.Participant, len(participantIDs))
+	for i, id := range participantIDs {
+		seedParticipants[i] = pvp.Participant{ID: id, Managed: true, HiddenLayers: 2, HiddenSize: 8}
+	}
+	// A small trainer config matching every seedParticipant's own
+	// HiddenSize (8): cRL-go's own ppo.NewWithPersistentEnvPool
+	// validates that an explicit initial actorcritic.Params' hidden
+	// size matches settings.HiddenSize, so leaving this unset (falling
+	// back to crlconfig.Default()'s HiddenSize of 128) is a hard
+	// construction error, not a silent mismatch - found live.
+	trainerConfigPath := filepath.Join(dir, "seed-trainer-config.json")
+	writeJSONFile(t, trainerConfigPath, crlconfig.Settings{
+		RolloutSize: 2, EpisodeLen: 30, Gamma: 0.99, LearningRate: 0.05,
+		GridSize: 1, HiddenSize: 8, Seed: 42, Workers: 1,
+		ClipEpsilon: 0.2, EntropyCoef: 0.01, ValueCoef: 0.5, GAELambda: 0.95,
+		PPOEpochs: 1, MinibatchSize: 2,
+	})
+
+	seedCfg := pvp.Config{
+		RunID:          "tourney-seed",
+		CheckpointRoot: checkpointDir,
+		TrainerConfig:  trainerConfigPath,
+		Training: pvp.TrainingConfig{
+			Duration:           pvp.Duration(90 * time.Second),
+			CheckpointInterval: pvp.Duration(20 * time.Second),
+		},
+		Server: pvp.ServerConfig{World: pvp.WorldSource{Kind: pvp.WorldSourceExisting, MCAgentConfig: mcConfigPath}},
+		Matches: []pvp.MatchConfig{
+			{
+				ID:           "seed-arena",
+				Weapon:       "minecraft:iron_sword",
+				Arena:        pvp.ArenaConfig{Containment: pvp.ContainmentSoftArea, Radius: 20, CheckInterval: pvp.Duration(2 * time.Second)},
+				Participants: seedParticipants,
+			},
+		},
+	}
+	require.NoError(t, pvp.Run(ctx, seedCfg), "seeding checkpoints via a short pvp.Run training burst")
+
+	for _, id := range participantIDs {
+		path := filepath.Join(checkpointDir, "seed-arena", id+".json")
+		info, err := os.Stat(path)
+		require.NoError(t, err, "expected a seed checkpoint for %q at %s", id, path)
+		require.Greater(t, info.Size(), int64(0))
+	}
+
+	return func(id string) string { return filepath.Join(checkpointDir, "seed-arena", id+".json") }
 }
 
 // TestRunCompletesATournamentAgainstLiveServerLive is pkg/tournament's
@@ -70,64 +150,8 @@ func TestRunCompletesATournamentAgainstLiveServerLive(t *testing.T) {
 	mcConfigPath := filepath.Join(dir, "mc-agent-config.json")
 	writeJSONFile(t, mcConfigPath, settings)
 
-	checkpointDir := filepath.Join(dir, "seed-checkpoints")
-
-	// Phase A: a short pkg/pvp training run, just long enough to produce
-	// one valid, loadable checkpoint per participant this tournament
-	// will need - the SAME five bots this test's bracket competes with,
-	// training together in one free-for-all match (who happens to fight
-	// whom during this seeding phase doesn't matter; only that every
-	// checkpoint file ends up written and environment-ID-compatible
-	// with what the tournament config below expects).
 	participantIDs := []string{"red1", "blue1", "green1", "green2", "yellow1"}
-	seedParticipants := make([]pvp.Participant, len(participantIDs))
-	for i, id := range participantIDs {
-		seedParticipants[i] = pvp.Participant{ID: id, Managed: true, HiddenLayers: 2, HiddenSize: 8}
-	}
-	// A small trainer config matching every seedParticipant's own
-	// HiddenSize (8): cRL-go's own ppo.NewWithPersistentEnvPool
-	// validates that an explicit initial actorcritic.Params' hidden
-	// size matches settings.HiddenSize, so leaving this unset (falling
-	// back to crlconfig.Default()'s HiddenSize of 128) is a hard
-	// construction error, not a silent mismatch - found live.
-	trainerConfigPath := filepath.Join(dir, "seed-trainer-config.json")
-	writeJSONFile(t, trainerConfigPath, crlconfig.Settings{
-		RolloutSize: 2, EpisodeLen: 30, Gamma: 0.99, LearningRate: 0.05,
-		GridSize: 1, HiddenSize: 8, Seed: 42, Workers: 1,
-		ClipEpsilon: 0.2, EntropyCoef: 0.01, ValueCoef: 0.5, GAELambda: 0.95,
-		PPOEpochs: 1, MinibatchSize: 2,
-	})
-
-	seedCfg := pvp.Config{
-		RunID:          "tourney-seed",
-		CheckpointRoot: checkpointDir,
-		TrainerConfig:  trainerConfigPath,
-		Training: pvp.TrainingConfig{
-			Duration:           pvp.Duration(90 * time.Second),
-			CheckpointInterval: pvp.Duration(20 * time.Second),
-		},
-		Server: pvp.ServerConfig{World: pvp.WorldSource{Kind: pvp.WorldSourceExisting, MCAgentConfig: mcConfigPath}},
-		Matches: []pvp.MatchConfig{
-			{
-				ID:           "seed-arena",
-				Weapon:       "minecraft:iron_sword",
-				Arena:        pvp.ArenaConfig{Containment: pvp.ContainmentSoftArea, Radius: 20, CheckInterval: pvp.Duration(2 * time.Second)},
-				Participants: seedParticipants,
-			},
-		},
-	}
-	require.NoError(t, pvp.Run(ctx, seedCfg), "seeding checkpoints via a short pvp.Run training burst")
-
-	for _, id := range participantIDs {
-		path := filepath.Join(checkpointDir, "seed-arena", id+".json")
-		info, err := os.Stat(path)
-		require.NoError(t, err, "expected a seed checkpoint for %q at %s", id, path)
-		require.Greater(t, info.Size(), int64(0))
-	}
-
-	// Phase B: the actual tournament, loading those checkpoints for
-	// pure inference play.
-	checkpointPath := func(id string) string { return filepath.Join(checkpointDir, "seed-arena", id+".json") }
+	checkpointPath := seedCheckpoints(t, ctx, mcConfigPath, dir, participantIDs)
 	tournamentCfg := Config{
 		RunID:       "tourney-smoke",
 		ResultsRoot: filepath.Join(dir, "results"),
@@ -175,4 +199,171 @@ func TestRunCompletesATournamentAgainstLiveServerLive(t *testing.T) {
 		require.NotEmpty(t, p.WinnerID, "pairing %+v should have a recorded winner", p)
 		require.NotEmpty(t, p.Games, "pairing %+v should have at least one recorded game", p)
 	}
+}
+
+// TestRunWithObservabilityServesLiveDashboardLive is pkg/tournament's
+// Phase 3 smoke test. It runs an 8-competitor (four-round) bracket so the
+// dashboard has multiple pairings to show progress across, with
+// RunWithObservability running in the background while this test polls
+// the live /status and /metrics HTTP endpoints from the main goroutine -
+// the actual concurrency this feature needs to be safe under (a
+// dashboard reader hitting the same *LiveStatus a different goroutine is
+// simultaneously calling Refresh on), not just a sequential call-then-
+// inspect.
+//
+// COMBAT_COMPETITION_PLAN.md's Phase 3 verification bar describes
+// "dashboard/metrics smoke test with multiple concurrent matches."
+// pkg/tournament's own Run plays bracket pairings sequentially by design
+// (see Run's own doc comment - a shared server's arena/containment state
+// would otherwise need multi-match bookkeeping pkg/pvp's MatchOrigin
+// exists for but this package doesn't yet use). This test's own reading
+// of "multiple matches" is multiple pairings' state visible together on
+// one bracket's live dashboard as the tournament progresses through
+// them, not literally concurrent game execution - the latter is a
+// separate, larger feature this session's Phase 3 scope does not cover.
+func TestRunWithObservabilityServesLiveDashboardLive(t *testing.T) {
+	if os.Getenv("MC_RSI_TRAINER_LIVE_CONFIG") == "" {
+		t.Skip("MC_RSI_TRAINER_LIVE_CONFIG not set; skipping live pkg/tournament dashboard smoke test")
+	}
+
+	settings := mcconfig.Default()
+	settings.Connection = mcconfig.ConnectionSettings{
+		Address: "127.0.0.1:34612",
+		Offline: true,
+		Name:    "TourneyDashBase",
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	server, err := rsitesting.EnsureServer(ctx, &settings)
+	require.NoError(t, err)
+	defer func() { _ = server.Close(context.Background()) }()
+
+	dir := t.TempDir()
+	mcConfigPath := filepath.Join(dir, "mc-agent-config.json")
+	writeJSONFile(t, mcConfigPath, settings)
+
+	participantIDs := []string{"c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8"}
+	checkpointPath := seedCheckpoints(t, ctx, mcConfigPath, dir, participantIDs)
+
+	competitors := make([]Competitor, len(participantIDs))
+	for i, id := range participantIDs {
+		competitors[i] = Competitor{ID: id, DisplayName: id, Participants: []pvp.Participant{
+			{ID: id, Managed: true, HiddenLayers: 2, HiddenSize: 8, CheckpointPath: checkpointPath(id)},
+		}}
+	}
+
+	tournamentCfg := Config{
+		RunID:       "tourney-dash-smoke",
+		ResultsRoot: filepath.Join(dir, "results"),
+		Greedy:      true,
+		BestOf:      1,
+		EpisodeLen:  60,
+		Weapon:      "minecraft:iron_sword",
+		Arena:       pvp.ArenaConfig{Containment: pvp.ContainmentSoftArea, Radius: 20, CheckInterval: pvp.Duration(2 * time.Second)},
+		Server:      pvp.ServerConfig{World: pvp.WorldSource{Kind: pvp.WorldSourceExisting, MCAgentConfig: mcConfigPath}},
+		Competitors: competitors,
+	}
+
+	metrics, err := NewMetrics(tournamentCfg.RunID)
+	require.NoError(t, err)
+	status := NewLiveStatus(tournamentCfg.RunID)
+	addr := freeLocalAddr(t)
+	StartDashboardServer(addr, status, metrics)
+	baseURL := "http://" + addr
+
+	type runResult struct {
+		bracket *Bracket
+		err     error
+	}
+	resultCh := make(chan runResult, 1)
+	go func() {
+		bracket, err := RunWithObservability(ctx, tournamentCfg, metrics, status)
+		resultCh <- runResult{bracket, err}
+	}()
+
+	// Poll /status while the tournament runs, tracking the highest
+	// bracket round and pairing-win count seen so far, to confirm the
+	// dashboard actually advances rather than just reflecting a single
+	// static snapshot.
+	var sawMultiplePairingsDecided bool
+	stopPoll := make(chan struct{})
+	pollDone := make(chan struct{})
+	go func() {
+		defer close(pollDone)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stopPoll:
+				return
+			case <-ticker.C:
+				resp, err := http.Get(baseURL + "/status")
+				if err != nil {
+					continue
+				}
+				var snap StatusSnapshot
+				decodeErr := json.NewDecoder(resp.Body).Decode(&snap)
+				resp.Body.Close()
+				if decodeErr != nil {
+					continue
+				}
+				decided := 0
+				for _, p := range snap.Pairings {
+					if p.WinnerID != "" {
+						decided++
+					}
+				}
+				if decided >= 2 {
+					sawMultiplePairingsDecided = true
+				}
+				if snap.ChampionDecided {
+					return
+				}
+			}
+		}
+	}()
+
+	res := <-resultCh
+	// Stop the poller promptly once Run itself has returned, rather than
+	// waiting for its own ticker-driven ChampionDecided check next fires.
+	close(stopPoll)
+	<-pollDone
+
+	require.NoError(t, res.err)
+	champion, ok := res.bracket.Champion()
+	require.True(t, ok, "want a decided champion")
+	t.Logf("8-competitor tournament champion: %s", champion)
+	require.True(t, sawMultiplePairingsDecided, "dashboard /status should have shown at least 2 decided pairings while the tournament progressed through its bracket")
+
+	finalStatusResp, err := http.Get(baseURL + "/status")
+	require.NoError(t, err)
+	defer finalStatusResp.Body.Close()
+	var finalStatus StatusSnapshot
+	require.NoError(t, json.NewDecoder(finalStatusResp.Body).Decode(&finalStatus))
+	require.True(t, finalStatus.ChampionDecided)
+	require.Equal(t, champion, finalStatus.Champion)
+	require.Len(t, finalStatus.Pairings, 7, "an 8-competitor single-elimination bracket has 7 pairings")
+
+	scoreboardResp, err := http.Get(baseURL + "/")
+	require.NoError(t, err)
+	defer scoreboardResp.Body.Close()
+	require.Equal(t, http.StatusOK, scoreboardResp.StatusCode)
+
+	metricsResp, err := http.Get(baseURL + "/metrics")
+	require.NoError(t, err)
+	defer metricsResp.Body.Close()
+	metricsBody, err := io.ReadAll(metricsResp.Body)
+	require.NoError(t, err)
+	for _, want := range []string{
+		"rsi_tournament_games_played_total",
+		"rsi_tournament_pairings_played_total",
+		"rsi_tournament_champion_decided",
+	} {
+		require.Contains(t, string(metricsBody), want, "expected /metrics to expose %s", want)
+	}
+	require.Contains(t, string(metricsBody), fmt.Sprintf(`run_id="%s"`, tournamentCfg.RunID))
 }
