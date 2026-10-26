@@ -2,6 +2,7 @@ package pvp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -71,12 +72,6 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 
-	if time.Duration(cfg.Training.Duration) > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, time.Duration(cfg.Training.Duration))
-		defer cancel()
-	}
-
 	totalBots := 0
 	for _, m := range cfg.Matches {
 		totalBots += len(m.ManagedParticipants())
@@ -101,6 +96,30 @@ func Run(ctx context.Context, cfg Config) error {
 	defer closeAll()
 
 	for _, rt := range runtimes {
+		// Every MANAGED participant must physically be at the arena
+		// center before FormTeams/ResetMatch can touch them at all:
+		// SeedMatchTeam and SeedMatchReset both refuse (via
+		// VerifyPlayerNearPosition) to act on anyone outside the arena
+		// radius, and a freshly connected bot - other than whichever one
+		// the origin itself was derived from - has no reason to already
+		// be there. Found live: FormTeams failed on the second of two
+		// freshly connected combatants for exactly this reason before
+		// this initial teleport was added.
+		//
+		// Deliberately managed-only: an unmanaged (real player)
+		// participant gets no unconditional teleport here or anywhere
+		// else - COMBAT_COMPETITION_PLAN.md's "Unmanaged participants"
+		// safety rule requires them to already be verified near the
+		// arena center before the framework does anything to them at
+		// all, including forming a team. We own every managed bot's
+		// connection (we just spawned it for this match), so teleporting
+		// it unconditionally here is not the same safety concern.
+		for _, p := range rt.config.ManagedParticipants() {
+			name := rt.namesByID[p.ID]
+			if _, err := rt.rcon.Teleport(ctx, name, rt.origin.X, rt.origin.Y, rt.origin.Z).Exec(ctx); err != nil {
+				return fmt.Errorf("pvp: initial teleport of %q for match %q: %w", name, rt.config.ID, err)
+			}
+		}
 		if err := FormTeams(ctx, rt.controller, rt.config.Participants, rt.namesByID, rt.origin, rt.config.Arena.Radius); err != nil {
 			return fmt.Errorf("pvp: forming teams for match %q: %w", rt.config.ID, err)
 		}
@@ -109,23 +128,48 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 
+	// The training deadline starts here, after every match has finished
+	// connecting, forming teams, and starting containment - not from
+	// Run's own entry, which would otherwise erode real training time by
+	// however long live bot connections happen to take (found live: a
+	// short smoke-test deadline expired mid-Reset because two sequential
+	// live bot connections alone had already consumed most of it).
+	trainCtx := ctx
+	if time.Duration(cfg.Training.Duration) > 0 {
+		var cancel context.CancelFunc
+		trainCtx, cancel = context.WithTimeout(ctx, time.Duration(cfg.Training.Duration))
+		defer cancel()
+	}
+
 	var wg sync.WaitGroup
 	errs := make([]error, len(runtimes))
 	for i, rt := range runtimes {
 		wg.Add(1)
 		go func(i int, rt *matchRuntime) {
 			defer wg.Done()
-			errs[i] = runMatch(ctx, rt, cfg, trainerSettings)
+			errs[i] = runMatch(trainCtx, rt, cfg, trainerSettings)
 		}(i, rt)
 	}
 	wg.Wait()
 
 	for i, err := range errs {
-		if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
+		if isUnexpectedStopError(err) {
 			return fmt.Errorf("pvp: match %q: %w", runtimes[i].config.ID, err)
 		}
 	}
 	return nil
+}
+
+// isUnexpectedStopError reports whether err is something other than a
+// normal, expected stop (the caller's own context deadline/cancellation).
+// Uses errors.Is, not direct equality: a deadline-exceeded/canceled error
+// reaching this point has typically been wrapped by several layers
+// (ppo.Trainer's own "resetting environment: %w", the RCON library's own
+// "rcon exec timeout: %w", ...) by the time it gets here, so comparing
+// against the bare sentinel with != would (and, found live, did) never
+// match, misreporting a clean deadline-based stop as a hard failure.
+func isUnexpectedStopError(err error) bool {
+	return err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled)
 }
 
 // connectMatch connects every managed participant in matchCfg (via
@@ -241,7 +285,7 @@ func runMatch(ctx context.Context, rt *matchRuntime, cfg Config, trainerSettings
 	wg.Wait()
 
 	for _, err := range errs {
-		if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
+		if isUnexpectedStopError(err) {
 			return err
 		}
 	}
