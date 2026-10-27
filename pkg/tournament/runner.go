@@ -196,7 +196,12 @@ func runPairing(ctx context.Context, cfg Config, base mcconfig.Settings, botInde
 			if c, ok := competitorDisplayName(a, b, p.Team); ok {
 				displayName = c
 			}
-			index := view.AddCompetition(connectedParticipant.Username, connectedParticipant.Agent, cfg.RunID, p.Team+"/"+p.ID, displayName, "")
+			// competitorID is the bare team name (p.Team), not
+			// p.Team+"/"+p.ID: the dashboard's team-color-coding (see
+			// pkg/liveview's own resolvePlayerIdentity) groups by this
+			// field, and a 2-member team's two bots need to resolve to
+			// the SAME color, not two different ones.
+			index := view.AddCompetition(connectedParticipant.Username, connectedParticipant.Agent, cfg.RunID, p.Team, displayName, "")
 			view.UpdateEpisode(index, func(s *liveview.Snapshot) { s.Phase = "match" })
 		}
 		if origin == nil {

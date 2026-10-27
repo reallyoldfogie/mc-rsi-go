@@ -228,7 +228,14 @@ func connectMatch(ctx context.Context, matchCfg MatchConfig, base mcconfig.Setti
 		rt.participantNames = append(rt.participantNames, connected.Username)
 
 		if view != nil {
-			index := view.AddCompetition(connected.Username, connected.Agent, runID, matchCfg.ID+"/"+p.ID, p.ID, "")
+			// competitorID is the bare team name (p.Team), not
+			// matchCfg.ID+"/"+p.ID: the dashboard's team-color-coding
+			// (see pkg/liveview's own resolvePlayerIdentity) groups by
+			// this field, and a multi-member team's bots need to
+			// resolve to the SAME color. Empty for a free-for-all match
+			// with no explicit teams configured - falls back to the
+			// dashboard's own default color, not an error.
+			index := view.AddCompetition(connected.Username, connected.Agent, runID, p.Team, p.ID, "")
 			view.UpdateEpisode(index, func(s *liveview.Snapshot) { s.Phase = "training" })
 		}
 
