@@ -54,7 +54,20 @@ func TestRunCompletesOneMatchAgainstLiveServerLive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	server, err := rsitesting.EnsureServer(ctx, &settings)
+	// A superflat, decoration-free world (mc-agent's own
+	// testing/framework.go convention) - EnsureServer's own default
+	// (normal terrain generation) can hand a match's arena origin a spawn
+	// point on top of tree canopy, since ConnectManagedParticipant's
+	// origin resolution has no ground-safety check of its own; every
+	// reset then teleports bots right back onto the tree, and any
+	// movement off it is enough fall damage to kill outright - found
+	// live via pkg/tournament's own combat demo, where it looked exactly
+	// like every game resolving almost instantly regardless of
+	// EpisodeLen/BestOf.
+	server, err := rsitesting.EnsureServer(ctx, &settings, rsitesting.WithExtraEnv(map[string]string{
+		"LEVEL_TYPE":         "FLAT",
+		"GENERATOR_SETTINGS": rsitesting.GeneratorSettingsDeepStoneBand,
+	}))
 	require.NoError(t, err)
 	defer func() { _ = server.Close(context.Background()) }()
 
