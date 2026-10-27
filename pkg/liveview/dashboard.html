@@ -180,6 +180,13 @@
   .grid-cell .grid-agent-name { vertical-align: middle; }
   .grid-cell .grid-agent-dot { display: inline-block; margin-right: 5px; vertical-align: -1px; }
   .grid-cell.blank { border-color: rgba(138,143,153,0.35); }
+  /* #grid-overlay itself is pointer-events:none (clicks must reach the
+     3D canvas underneath for camera controls); each real cell opts back
+     in so it alone is clickable, to zoom into that one agent - same
+     selectAgent() the sidebar list's own row click uses. Blank filler
+     cells (grid count > agent count) stay non-interactive. */
+  .grid-cell:not(.blank) { pointer-events: auto; cursor: pointer; }
+  .grid-cell:not(.blank):hover { border-color: #5b9dff; background: rgba(91,157,255,0.15); }
   /* Sits above whichever of #plot/#camera-canvas is currently visible
      (both are absolute/inset:0 siblings within #plot-wrap) - a plain
      later sibling in source order already paints on top, no z-index
@@ -1290,6 +1297,13 @@ import * as THREE from "/vendor/three.module.min.js";
       cell.style.width = 100 / cols + "%"; cell.style.height = 100 / rows + "%";
       if (i < agents.length) {
         var agent = agents[i];
+        // dataset.index (not a closure over the loop's own "agent"/"i"
+        // vars) is what the click handler below reads: this file is ES5
+        // "var" throughout, and "var" is function-scoped, not
+        // block-scoped, so every cell's closure would otherwise see
+        // whichever agent the loop last assigned, not its own.
+        cell.dataset.index = agent.index;
+        cell.onclick = function (ev) { selectAgent(Number(ev.currentTarget.dataset.index)); };
         var dot = document.createElement("span");
         dot.className = "dot grid-agent-dot " + gridStatusDot(agent);
         var name = document.createElement("span");
