@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	_ "github.com/reallyoldfogie/mc-agent/handler_versions" // registers version-specific packet handlers
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/liveview"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/tournament"
 )
 
@@ -41,20 +42,22 @@ func run(configPath, dashboardAddr string) error {
 
 	var metrics *tournament.Metrics
 	var status *tournament.LiveStatus
+	var view *liveview.Registry
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 	if dashboardAddr != "" {
 		metrics, err = tournament.NewMetrics(cfg.RunID)
 		if err != nil {
 			return err
 		}
 		status = tournament.NewLiveStatus(cfg.RunID)
-		tournament.StartDashboardServer(dashboardAddr, status, metrics)
+		view = liveview.NewRegistry()
+		go view.RunPoller(ctx)
+		tournament.StartDashboardServer(dashboardAddr, status, metrics, view)
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer cancel()
-
 	log.Printf("rsi-pvp-compete: starting run %q with %d competitors", cfg.RunID, len(cfg.Competitors))
-	bracket, err := tournament.RunWithObservability(ctx, cfg, metrics, status)
+	bracket, err := tournament.RunWithObservability(ctx, cfg, metrics, status, view)
 	if err != nil {
 		return err
 	}

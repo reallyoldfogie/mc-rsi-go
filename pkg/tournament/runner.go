@@ -9,9 +9,23 @@ import (
 	mcconfig "github.com/reallyoldfogie/mc-agent/config"
 	"github.com/reallyoldfogie/mc-agent/models"
 	"github.com/reallyoldfogie/mc-client-test-go/testenv"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/liveview"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/parallelenv"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/pvp"
 )
+
+// competitorDisplayName returns whichever of a/b has ID == team's own
+// DisplayName, for the dashboard's label.
+func competitorDisplayName(a, b Competitor, team string) (string, bool) {
+	switch team {
+	case a.ID:
+		return a.DisplayName, true
+	case b.ID:
+		return b.DisplayName, true
+	default:
+		return "", false
+	}
+}
 
 // PairingOutcome is one pairing's full result (up to Config.BestOf games).
 type PairingOutcome struct {
@@ -29,17 +43,20 @@ type PairingOutcome struct {
 // needing concurrent-match bookkeeping (pkg/pvp's own MatchOrigin exists
 // for a future multi-match-at-once extension, not used here).
 func Run(ctx context.Context, cfg Config) (*Bracket, error) {
-	return RunWithObservability(ctx, cfg, nil, nil)
+	return RunWithObservability(ctx, cfg, nil, nil, nil)
 }
 
 // RunWithObservability behaves exactly like Run, additionally recording
 // per-game/per-pairing/bracket-progress metrics (COMBAT_COMPETITION_PLAN.md
-// Phase 3 item 1) if metrics is non-nil, and publishing a live,
-// dashboard-safe snapshot of bracket progress (Phase 3 item 2) after every
-// change if status is non-nil. The caller constructs both itself (via
-// NewMetrics/NewLiveStatus) so it can start serving them (e.g. via
-// StartDashboardServer) before this call blocks for the whole tournament.
-func RunWithObservability(ctx context.Context, cfg Config, metrics *Metrics, status *LiveStatus) (*Bracket, error) {
+// Phase 3 item 1) if metrics is non-nil, publishing a live, dashboard-safe
+// snapshot of bracket progress (Phase 3 item 2) if status is non-nil, and
+// registering each pairing's live bot connections into view (if non-nil)
+// so pkg/liveview's own /agents/world grid view can show both fighters'
+// own live views side by side as each pairing plays - the user's own
+// request to watch the competitors, not just read a scoreboard. The
+// caller constructs all three itself so it can start serving/polling them
+// before this call blocks for the whole tournament.
+func RunWithObservability(ctx context.Context, cfg Config, metrics *Metrics, status *LiveStatus, view *liveview.Registry) (*Bracket, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -84,7 +101,7 @@ func RunWithObservability(ctx context.Context, cfg Config, metrics *Metrics, sta
 		}
 		a := competitorsByID[pairing.CompetitorA]
 		b := competitorsByID[pairing.CompetitorB]
-		outcome, err := runPairing(ctx, cfg, base, &botIndex, a, b, metrics)
+		outcome, err := runPairing(ctx, cfg, base, &botIndex, a, b, metrics, view)
 		if err != nil {
 			return bracket, fmt.Errorf("tournament: pairing %q vs %q: %w", a.ID, b.ID, err)
 		}
@@ -125,12 +142,19 @@ func RunWithObservability(ctx context.Context, cfg Config, metrics *Metrics, sta
 // this package's own live test does) - found live when a 1v1 pairing's
 // ComputeGameOutcome saw both participants sharing one empty Team and
 // rejected it as only one team being represented.
-func runPairing(ctx context.Context, cfg Config, base mcconfig.Settings, botIndex *int, a, b Competitor, metrics *Metrics) (PairingOutcome, error) {
+func runPairing(ctx context.Context, cfg Config, base mcconfig.Settings, botIndex *int, a, b Competitor, metrics *Metrics, view *liveview.Registry) (PairingOutcome, error) {
 	for i := range a.Participants {
 		a.Participants[i].Team = a.ID
 	}
 	for i := range b.Participants {
 		b.Participants[i].Team = b.ID
+	}
+	// Each pairing connects its own fresh set of managed bots and closes
+	// them at the end (closeAll below) - so the dashboard should show
+	// only the pairing currently being played, not an ever-growing
+	// history of every bot across the whole bracket.
+	if view != nil {
+		view.Truncate(0)
 	}
 	all := append(append([]pvp.Participant{}, a.Participants...), b.Participants...)
 	totalBots := 0
@@ -167,6 +191,14 @@ func runPairing(ctx context.Context, cfg Config, base mcconfig.Settings, botInde
 		}
 		connected[p.ID] = connectedParticipant
 		namesByID[p.ID] = connectedParticipant.Username
+		if view != nil {
+			displayName := p.Team
+			if c, ok := competitorDisplayName(a, b, p.Team); ok {
+				displayName = c
+			}
+			index := view.AddCompetition(connectedParticipant.Username, connectedParticipant.Agent, cfg.RunID, p.Team+"/"+p.ID, displayName, "")
+			view.UpdateEpisode(index, func(s *liveview.Snapshot) { s.Phase = "match" })
+		}
 		if origin == nil {
 			originCopy := resolvedOrigin
 			origin = &originCopy

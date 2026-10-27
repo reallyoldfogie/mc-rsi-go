@@ -15,6 +15,7 @@ import (
 	crlconfig "github.com/reallyoldfogie/cRL-go/pkg/config"
 	mcconfig "github.com/reallyoldfogie/mc-agent/config"
 	_ "github.com/reallyoldfogie/mc-agent/handler_versions" // registers version-specific packet handlers
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/liveview"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/pvp"
 	rsitesting "github.com/reallyoldfogie/mc-rsi-trainer/testing"
 	"github.com/stretchr/testify/require"
@@ -269,8 +270,10 @@ func TestRunWithObservabilityServesLiveDashboardLive(t *testing.T) {
 	metrics, err := NewMetrics(tournamentCfg.RunID)
 	require.NoError(t, err)
 	status := NewLiveStatus(tournamentCfg.RunID)
+	view := liveview.NewRegistry()
+	go view.RunPoller(ctx)
 	addr := freeLocalAddr(t)
-	StartDashboardServer(addr, status, metrics)
+	StartDashboardServer(addr, status, metrics, view)
 	baseURL := "http://" + addr
 
 	type runResult struct {
@@ -279,15 +282,20 @@ func TestRunWithObservabilityServesLiveDashboardLive(t *testing.T) {
 	}
 	resultCh := make(chan runResult, 1)
 	go func() {
-		bracket, err := RunWithObservability(ctx, tournamentCfg, metrics, status)
+		bracket, err := RunWithObservability(ctx, tournamentCfg, metrics, status, view)
 		resultCh <- runResult{bracket, err}
 	}()
 
-	// Poll /status while the tournament runs, tracking the highest
-	// bracket round and pairing-win count seen so far, to confirm the
-	// dashboard actually advances rather than just reflecting a single
-	// static snapshot.
-	var sawMultiplePairingsDecided bool
+	// Poll /status and /agents while the tournament runs: /status to
+	// confirm the dashboard actually advances rather than just reflecting
+	// a single static snapshot, and /agents to confirm each pairing's
+	// live bots are actually registered with real positions and that at
+	// least one of them has its opponent showing up in Nearby - the
+	// user's own request ("render the players that each competitor
+	// views"), live-verified end to end: no new tracking code was
+	// written for this, it's purely a consequence of GetTrackedEntities
+	// already including other players.
+	var sawMultiplePairingsDecided, sawPopulatedAgents, sawOpponentInNearby bool
 	stopPoll := make(chan struct{})
 	pollDone := make(chan struct{})
 	go func() {
@@ -320,6 +328,23 @@ func TestRunWithObservabilityServesLiveDashboardLive(t *testing.T) {
 				if decided >= 2 {
 					sawMultiplePairingsDecided = true
 				}
+
+				agentsResp, err := http.Get(baseURL + "/agents")
+				if err == nil {
+					var agents []liveview.Snapshot
+					if json.NewDecoder(agentsResp.Body).Decode(&agents) == nil {
+						for _, a := range agents {
+							if a.X != 0 || a.Y != 0 || a.Z != 0 {
+								sawPopulatedAgents = true
+							}
+							if len(a.Nearby) > 0 {
+								sawOpponentInNearby = true
+							}
+						}
+					}
+					agentsResp.Body.Close()
+				}
+
 				if snap.ChampionDecided {
 					return
 				}
@@ -338,6 +363,13 @@ func TestRunWithObservabilityServesLiveDashboardLive(t *testing.T) {
 	require.True(t, ok, "want a decided champion")
 	t.Logf("8-competitor tournament champion: %s", champion)
 	require.True(t, sawMultiplePairingsDecided, "dashboard /status should have shown at least 2 decided pairings while the tournament progressed through its bracket")
+	require.True(t, sawPopulatedAgents, "/agents should have shown at least one bot with a real (non-zero) position while a pairing was live")
+	require.True(t, sawOpponentInNearby, "/agents should have shown at least one bot with a non-empty Nearby list - the opponent should show up as a tracked entity with no combat-specific code")
+
+	dashboardResp, err := http.Get(baseURL + "/dashboard")
+	require.NoError(t, err)
+	defer dashboardResp.Body.Close()
+	require.Equal(t, http.StatusOK, dashboardResp.StatusCode)
 
 	finalStatusResp, err := http.Get(baseURL + "/status")
 	require.NoError(t, err)

@@ -13,6 +13,7 @@ import (
 	mcconfig "github.com/reallyoldfogie/mc-agent/config"
 	"github.com/reallyoldfogie/mc-agent/models"
 	"github.com/reallyoldfogie/mc-client-test-go/testenv"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/liveview"
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/parallelenv"
 )
 
@@ -65,6 +66,21 @@ func Run(ctx context.Context, cfg Config) error {
 // serving metrics.Registry (e.g. via /metrics) before this call blocks
 // for the whole training run.
 func RunWithMetrics(ctx context.Context, cfg Config, metrics *Metrics) error {
+	return RunWithObservability(ctx, cfg, metrics, nil)
+}
+
+// RunWithObservability behaves exactly like RunWithMetrics, additionally
+// registering every managed participant's live connection into view (if
+// non-nil) under Phase "training" - the live-dashboard/world-stream view
+// the user asked for ("see how the competitors do... render the players
+// that each competitor views"): each bot's own nearby-entity tracking
+// already includes its live opponent with no combat-specific code, so
+// registering it here is enough for pkg/liveview's existing /agents/world
+// grid view to show both fighters' own live views side by side. The
+// caller constructs view itself (liveview.NewRegistry()) and starts
+// serving/polling it (RunPoller) before this call blocks for the whole
+// training run, same reasoning as metrics above.
+func RunWithObservability(ctx context.Context, cfg Config, metrics *Metrics, view *liveview.Registry) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -97,7 +113,7 @@ func RunWithMetrics(ctx context.Context, cfg Config, metrics *Metrics) error {
 
 	botIndex := 0
 	for matchIndex, matchCfg := range cfg.Matches {
-		rt, err := connectMatch(ctx, matchCfg, base, matchIndex, &botIndex, totalBots)
+		rt, err := connectMatch(ctx, matchCfg, base, matchIndex, &botIndex, totalBots, cfg.RunID, view)
 		if err != nil {
 			closeAll()
 			return fmt.Errorf("pvp: connecting match %q: %w", matchCfg.ID, err)
@@ -190,7 +206,7 @@ func isUnexpectedStopError(err error) bool {
 // managed bot's unique username (parallelenv.DeriveSharedServerSettings)
 // - every bot on the server needs a globally unique name, not just a
 // unique name within its own match.
-func connectMatch(ctx context.Context, matchCfg MatchConfig, base mcconfig.Settings, matchIndex int, botIndex *int, totalBots int) (*matchRuntime, error) {
+func connectMatch(ctx context.Context, matchCfg MatchConfig, base mcconfig.Settings, matchIndex int, botIndex *int, totalBots int, runID string, view *liveview.Registry) (*matchRuntime, error) {
 	rt := &matchRuntime{
 		config:    matchCfg,
 		connected: make(map[string]*ConnectedParticipant),
@@ -210,6 +226,11 @@ func connectMatch(ctx context.Context, matchCfg MatchConfig, base mcconfig.Setti
 		rt.connected[p.ID] = connected
 		rt.namesByID[p.ID] = connected.Username
 		rt.participantNames = append(rt.participantNames, connected.Username)
+
+		if view != nil {
+			index := view.AddCompetition(connected.Username, connected.Agent, runID, matchCfg.ID+"/"+p.ID, p.ID, "")
+			view.UpdateEpisode(index, func(s *liveview.Snapshot) { s.Phase = "training" })
+		}
 
 		if origin == nil {
 			matchOrigin := MatchOrigin(resolvedOrigin, matchIndex, defaultMatchSeparationChunks)

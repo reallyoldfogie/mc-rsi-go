@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/liveview"
 )
 
 // PairingSnapshot is one pairing's plain-data, JSON-serializable state -
@@ -147,20 +148,35 @@ func (s *LiveStatus) serveScoreboard(w http.ResponseWriter, _ *http.Request) {
 }
 
 // StartDashboardServer serves the HTML scoreboard page at "/", the JSON
-// status snapshot at "/status", and metrics' own registry at "/metrics"
-// on addr, in the background. Errors (e.g. the port is already taken)
-// are logged, not fatal - this server going down is an observability
-// problem, not a reason to stop an otherwise-healthy tournament run
-// (same convention as cmd/rsi-train's own startMetricsServer).
-func StartDashboardServer(addr string, status *LiveStatus, metrics *Metrics) {
+// status snapshot at "/status", metrics' own registry at "/metrics", and -
+// if view is non-nil - pkg/liveview's own live 3D agent view at
+// "/dashboard" (plus its "/agents", "/agents/world", "/icons/", and
+// "/vendor/" support routes): the actual "watch the competitors fight"
+// view (COMBAT_COMPETITION_PLAN.md's dashboard item), since the scoreboard
+// alone only shows bracket/game results, not what's happening live inside
+// a game. All served on addr, in the background. Errors (e.g. the port is
+// already taken) are logged, not fatal - this server going down is an
+// observability problem, not a reason to stop an otherwise-healthy
+// tournament run (same convention as cmd/rsi-train's own
+// startMetricsServer).
+func StartDashboardServer(addr string, status *LiveStatus, metrics *Metrics, view *liveview.Registry) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", status.serveScoreboard)
 	mux.HandleFunc("/status", status.serveStatus)
 	if metrics != nil {
 		mux.Handle("/metrics", promhttp.HandlerFor(metrics.Registry, promhttp.HandlerOpts{}))
 	}
+	routes := "/ (scoreboard), /status (JSON), /metrics (Prometheus)"
+	if view != nil {
+		mux.HandleFunc("/dashboard", liveview.ServeDashboardPage)
+		mux.Handle("/agents", view)
+		mux.HandleFunc("/agents/world", view.WorldStreamHandler)
+		mux.Handle("/icons/", liveview.ServeItemIcons())
+		mux.Handle("/vendor/", liveview.ServeVendor())
+		routes += ", /dashboard (live 3D agent view)"
+	}
 	go func() {
-		log.Printf("tournament: serving scoreboard on http://%s/ (JSON at /status, Prometheus at /metrics)", addr)
+		log.Printf("tournament: serving %s on %s", routes, addr)
 		if err := http.ListenAndServe(addr, mux); err != nil {
 			log.Printf("tournament: dashboard server on %s stopped: %v", addr, err)
 		}
