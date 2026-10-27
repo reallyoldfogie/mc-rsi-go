@@ -1,0 +1,1370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>mc-rsi-trainer agents</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #15171c;
+    color: #e4e6eb;
+    display: flex;
+    height: 100vh;
+  }
+  #sidebar {
+    width: 260px;
+    flex: none;
+    overflow-y: auto;
+    border-right: 1px solid #2a2d35;
+    background: #1b1e25;
+  }
+  #sidebar h1 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: #8a8f99;
+    padding: 12px 14px 8px;
+    margin: 0;
+  }
+  #legend {
+    padding: 0 14px 10px;
+    border-bottom: 1px solid #2a2d35;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  #legend .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11px;
+    color: #8a8f99;
+  }
+  .agent-row {
+    padding: 8px 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-left: 3px solid transparent;
+  }
+  .agent-row:hover { background: #22252d; }
+  .agent-row.selected { background: #262a33; border-left-color: #5b9dff; }
+  .agent-row.all-row { font-weight: 600; border-bottom: 1px solid #2a2d35; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .dot.ok { background: #3ddc84; }
+  .dot.fail { background: #ff5c5c; }
+  .dot.live { background: #5b9dff; }
+  .dot.stale { background: #5a5f6b; }
+  .agent-row .name { font-weight: 600; }
+  .agent-row .task { color: #8a8f99; font-size: 12px; }
+  .phase-badge {
+    display: inline-block;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: .03em;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-left: 6px;
+    background: #d9a24b;
+    color: #1b1e25;
+    vertical-align: middle;
+  }
+  #main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #stats {
+    position: relative;
+    padding: 14px 18px;
+    border-bottom: 1px solid #2a2d35;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px 20px;
+  }
+  #stats .stat label {
+    display: block;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: #8a8f99;
+  }
+  #stats .stat .val { font-size: 16px; font-weight: 600; }
+  #empty { padding: 18px; color: #8a8f99; }
+  .view-toggle-btn {
+    position: absolute;
+    top: 14px;
+    right: 18px;
+    background: #262a33;
+    color: #e4e6eb;
+    border: 1px solid #3a3f4a;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .view-toggle-btn:hover { background: #2e333d; }
+  #inventory {
+    padding: 0 18px 12px;
+    border-bottom: 1px solid #2a2d35;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
+  }
+  .inventory-group { display: flex; flex-direction: column; gap: 3px; }
+  .inventory-group-label {
+    color: #8a8f99;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  .inventory-group-slots { display: flex; gap: 3px; }
+  .inventory-divider { flex: none; width: 1px; height: 28px; background: #3a3f4a; margin: 0 2px 1px; }
+  .item-chip {
+    position: relative;
+    flex: none;
+    width: 30px;
+    height: 30px;
+    background: #1b1e25;
+    border: 1px solid #2a2d35;
+    border-radius: 3px;
+  }
+  .item-chip.equipment { border-color: #5b9dff; background: #202937; }
+  .item-chip img, .item-chip .badge {
+    position: absolute;
+    inset: 2px;
+    width: calc(100% - 4px);
+    height: calc(100% - 4px);
+    image-rendering: pixelated;
+  }
+  .item-chip .badge {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: #2a2d35;
+    border-radius: 2px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .item-chip .count {
+    position: absolute;
+    right: 2px;
+    bottom: 1px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #fff;
+    text-shadow: 1px 0 #000, -1px 0 #000, 0 1px #000, 0 -1px #000;
+  }
+  /* #plot-wrap (an ordinary block element) absorbs the flex sizing;
+     #plot itself just fills it via plain percentages. A canvas given
+     flex:1 directly, with no explicit width/height CSS, can get sized
+     off its own width/height attributes' aspect ratio instead of
+     stretching to fill the flex container - this sidesteps that. */
+  #plot-wrap { flex: 1; min-height: 0; position: relative; }
+  #plot, #camera-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  #camera-canvas { display: none; }
+  #grid-overlay { position: absolute; inset: 0; display: none; pointer-events: none; }
+  .grid-cell {
+    position: absolute;
+    border: 2px solid rgba(91,157,255,0.75);
+    color: #e4e6eb;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 7px;
+    text-shadow: 0 1px 2px #000;
+  }
+  .grid-cell .grid-agent-name { vertical-align: middle; }
+  .grid-cell .grid-agent-dot { display: inline-block; margin-right: 5px; vertical-align: -1px; }
+  .grid-cell.blank { border-color: rgba(138,143,153,0.35); }
+  /* Sits above whichever of #plot/#camera-canvas is currently visible
+     (both are absolute/inset:0 siblings within #plot-wrap) - a plain
+     later sibling in source order already paints on top, no z-index
+     needed. pointer-events: none so it's purely visual; there's nothing
+     on the canvases underneath to click anyway. */
+  #stale-overlay {
+    position: absolute;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: rgba(90, 95, 107, 0.45);
+    pointer-events: none;
+    font-size: 13px;
+    font-weight: 600;
+    color: #e4e6eb;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  }
+  #stale-overlay.visible { display: flex; }
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <h1>Agents</h1>
+  <div id="legend">
+    <div class="legend-item"><span class="dot live"></span> Connected - responded in the last 5s</div>
+    <div class="legend-item"><span class="dot ok"></span> Last episode succeeded</div>
+    <div class="legend-item"><span class="dot fail"></span> Last episode failed</div>
+    <div class="legend-item"><span class="dot stale"></span> Disconnected - no response in 5s+</div>
+  </div>
+  <div id="rows"></div>
+</div>
+<div id="main">
+  <div id="stats"></div>
+  <div id="inventory"></div>
+  <div id="plot-wrap">
+    <canvas id="plot"></canvas>
+    <canvas id="camera-canvas"></canvas>
+    <div id="grid-overlay"></div>
+    <div id="stale-overlay">Connection lost - no response in 5s+</div>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  var selected = null;
+  var latest = [];
+
+  // viewMode is shared by the all-agents and selected-agent views. The
+  // selected value only changes which scene is shown, never whether the
+  // dashboard is in 2D or 3D.
+  var viewMode = "2d";
+
+  // setViewMode flips which canvas is visible and refreshes the toggle
+  // button's label - the one place both of those stay in sync, since
+  // every entry/exit path (button click, deselect, agent disconnect) goes
+  // through here rather than setting viewMode directly.
+  function setViewMode(mode) {
+    viewMode = mode;
+    var is3D = mode === "3d";
+    document.getElementById("plot").style.display = is3D ? "none" : "block";
+    document.getElementById("camera-canvas").style.display = is3D ? "block" : "none";
+    var btn = document.getElementById("view-toggle-btn");
+    if (btn) btn.textContent = is3D ? "Switch to 2D" : "Switch to 3D";
+  }
+
+  // exitViewMode is the one path back to 2D from anywhere - button click,
+  // deselecting the agent, or the agent disconnecting mid-view (the
+  // worldstream's own "gone" event, via window.onCameraGone below).
+  // Idempotent: safe to call even if already in 2D.
+  function exitViewMode() {
+    if (window.exit3DMode) window.exit3DMode();
+    setViewMode("2d");
+  }
+
+  function onViewToggleClick() {
+    if (viewMode === "3d") {
+      exitViewMode();
+      return;
+    }
+    viewMode = "3d";
+    setViewMode("3d");
+    if (selected === null && window.enterAll3DMode) window.enterAll3DMode(latest);
+    if (selected !== null && window.enter3DMode) window.enter3DMode(selected);
+  }
+
+  // onCameraGone is the module script's one hook back into this script -
+  // called when the worldstream reports the selected agent is no longer
+  // connected, so the view falls back to 2D instead of sitting on a frozen
+  // or blank 3D frame.
+  window.onCameraGone = function () {
+    exitViewMode();
+    render();
+  };
+
+  // trails holds each agent's last TRAIL_LENGTH positions (index -> [{x,
+  // z}, ...], oldest first), purely client-side - the backend only ever
+  // gives us the current snapshot, so this is the dashboard's own memory
+  // of "where has this bot been," not something /agents reports.
+  var trails = {};
+  var TRAIL_LENGTH = 20;
+
+  // updateTrails appends latest's current positions to each agent's trail
+  // and drops any agent no longer present (e.g. a parallel-envs scale-down)
+  // so trails never grows unbounded. Called once per poll, before render.
+  function updateTrails() {
+    var liveIndices = {};
+    latest.forEach(function (a) {
+      liveIndices[a.index] = true;
+      var h = trails[a.index] || (trails[a.index] = []);
+      h.push({ x: a.x, z: a.z });
+      if (h.length > TRAIL_LENGTH) h.shift();
+    });
+    Object.keys(trails).forEach(function (k) {
+      if (!liveIndices[k]) delete trails[k];
+    });
+  }
+
+  // statusDot is a CONNECTION-health signal - keyed off polled_at
+  // (pollOnce, dashboard.go, stamped every ~250ms whenever reading this
+  // bot's live position actually succeeds), not updated_at. These two
+  // used to be conflated into one "stale" dot keyed off updated_at
+  // alone, which is a TRAINING-activity timestamp (only advances on an
+  // actual RL step/Reset - metrics.go) - a bot mid-mine or mid-walk can
+  // legitimately go several seconds between steps while its connection
+  // stays perfectly healthy the whole time, which made "stale" the
+  // dot's resting state rather than a real signal. See
+  // stepFreshnessText below for the other half of the split.
+  function statusDot(a) {
+    var ageMs = Date.now() - new Date(a.polled_at).getTime();
+    if (ageMs > 5000) return "stale";
+    if (a.last_outcome === "success") return "ok";
+    if (a.last_outcome === "failure") return "fail";
+    return "live";
+  }
+
+  // stepFreshnessText is updated_at's own signal, split back out as
+  // plain text rather than a second traffic-light dot - unlike
+  // connection health, there's no meaningful "this is bad" threshold
+  // for step cadence (it's expected to vary from under a second to
+  // many seconds depending on the task), so showing the actual elapsed
+  // time is more honest than inventing an arbitrary color cutoff.
+  function stepFreshnessText(a) {
+    var ageMs = Date.now() - new Date(a.updated_at).getTime();
+    if (ageMs < 1000) return "just now";
+    if (ageMs < 60000) return Math.round(ageMs / 1000) + "s ago";
+    return Math.round(ageMs / 60000) + "m ago";
+  }
+
+  // updateStaleOverlay shows #stale-overlay (over whichever of the 2D
+  // plot/3D camera view is currently visible) exactly when the selected
+  // agent's own dot would read "stale" - same statusDot call the sidebar
+  // row already uses, so the overlay and that dot never disagree. Now
+  // that statusDot is connection-health-only (see its own doc comment),
+  // this correctly means "connection lost," not "mid-step" - showing
+  // the overlay just because a mining/movement action is taking a while
+  // would have been actively misleading. No overlay in the "All agents"
+  // view (a is null) - staleness is a per-agent thing, and each row
+  // already carries its own dot there.
+  function updateStaleOverlay(a) {
+    document.getElementById("stale-overlay").classList.toggle("visible", !!a && statusDot(a) === "stale");
+  }
+
+  function renderSidebar() {
+    var rows = document.getElementById("rows");
+    rows.innerHTML = "";
+
+    var allRow = document.createElement("div");
+    allRow.className = "agent-row all-row" + (selected === null ? " selected" : "");
+    allRow.onclick = function () { selectAgent(null); };
+    allRow.textContent = "All agents";
+    rows.appendChild(allRow);
+
+    latest.forEach(function (a) {
+      var row = document.createElement("div");
+      row.className = "agent-row" + (a.index === selected ? " selected" : "");
+      row.onclick = function () { selectAgent(a.index); };
+      var dot = document.createElement("div");
+      dot.className = "dot " + statusDot(a);
+      var text = document.createElement("div");
+      var agentName = a.display_name || a.competitor_id || a.username || ("agent-" + a.index);
+      text.innerHTML = "<div class='name'>" + agentName + phaseBadge(a) + "</div>" +
+        (a.competitor_id ? "<div class='task'>" + a.competitor_id + " · " + (a.username || "") + "</div>" : "") +
+        "<div class='task'>" + (a.task || "-") + "</div>";
+      row.appendChild(dot);
+      row.appendChild(text);
+      rows.appendChild(row);
+    });
+  }
+
+  function stat(label, value) {
+    return "<div class='stat'><label>" + label + "</label><div class='val'>" + value + "</div></div>";
+  }
+
+  // phaseBadge flags a.phase === "eval" - training and a round's own
+  // teacher/student evaluation episodes run through the exact same bot
+  // connection and agent-row one after another (see metrics.go's
+  // episodeLengthPhase), so without this an eval episode is otherwise
+  // indistinguishable from an ordinary training one. Silent for
+  // "training" (the common case) rather than labeling both, matching
+  // this dashboard's existing style of only calling out the exception.
+  function phaseBadge(a) {
+    return a.phase === "eval" ? " <span class='phase-badge'>eval</span>" : "";
+  }
+
+  // resolveSelected returns the currently selected agent's latest
+  // snapshot, or null if nothing is selected or the selected agent is no
+  // longer connected - the single source of truth renderStats,
+  // renderInventory, and renderPlot's zoomed branch all key off.
+  function resolveSelected() {
+    if (selected === null) return null;
+    var a = latest.find(function (x) { return x.index === selected; });
+    return a || null;
+  }
+
+  function renderStats(a) {
+    var el = document.getElementById("stats");
+    if (selected === null) {
+      el.innerHTML =
+        "<button id='view-toggle-btn' class='view-toggle-btn'>" +
+        ((viewMode === "3d") ? "Switch to 2D" : "Switch to 3D") + "</button>" +
+        "<div id='empty'>Viewing all agents - select one to zoom in.</div>";
+      document.getElementById("view-toggle-btn").onclick = onViewToggleClick;
+      return;
+    }
+    if (!a) {
+      el.innerHTML = "<div id='empty'>Agent " + selected + " is no longer connected.</div>";
+      return;
+    }
+    el.innerHTML =
+      "<button id='view-toggle-btn' class='view-toggle-btn'>" +
+      ((viewMode === "3d") ? "Switch to 2D" : "Switch to 3D") + "</button>" +
+      stat("Agent", (a.username || ("agent-" + a.index)) + phaseBadge(a)) +
+      stat("Task", a.task || "-") +
+      stat("Goal", a.goal || "-") +
+      stat("Last action", a.last_action || "-") +
+      stat("Episode step", a.episode_step) +
+      stat("Last step", stepFreshnessText(a)) +
+      stat("Last outcome", a.last_outcome || "in progress") +
+      stat("Termination reason", a.last_termination_reason || "-") +
+      stat("Position", a.x.toFixed(1) + ", " + a.y.toFixed(1) + ", " + a.z.toFixed(1)) +
+      stat("Yaw / pitch", a.yaw.toFixed(0) + "° / " + a.pitch.toFixed(0) + "°") +
+      stat("Health", a.health.toFixed(1) + " / 20") +
+      stat("Food", a.food + " / 20") +
+      stat("Connected", new Date(a.polled_at).toLocaleTimeString());
+    document.getElementById("view-toggle-btn").onclick = onViewToggleClick;
+  }
+
+  // selectAgent is renderSidebar's one entry point for changing which agent
+  // is selected. The current 2D/3D mode is preserved while switching
+  // between the aggregate grid and a single-agent scene.
+  function selectAgent(index) {
+    selected = index;
+    if (viewMode === "3d" && index === null && window.enterAll3DMode) {
+      window.enterAll3DMode(latest);
+    } else if (viewMode === "3d" && index !== null && window.enter3DMode) {
+      window.enter3DMode(index);
+    }
+    render();
+  }
+
+  function renderInventory(a) {
+    var el = document.getElementById("inventory");
+    el.innerHTML = "";
+    var inventory = a && a.inventory;
+    el.style.display = a ? "flex" : "none";
+    if (!inventory) return;
+
+    function renderGroup(label, items, equipment) {
+      var group = document.createElement("div");
+      group.className = "inventory-group";
+      var heading = document.createElement("div");
+      heading.className = "inventory-group-label";
+      heading.textContent = label;
+      var slots = document.createElement("div");
+      slots.className = "inventory-group-slots";
+      (items || []).forEach(function (it) {
+      var chip = document.createElement("div");
+      chip.className = "item-chip" + (equipment ? " equipment" : "");
+
+      if (!it.name) {
+        chip.title = "slot " + it.slot + " (empty)";
+        slots.appendChild(chip); // empty slot: just the box, nothing in it.
+        return;
+      }
+      chip.title = it.name + " ×" + it.count + " (slot " + it.slot + ")";
+
+      var img = document.createElement("img");
+      img.src = "/icons/" + encodeURIComponent(it.name) + ".png";
+      img.alt = it.name;
+      var badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = it.name.charAt(0).toUpperCase();
+      img.onerror = function () {
+        img.style.display = "none";
+        badge.style.display = "flex";
+      };
+
+      var count = document.createElement("span");
+      count.className = "count";
+      count.textContent = "×" + it.count;
+
+      chip.appendChild(img);
+      chip.appendChild(badge);
+      chip.appendChild(count);
+      slots.appendChild(chip);
+    });
+      group.appendChild(heading);
+      group.appendChild(slots);
+      el.appendChild(group);
+    }
+
+    renderGroup("Armor · head → feet", inventory.armor, true);
+    renderGroup("Main inventory", inventory.main, false);
+    renderGroup("Hotbar", inventory.hotbar, false);
+    renderGroup("Off hand", [inventory.offhand], true);
+  }
+
+  // MIN_ZOOM_RADIUS is the smallest half-window (in blocks) the per-agent
+  // zoomed view will ever use, even when the bot, its spawn, and its
+  // target are all clustered tightly together - comfortably larger than
+  // -clear-area-radius's own default (16) so the bot's immediate working
+  // area stays in view. The actual radius grows beyond this to fit the
+  // bot/spawn/target bounding box - see zoomRadiusFor.
+  var MIN_ZOOM_RADIUS = 24;
+
+  // Entity icons use the same embedded pixel-art asset set as inventory
+  // icons. Vanilla spawn eggs are a useful, version-stable head/icon-like
+  // fallback for common mobs; the colored marker and label remain visible
+  // for entities without a matching egg.
+  var entityIconCache = {};
+  function entityIconURL(type) {
+    return "/icons/" + encodeURIComponent(type.replace(/^minecraft:/, "")) + "_spawn_egg.png";
+  }
+  function drawEntityIcon(ctx, e, x, y, size) {
+    var type = e.type || "unknown";
+    var itemName = type === "item" ? (e.item_name || "") : "";
+    if (type === "item" && !itemName) return false;
+    var key = type === "item" ? "item:" + itemName : type;
+    var icon = entityIconCache[key];
+    if (icon === undefined) {
+      icon = entityIconCache[key] = new Image();
+      icon.onload = function () { renderPlot(); };
+      icon.onerror = function () { entityIconCache[key] = null; renderPlot(); };
+      icon.src = type === "item" ? "/icons/" + encodeURIComponent(itemName) + ".png" : entityIconURL(type);
+    }
+    if (icon && icon.complete && icon.naturalWidth) {
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(icon, x - size / 2, y - size / 2, size, size);
+      return true;
+    }
+    return false;
+  }
+
+  // ZOOM_PADDING_FRACTION leaves a little breathing room around the
+  // bot/spawn/target bounding box, so a marker right at the edge of a
+  // tight box isn't drawn flush against the canvas border.
+  var ZOOM_PADDING_FRACTION = 0.2;
+
+  // zoomRadiusFor returns the half-window (in world blocks) that fits
+  // sel's own position plus its Spawn/Target markers (when known), never
+  // smaller than MIN_ZOOM_RADIUS - a goto/mine_far/craft_far/chain episode
+  // can send a bot (and its target) well outside a fixed 24-block window,
+  // and without this the dynamic zoom the user asked for would just be a
+  // bigger fixed radius instead.
+  function zoomRadiusFor(sel) {
+    var radius = MIN_ZOOM_RADIUS;
+    [sel.spawn, sel.target].forEach(function (p) {
+      if (!p) return;
+      radius = Math.max(radius, Math.abs(p.x - sel.x), Math.abs(p.z - sel.z));
+    });
+    return radius * (1 + ZOOM_PADDING_FRACTION);
+  }
+
+  // niceGridStep picks a "round" world-unit spacing (1/2/5 x a power of
+  // ten) that puts roughly targetLines gridlines across span world units -
+  // the same rounding Google Maps/D3 axis ticks use, so the grid reads as
+  // "20 blocks apart," never an arbitrary value like 17.3.
+  function niceGridStep(span, targetLines) {
+    var raw = span / targetLines;
+    var mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    var residual = raw / mag;
+    var nice = residual > 5 ? 10 : residual > 2 ? 5 : residual > 1 ? 2 : 1;
+    return nice * mag;
+  }
+
+  // drawGrid gives the plot a sense of scale and orientation - without it
+  // there's nothing on screen to judge "how far" or "which way" from,
+  // just a dot floating in a void. Gridlines are drawn at absolute world
+  // coordinates (not relative to the view), so they line up the same way
+  // regardless of which agent is selected.
+  function drawGrid(ctx, w, h, centerX, centerZ, scale) {
+    var step = niceGridStep(Math.min(w, h) / scale, 5);
+    var worldLeft = centerX - (w / 2) / scale, worldRight = centerX + (w / 2) / scale;
+    var worldTop = centerZ - (h / 2) / scale, worldBottom = centerZ + (h / 2) / scale;
+
+    ctx.strokeStyle = "rgba(255,255,255,0.06)";
+    ctx.fillStyle = "rgba(255,255,255,0.28)";
+    ctx.font = "10px sans-serif";
+    ctx.lineWidth = 1;
+
+    for (var gx = Math.ceil(worldLeft / step) * step; gx <= worldRight; gx += step) {
+      var px = w / 2 + (gx - centerX) * scale;
+      ctx.beginPath();
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, h);
+      ctx.stroke();
+      ctx.fillText(gx.toFixed(0), px + 3, 11);
+    }
+    for (var gz = Math.ceil(worldTop / step) * step; gz <= worldBottom; gz += step) {
+      var py = h / 2 + (gz - centerZ) * scale;
+      ctx.beginPath();
+      ctx.moveTo(0, py);
+      ctx.lineTo(w, py);
+      ctx.stroke();
+      ctx.fillText(gz.toFixed(0), 3, py - 3);
+    }
+  }
+
+  // drawFacingIndicator draws a short arrow from (x, y) in the direction
+  // yawDeg faces, turning a plain dot into something that shows which way
+  // the bot is actually looking. dx/dz mirrors Minecraft's own yaw
+  // convention (0 = +Z/south, 90 = -X/west), the same formula bot
+  // libraries use to turn yaw into a direction vector.
+  function drawFacingIndicator(ctx, x, y, yawDeg, len, color) {
+    var rad = yawDeg * Math.PI / 180;
+    var dx = -Math.sin(rad), dz = Math.cos(rad);
+    var tipX = x + dx * len, tipY = y + dz * len;
+
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(tipX, tipY);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    var angle = Math.atan2(dz, dx), headLen = 5;
+    ctx.beginPath();
+    ctx.moveTo(tipX, tipY);
+    ctx.lineTo(tipX - headLen * Math.cos(angle - Math.PI / 6), tipY - headLen * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(tipX - headLen * Math.cos(angle + Math.PI / 6), tipY - headLen * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  // drawHomeIcon draws a small house outline at (x, y), marking the
+  // selected bot's episode spawn point - a fixed landmark to judge
+  // distance/drift against as the bot moves around the zoomed view.
+  function drawHomeIcon(ctx, x, y, color) {
+    var halfW = 7, roofH = 6, wallH = 7;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x - halfW, y + wallH / 2);
+    ctx.lineTo(x - halfW, y - wallH / 2);
+    ctx.lineTo(x, y - wallH / 2 - roofH);
+    ctx.lineTo(x + halfW, y - wallH / 2);
+    ctx.lineTo(x + halfW, y + wallH / 2);
+    ctx.closePath();
+    ctx.stroke();
+  }
+
+  // drawTargetMarker draws a crosshair at (x, y), marking this episode's
+  // fixed destination (see agentSnapshot.Target's own doc comment) - a
+  // goto/mine_far/craft_far/chain episode's bot is working toward this
+  // exact point, distinct from drifting toward "wherever a block/table
+  // happens to be," which a plain mine/craft episode has no marker for at
+  // all.
+  function drawTargetMarker(ctx, x, y, color) {
+    var r = 7;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x - r - 4, y);
+    ctx.lineTo(x - r + 2, y);
+    ctx.moveTo(x + r - 2, y);
+    ctx.lineTo(x + r + 4, y);
+    ctx.moveTo(x, y - r - 4);
+    ctx.lineTo(x, y - r + 2);
+    ctx.moveTo(x, y + r - 2);
+    ctx.lineTo(x, y + r + 4);
+    ctx.stroke();
+  }
+
+  function renderPlot() {
+    // The 3D view (canvas#camera-canvas) owns the screen while active and
+    // redraws itself off its own EventSource/rAF loop - no need to also
+    // keep repainting the hidden 2D canvas underneath it every tick.
+    if (viewMode === "3d") return;
+
+    var canvas = document.getElementById("plot");
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas.clientWidth, h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    var ctx = canvas.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    if (latest.length === 0) return;
+
+    var pad = 30;
+    var sel = resolveSelected();
+    var centerX, centerZ, scale, visible;
+
+    if (sel) {
+      // Single-agent zoomed view, sitting alongside the first-person 3D
+      // view (canvas#camera-canvas, toggled via window.enter3DMode/
+      // exit3DMode) as the other way to look at the same selected bot.
+      // The radius grows to keep Spawn/Target in frame (see
+      // zoomRadiusFor) instead of a fixed window, so a far-off
+      // goto/mine_far/craft_far/chain target is never clipped out of view.
+      var zoomRadius = zoomRadiusFor(sel);
+      centerX = sel.x;
+      centerZ = sel.z;
+      scale = Math.min(w - 2 * pad, h - 2 * pad) / (2 * zoomRadius);
+      visible = latest.filter(function (a) {
+        return Math.abs(a.x - centerX) <= zoomRadius && Math.abs(a.z - centerZ) <= zoomRadius;
+      });
+    } else {
+      var minX = Math.min.apply(null, latest.map(function (a) { return a.x; }));
+      var maxX = Math.max.apply(null, latest.map(function (a) { return a.x; }));
+      var minZ = Math.min.apply(null, latest.map(function (a) { return a.z; }));
+      var maxZ = Math.max.apply(null, latest.map(function (a) { return a.z; }));
+      var spanX = Math.max(maxX - minX, 1);
+      var spanZ = Math.max(maxZ - minZ, 1);
+      centerX = (minX + maxX) / 2;
+      centerZ = (minZ + maxZ) / 2;
+      scale = Math.min((w - 2 * pad) / spanX, (h - 2 * pad) / spanZ);
+      visible = latest;
+    }
+
+    function toCanvas(a) {
+      return [w / 2 + (a.x - centerX) * scale, h / 2 + (a.z - centerZ) * scale];
+    }
+
+    drawGrid(ctx, w, h, centerX, centerZ, scale);
+
+    // Nearby entities (dropped items, mobs, ...) are drawn before the
+    // agents themselves so a bot's own dot/trail/label always reads on top.
+    // In All agents mode each agent contributes its own nearby list to the
+    // shared world-space plot.
+    var entityAgents = sel ? [sel] : visible;
+    entityAgents.forEach(function (entityAgent) {
+      (entityAgent.nearby || []).forEach(function (e) {
+        var p = toCanvas(e);
+        var iconSize = Math.max(10, Math.min(22, 8 + scale * 0.25));
+        var hasIcon = drawEntityIcon(ctx, e, p[0], p[1], iconSize);
+        ctx.beginPath();
+        if (!hasIcon) {
+          ctx.arc(p[0], p[1], 4, 0, Math.PI * 2);
+          ctx.fillStyle = "#d9a24b";
+          ctx.fill();
+        }
+        ctx.fillStyle = "rgba(217,162,75,0.8)";
+        ctx.font = "10px sans-serif";
+        var label = e.type;
+        if (e.type === "item" && e.item_name) label = e.item_name + (e.item_count > 1 ? " ×" + e.item_count : "");
+        ctx.fillText(label, p[0] + iconSize / 2 + 3, p[1] + 3);
+      });
+    });
+
+    // Spawn/Target markers only make sense once zoomed to a single bot -
+    // same reasoning as nearby entities above. Drawn before the agent
+    // dots so a bot's own dot/trail/label always reads on top even when
+    // it's sitting right on top of one of these.
+    if (sel && sel.spawn) {
+      var spawnP = toCanvas(sel.spawn);
+      drawHomeIcon(ctx, spawnP[0], spawnP[1], "#8a8f99");
+      ctx.fillStyle = "rgba(138,143,153,0.8)";
+      ctx.font = "10px sans-serif";
+      ctx.fillText("spawn", spawnP[0] + 10, spawnP[1] + 3);
+    }
+    if (sel && sel.target) {
+      var targetP = toCanvas(sel.target);
+      drawTargetMarker(ctx, targetP[0], targetP[1], "#d9534f");
+      ctx.fillStyle = "rgba(217,83,79,0.85)";
+      ctx.font = "10px sans-serif";
+      ctx.fillText("target", targetP[0] + 10, targetP[1] + 3);
+    }
+
+    visible.forEach(function (a) {
+      var p = toCanvas(a);
+      var isSel = a.index === selected;
+      var color = isSel ? "#5b9dff" : "#8a8f99";
+
+      var trail = trails[a.index];
+      if (trail && trail.length > 1) {
+        ctx.beginPath();
+        trail.forEach(function (pos, i) {
+          var tp = toCanvas(pos);
+          if (i === 0) ctx.moveTo(tp[0], tp[1]); else ctx.lineTo(tp[0], tp[1]);
+        });
+        ctx.strokeStyle = isSel ? "rgba(91,157,255,0.5)" : "rgba(138,143,153,0.35)";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], isSel ? 8 : 5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      if (isSel) {
+        ctx.beginPath();
+        ctx.arc(p[0], p[1], 13, 0, Math.PI * 2);
+        ctx.strokeStyle = "#5b9dff";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      drawFacingIndicator(ctx, p[0], p[1], a.yaw, isSel ? 16 : 11, color);
+
+      ctx.fillStyle = "#c7cad1";
+      ctx.font = "11px sans-serif";
+      ctx.fillText(a.username || ("agent-" + a.index), p[0] + 10, p[1] - 10);
+    });
+  }
+
+  function render() {
+    var a = resolveSelected();
+    renderSidebar();
+    renderStats(a);
+    renderInventory(a);
+    renderPlot();
+    updateStaleOverlay(a);
+  }
+
+  function poll() {
+    fetch("/agents").then(function (r) { return r.json(); }).then(function (data) {
+      latest = data || [];
+      updateTrails();
+      if (viewMode === "3d" && selected === null && window.updateAll3DMode) window.updateAll3DMode(latest);
+      render();
+    }).catch(function () { /* transient fetch error; try again next tick */ });
+  }
+
+  window.addEventListener("resize", renderPlot);
+  poll();
+  setInterval(poll, 250);
+})();
+</script>
+<script type="module">
+// This module owns canvas#camera-canvas end to end: the Three.js scene,
+// the EventSource consuming GET /agents/world, and the render loop. It
+// exposes exactly two things to the plain-script controller above -
+// window.enter3DMode(index) and window.exit3DMode() - everything else
+// (which agent, when to show the canvas, the toggle button) stays that
+// script's job.
+import * as THREE from "/vendor/three.module.min.js";
+
+(function () {
+  "use strict";
+
+  var canvas = document.getElementById("camera-canvas");
+  var renderer = null, boxGeometry = null;
+  // scene/camera/blockMeshes are temporary aliases used by the existing
+  // block helpers. activeView selects which reusable agent view they target.
+  var scene = null, camera = null, blockMeshes = [];
+  var activeView = null, views = {};
+  var allEventSource = null;
+  var rafId = null;
+
+  // PLAYER_EYE_HEIGHT matches mc-agent's own models.PlayerEyeHeight - the
+  // worldstream's "position" events report the bot's feet position (the
+  // same convention as the vanilla position packet), so this is added
+  // when placing the camera to approximate what the bot itself sees
+  // rather than a view from ground level.
+  var PLAYER_EYE_HEIGHT = 1.62;
+
+  // BLOCK_COLORS is a small curated map for common blocks a training bot
+  // actually encounters (terrain, ores, wood, basic crafting stations) -
+  // flat colors, not textures, so there's no Minecraft-version-specific
+  // asset to keep in sync. Anything missing falls back to a
+  // deterministic hash-of-name color in colorForBlock below, so a new or
+  // uncommon block still renders as *something* distinct rather than
+  // defaulting to a single catch-all gray.
+  var BLOCK_COLORS = {
+    grass_block: 0x6aa84f, dirt: 0x8b5a2b, coarse_dirt: 0x7a4b28, podzol: 0x5b3a21,
+    mycelium: 0x6f6293,
+    stone: 0x8a8a8a, cobblestone: 0x999999, mossy_cobblestone: 0x6f8a63,
+    deepslate: 0x4a4a4e, cobbled_deepslate: 0x55555a,
+    oak_planks: 0xba8c55, spruce_planks: 0x9a7349, birch_planks: 0xd8c48a,
+    crafting_table: 0x8b5a2b, chest: 0xa0732c, furnace: 0x5a5a5a,
+    coal_ore: 0x2c2c2c, iron_ore: 0xd8af93, gold_ore: 0xe8d16f,
+    diamond_ore: 0x62dce0, redstone_ore: 0xb3312c, emerald_ore: 0x3fcf7f,
+    lapis_ore: 0x2a4d9c, copper_ore: 0xc2693e,
+    water: 0x3a6ea5, lava: 0xe25822,
+    sand: 0xdbce8f, red_sand: 0xb5542b, gravel: 0x8a8378,
+    bedrock: 0x3a3a3a, snow: 0xf0f8ff, snow_block: 0xf0f8ff, ice: 0xa8d8e8,
+    glass: 0xcde7f0, sandstone: 0xdbce9b, clay: 0xa0a0b0
+  };
+
+  function stripMCPrefix(fullName) {
+    return fullName.replace(/^minecraft:/, "");
+  }
+
+  // colorForBlock is the fallback used for a block with no real texture
+  // to show at all (see materialCache/resolveBlockMaterials below) - a
+  // block rendered as a block-entity instead of a standard textured
+  // block model (chest, bed, banner, ...) never resolves one, same gap
+  // dashboard.go's itemIconFallback hits for the 2D inventory icon.
+  function colorForBlock(name) {
+    if (Object.prototype.hasOwnProperty.call(BLOCK_COLORS, name)) return BLOCK_COLORS[name];
+    if (/leaves$/.test(name)) return 0x3e6b1f;
+    if (/log$|wood$|stem$/.test(name)) return 0x6b4423;
+    if (/planks$/.test(name)) return 0xba8c55;
+    if (/_ore$/.test(name)) return 0xb0b0b0;
+    var hash = 0;
+    for (var i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+    return new THREE.Color("hsl(" + (Math.abs(hash) % 360) + ", 40%, 45%)").getHex();
+  }
+
+  var textureLoader = new THREE.TextureLoader();
+
+  // iconURL points at the exact same /icons/ endpoint the 2D inventory
+  // view already uses (dashboard.go's itemIconFallback) - a request for
+  // an exact existing file (e.g. "grass_block_top.png") is served
+  // directly with no rewriting, so every per-face texture below is
+  // already reachable with zero backend changes.
+  function iconURL(name) { return "/icons/" + name + ".png"; }
+
+  // loadFirstAvailable tries each URL in candidates in priority order -
+  // via textureLoader's own onError callback, which fires on a 404 -
+  // and resolves with whichever one actually exists, configured for
+  // Minecraft's own 16x16 pixel art (NearestFilter, so it doesn't blur
+  // on upscale - the WebGL equivalent of the 2D icons' own
+  // image-rendering:pixelated CSS) and cutout transparency (alphaTest
+  // rather than true alpha blending - correct for leaves/glass-pane
+  // style textures where a pixel is fully opaque or fully transparent,
+  // and avoids InstancedMesh's draw-order problems with real blending).
+  // Resolves with null if every candidate 404s.
+  function loadFirstAvailable(candidates, onResolved) {
+    tryAt(0);
+    function tryAt(i) {
+      if (i >= candidates.length) { onResolved(null); return; }
+      textureLoader.load(candidates[i], function (tex) {
+        tex.magFilter = THREE.NearestFilter;
+        tex.minFilter = THREE.NearestFilter;
+        onResolved(tex);
+      }, undefined, function () { tryAt(i + 1); });
+    }
+  }
+
+  // FACE_BOTTOM_OVERRIDES corrects the handful of blocks whose real
+  // vanilla block model points a face at a DIFFERENT block's own
+  // texture file, not discoverable from this block's own name - e.g.
+  // grass_block's underside is literally dirt.png, not a
+  // "grass_block_bottom.png" that doesn't exist (confirmed: no such
+  // file in cmd/rsi-train/itemicons/). Resolving this generically would
+  // mean parsing Minecraft's own block model JSON
+  // (assets/minecraft/models/block/*.json in the client jar) instead of
+  // guessing filename suffixes - out of scope here, so this just
+  // hardcodes the common, visually obvious cases. Anything else missing
+  // a dedicated bottom texture just reuses its own top texture there
+  // instead, which is wrong but rarely seen (the camera is almost never
+  // below a block looking up at it).
+  var FACE_BOTTOM_OVERRIDES = { grass_block: "dirt", podzol: "dirt", mycelium: "dirt" };
+
+  // TINT_TOP_FACES names blocks whose own top-face texture is a bare
+  // grayscale mask, not a usable color image - confirmed by eye
+  // (grass_block_top.png, mycelium_top.png) against this icon set.
+  // Vanilla Minecraft tints these per-biome at render time via a
+  // separate colormap lookup (never baked into the texture file itself
+  // in the real client jar either - this isn't an extraction gap, biome
+  // tinting is a genuine runtime effect); replicating that properly
+  // would mean fetching per-biome colormap data this dashboard has no
+  // other use for, so this just multiplies the mask by a fixed color
+  // (reusing BLOCK_COLORS' own curated value) as a reasonable
+  // approximation instead. grass_block's own *side* texture turned out
+  // to already have color baked in (unlike its top) in this particular
+  // icon set, so it's deliberately left off this list - tinting an
+  // already-colored texture would double up the color.
+  var TINT_TOP_FACES = { grass_block: true, mycelium: true };
+
+  // TINT_ALL_FACES is the same idea for a block whose single texture
+  // (used on all 6 faces - see sideCandidates/topCandidates both
+  // eventually falling back to the bare "<name>.png") is itself an
+  // untinted mask - confirmed for oak_leaves.png; matches the same
+  // /leaves$/ family colorForBlock's own hash-fallback regex already
+  // treats as one group, just checked up front here instead.
+  function needsAllFaceTint(name) {
+    return /leaves$/.test(name);
+  }
+
+  // texMaterial builds one face's MeshLambertMaterial, applying
+  // tintColor (if given) as Three.js's own map x color multiply -
+  // exactly the fixed-color approximation TINT_TOP_FACES/
+  // needsAllFaceTint's own doc comments describe, no extra rendering
+  // code needed beyond passing both fields to the same material.
+  function texMaterial(texture, tintColor) {
+    var opts = { map: texture, alphaTest: 0.5 };
+    if (tintColor !== undefined) opts.color = tintColor;
+    return new THREE.MeshLambertMaterial(opts);
+  }
+
+  // materialCache holds each block name's resolved material(s) - either
+  // a 6-entry array once per-face textures resolve ([+X,-X,+Y,-Y,+Z,-Z],
+  // matching THREE.BoxGeometry's own default face-group order), or a
+  // single flat-color MeshLambertMaterial as an immediate placeholder
+  // while textures are still loading, and permanently for a block with
+  // no texture at all. Keyed by bare name and never evicted - the set
+  // of distinct block names a bot's own working area ever shows is
+  // small and bounded.
+  var materialCache = {};
+
+  // resolveBlockMaterials kicks off texture resolution for name once
+  // per name ever (materialCache short-circuits every later call) and
+  // swaps in the real per-face materials once they resolve. Until then
+  // - and permanently, for a block with no texture at all -
+  // materialCache[name] holds colorForBlock's flat-color material, so
+  // rebuildBlocks always has something to render the instant it sees a
+  // new name, never blocking a frame on a network round trip. A mesh
+  // built from the stale placeholder gets replaced wholesale on the
+  // very next "blocks" tick (rebuildBlocks rebuilds everything every
+  // tick already), so resolution finishing just shows up as the block
+  // "becoming textured" a second or two after it first appears.
+  function resolveBlockMaterials(name) {
+    if (materialCache[name]) return;
+    materialCache[name] = new THREE.MeshLambertMaterial({ color: colorForBlock(name) });
+
+    var topCandidates = [iconURL(name + "_top"), iconURL(name)];
+    var bottomCandidates = (FACE_BOTTOM_OVERRIDES[name] ? [iconURL(FACE_BOTTOM_OVERRIDES[name])] : [])
+      .concat([iconURL(name + "_bottom")], topCandidates);
+    var sideCandidates = [iconURL(name + "_side"), iconURL(name + "_front"), iconURL(name)];
+
+    var allTint = needsAllFaceTint(name) ? colorForBlock(name) : undefined;
+    var topTint = allTint !== undefined ? allTint : (TINT_TOP_FACES[name] ? colorForBlock(name) : undefined);
+
+    loadFirstAvailable(topCandidates, function (top) {
+      if (!top) return; // nothing textured for this block at all (e.g. chest) - keep the flat color.
+      loadFirstAvailable(bottomCandidates, function (bottom) {
+        loadFirstAvailable(sideCandidates, function (side) {
+          var topMat = texMaterial(top, topTint);
+          var bottomMat = bottom ? texMaterial(bottom, allTint) : topMat;
+          var sideMat = side ? texMaterial(side, allTint) : topMat;
+          materialCache[name] = [sideMat, sideMat, topMat, bottomMat, sideMat, sideMat];
+        });
+      });
+    });
+  }
+
+  // CHEST_SHAPES names the block-entity-rendered blocks (chest,
+  // trapped_chest, ender_chest) that get a real two-box lid+body shape
+  // instead of the generic single cube every other block uses -
+  // investigated after the dashboard.go itemIconFallback chest-icon gap
+  // turned out to be the same root cause here: these blocks were never
+  // textured via the standard block-model system at all (see
+  // dashboard.go's itemIconFallback doc comment), so they need their
+  // own geometry and texture-sourcing, not just a missing filename
+  // guess. bed/banner/skull have the same gap but aren't handled here -
+  // out of scope until they actually come up.
+  var CHEST_SHAPES = { chest: true, trapped_chest: true, ender_chest: true };
+
+  // Dimensions straight from vanilla's own ChestBlockEntityRenderer
+  // model, in 16ths of a block: a 14x10x14 body sitting on the floor
+  // with a 14x5x14 lid stacked directly on top. Always closed - there's
+  // no lid-open animation state in a worldStreamBlock to render
+  // otherwise. The latch always faces +Z (BoxGeometry's own face-group
+  // order - see rebuildBlocks' own doc comment) regardless of the real
+  // block's actual facing, since VisibleBlockInfo carries no
+  // orientation data to point it the right way.
+  var CHEST_FOOTPRINT = 14 / 16, CHEST_BODY_H = 10 / 16, CHEST_LID_H = 5 / 16;
+  var chestBodyGeometry = null, chestLidGeometry = null;
+
+  // chestMaterialCache mirrors materialCache's own caching/placeholder
+  // strategy, just producing one {body, lid} material-array pair
+  // instead of a single array - both boxes share the exact same two
+  // textures (<name>.png for the latch/front face, <name>_side.png for
+  // the plain wood everywhere else), cropped from the real client jar's
+  // entity/chest atlas straight into cmd/rsi-train/itemicons/ (the same
+  // two files dashboard.go's 2D inventory icon now also serves
+  // directly) - not UV-mapped against the atlas with full vanilla
+  // fidelity, just a recognizable front-vs-side split.
+  var chestMaterialCache = {};
+  function resolveChestMaterials(name) {
+    if (chestMaterialCache[name]) return;
+    var flat = new THREE.MeshLambertMaterial({ color: colorForBlock(name) });
+    chestMaterialCache[name] = { body: flat, lid: flat };
+
+    loadFirstAvailable([iconURL(name)], function (front) {
+      if (!front) return; // shouldn't happen now that the crop exists, but keep the flat-color fallback symmetric with resolveBlockMaterials.
+      loadFirstAvailable([iconURL(name + "_side")], function (side) {
+        var frontMat = texMaterial(front, undefined);
+        var sideMat = side ? texMaterial(side, undefined) : frontMat;
+        var faces = [sideMat, sideMat, sideMat, sideMat, frontMat, sideMat];
+        chestMaterialCache[name] = { body: faces, lid: faces };
+      });
+    });
+  }
+
+  function disposeBlockMeshes() {
+    // Materials/textures are cached and shared across ticks (see
+    // materialCache above), so only the per-tick InstancedMesh objects
+    // themselves get removed here - disposing a cached material would
+    // destroy a GPU resource the next tick's mesh of the same block
+    // name still expects to reuse.
+    blockMeshes.forEach(function (mesh) { scene.remove(mesh); });
+    blockMeshes = [];
+    if (activeView) activeView.blockMeshes = blockMeshes;
+  }
+
+  // rebuildBlocks replaces every block instance each "blocks" event,
+  // rather than diffing against the previous event - worldStreamHandler
+  // resends the full visible set on each block scan (see its own
+  // doc comment on why: FindAllVisibleBlocksInSphere's ray-trace is
+  // already the expensive part), so matching that here keeps this layer
+  // just as simple. One InstancedMesh per distinct block name found this
+  // tick - cheap to render even at a few thousand blocks, since the GPU
+  // only sees a handful of draw calls per name (one per cube face
+  // group) instead of one per block.
+  function rebuildBlocks(blocks) {
+    if (!scene) return;
+    disposeBlockMeshes();
+    var groups = {};
+    blocks.forEach(function (b) {
+      var name = stripMCPrefix(b.name);
+      (groups[name] || (groups[name] = [])).push(b);
+    });
+    var m = new THREE.Matrix4();
+    Object.keys(groups).forEach(function (name) {
+      var list = groups[name];
+
+      if (CHEST_SHAPES[name]) {
+        resolveChestMaterials(name);
+        var mats = chestMaterialCache[name];
+        var bodyMesh = new THREE.InstancedMesh(chestBodyGeometry, mats.body, list.length);
+        var lidMesh = new THREE.InstancedMesh(chestLidGeometry, mats.lid, list.length);
+        list.forEach(function (b, i) {
+          m.makeTranslation(b.x + 0.5, b.y + CHEST_BODY_H / 2, b.z + 0.5);
+          bodyMesh.setMatrixAt(i, m);
+          m.makeTranslation(b.x + 0.5, b.y + CHEST_BODY_H + CHEST_LID_H / 2, b.z + 0.5);
+          lidMesh.setMatrixAt(i, m);
+        });
+        bodyMesh.instanceMatrix.needsUpdate = true;
+        lidMesh.instanceMatrix.needsUpdate = true;
+        scene.add(bodyMesh);
+        scene.add(lidMesh);
+        blockMeshes.push(bodyMesh, lidMesh);
+        return;
+      }
+
+      resolveBlockMaterials(name);
+      var mesh = new THREE.InstancedMesh(boxGeometry, materialCache[name], list.length);
+      list.forEach(function (b, i) {
+        m.makeTranslation(b.x + 0.5, b.y + 0.5, b.z + 0.5);
+        mesh.setMatrixAt(i, m);
+      });
+      mesh.instanceMatrix.needsUpdate = true;
+      scene.add(mesh);
+      blockMeshes.push(mesh);
+    });
+  }
+
+  // updateCameraFromPosition mirrors the same yaw convention the 2D
+  // plot's drawFacingIndicator already uses (0 = +Z/south, 90 = -X/west),
+  // extended with pitch the same way vanilla Minecraft's own look-vector
+  // formula does (positive pitch = looking down).
+  function updateCameraFromPosition(p) {
+    if (!camera) return;
+    var eyeY = p.y + PLAYER_EYE_HEIGHT;
+    camera.position.set(p.x, eyeY, p.z);
+    var yawRad = p.yaw * Math.PI / 180, pitchRad = p.pitch * Math.PI / 180;
+    var dx = -Math.sin(yawRad) * Math.cos(pitchRad);
+    var dy = -Math.sin(pitchRad);
+    var dz = Math.cos(yawRad) * Math.cos(pitchRad);
+    camera.lookAt(p.x + dx, eyeY + dy, p.z + dz);
+  }
+
+  function ensureScene() {
+    if (renderer) return true;
+    boxGeometry = new THREE.BoxGeometry(1, 1, 1);
+    chestBodyGeometry = new THREE.BoxGeometry(CHEST_FOOTPRINT, CHEST_BODY_H, CHEST_FOOTPRINT);
+    chestLidGeometry = new THREE.BoxGeometry(CHEST_FOOTPRINT, CHEST_LID_H, CHEST_FOOTPRINT);
+    try {
+      renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+    } catch (e) {
+      var overlay = document.getElementById("grid-overlay");
+      overlay.innerHTML = "<div class='grid-cell' style='left:0;top:0;width:100%;height:100%;text-align:center;padding-top:20%'>3D view unavailable in this browser</div>";
+      overlay.style.display = "block";
+      return false;
+    }
+    renderer.setClearColor(0x0a0c10, 1);
+    return true;
+  }
+
+  function activate(view) {
+    activeView = view;
+    scene = view.scene;
+    camera = view.camera;
+    blockMeshes = view.blockMeshes;
+  }
+
+  function newView(index) {
+    var view = { index: index, scene: new THREE.Scene(), camera: new THREE.PerspectiveCamera(70, 1, 0.1, 200), blockMeshes: [], entityMeshes: {}, eventSource: null };
+    view.scene.background = new THREE.Color(0x0a0c10);
+    view.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    var sun = new THREE.DirectionalLight(0xffffff, 0.8);
+    sun.position.set(50, 80, 30);
+    view.scene.add(sun);
+    return view;
+  }
+
+  var entityMaterialCache = {};
+  function entityMaterial(type, itemName) {
+    var cacheKey = type === "item" && itemName ? "item:" + itemName : type;
+    if (entityMaterialCache[cacheKey]) return entityMaterialCache[cacheKey];
+    var material = new THREE.SpriteMaterial({ color: 0xd9a24b });
+    entityMaterialCache[cacheKey] = material;
+    if (type === "item" && !itemName) return material;
+    var iconURL = type === "item"
+      ? "/icons/" + encodeURIComponent(itemName) + ".png"
+      : "/icons/" + encodeURIComponent(type) + "_spawn_egg.png";
+    textureLoader.load(iconURL, function (tex) {
+      tex.magFilter = THREE.NearestFilter; tex.minFilter = THREE.NearestFilter;
+      material.map = tex; material.color.set(0xffffff); material.needsUpdate = true;
+    }, undefined, function () {});
+    return material;
+  }
+
+  function updateEntities(view, entities) {
+    activate(view);
+    var seen = {};
+    (entities || []).forEach(function (e) {
+      var id = String(e.id), type = stripMCPrefix(e.type || "unknown"), itemName = e.item_name || "";
+      seen[id] = true;
+      var sprite = view.entityMeshes[id];
+      if (!sprite) {
+        sprite = new THREE.Sprite(entityMaterial(type, itemName));
+        var spriteSize = type === "item" ? 0.65 : 0.9;
+        sprite.scale.set(spriteSize, spriteSize, spriteSize);
+        view.entityMeshes[id] = sprite; view.scene.add(sprite);
+      }
+      sprite.position.set(e.x, e.y + 0.7, e.z);
+      sprite.material = entityMaterial(type, itemName);
+    });
+    Object.keys(view.entityMeshes).forEach(function (id) {
+      if (seen[id]) return;
+      view.scene.remove(view.entityMeshes[id]); delete view.entityMeshes[id];
+    });
+  }
+
+  function closeView(view) {
+    if (view.eventSource) { view.eventSource.close(); view.eventSource = null; }
+    activate(view); disposeBlockMeshes();
+    Object.keys(view.entityMeshes).forEach(function (id) { view.scene.remove(view.entityMeshes[id]); });
+    view.entityMeshes = {};
+  }
+
+  function applyStreamMessage(view, msg) {
+    activate(view);
+    if (msg.type === "position") {
+      updateCameraFromPosition(msg);
+    } else if (msg.type === "blocks") {
+      rebuildBlocks(msg.blocks || []);
+    } else if (msg.type === "entities") {
+      updateEntities(view, msg.entities || []);
+    }
+  }
+
+  function startView(view) {
+    view.eventSource = new EventSource("/agents/world?index=" + view.index);
+    view.eventSource.onmessage = function (ev) {
+      var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.type === "gone") {
+        closeView(view); delete views[String(view.index)];
+        if (!Object.keys(views).length && window.onCameraGone) window.onCameraGone();
+      } else {
+        applyStreamMessage(view, msg);
+      }
+    };
+  }
+
+  function startAllStream() {
+    allEventSource = new EventSource("/agents/world?index=all");
+    allEventSource.onmessage = function (ev) {
+      var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
+      if (msg.index === undefined || msg.index === null) return;
+      var key = String(msg.index);
+      if (!views[key]) views[key] = newView(msg.index);
+      if (msg.type === "gone") {
+        closeView(views[key]); delete views[key];
+      } else {
+        applyStreamMessage(views[key], msg);
+      }
+    };
+  }
+
+  function ensureView(index, startSingleStream) {
+    var key = String(index);
+    if (!views[key]) views[key] = newView(index);
+    if (startSingleStream && !views[key].eventSource) startView(views[key]);
+    return views[key];
+  }
+
+  function updateGridOverlay(agents) {
+    var overlay = document.getElementById("grid-overlay"); overlay.innerHTML = "";
+    overlay.style.display = agents.length ? "block" : "none";
+    if (!agents.length) return;
+    var cols = Math.ceil(Math.sqrt(agents.length)), rows = Math.ceil(agents.length / cols);
+    for (var i = 0; i < rows * cols; i++) {
+      var cell = document.createElement("div");
+      cell.className = "grid-cell" + (i >= agents.length ? " blank" : "");
+      cell.style.left = (i % cols) * 100 / cols + "%"; cell.style.top = Math.floor(i / cols) * 100 / rows + "%";
+      cell.style.width = 100 / cols + "%"; cell.style.height = 100 / rows + "%";
+      if (i < agents.length) {
+        var agent = agents[i];
+        var dot = document.createElement("span");
+        dot.className = "dot grid-agent-dot " + gridStatusDot(agent);
+        var name = document.createElement("span");
+        name.className = "grid-agent-name";
+        name.textContent = agent.display_name || agent.competitor_id || agent.username || ("agent-" + agent.index);
+        cell.appendChild(dot);
+        cell.appendChild(name);
+      }
+      overlay.appendChild(cell);
+    }
+  }
+
+  function gridStatusDot(agent) {
+    var ageMs = Date.now() - new Date(agent.polled_at).getTime();
+    if (ageMs > 5000) return "stale";
+    if (agent.last_outcome === "success") return "ok";
+    if (agent.last_outcome === "failure") return "fail";
+    return "live";
+  }
+
+  function renderFrame() {
+    if (!renderer) return;
+    var w = canvas.clientWidth || 1, h = canvas.clientHeight || 1;
+    renderer.setSize(w, h, false); renderer.setScissorTest(true); renderer.clear();
+    var keys = Object.keys(views); if (!keys.length) return;
+    var cols = keys.length === 1 ? 1 : Math.ceil(Math.sqrt(keys.length));
+    var rows = keys.length === 1 ? 1 : Math.ceil(keys.length / cols);
+    var cellW = w / cols, cellH = h / rows;
+    keys.forEach(function (key, i) {
+      var view = views[key]; activate(view);
+      camera.aspect = cellW / cellH; camera.updateProjectionMatrix();
+      var x = (i % cols) * cellW, y = h - (Math.floor(i / cols) + 1) * cellH;
+      renderer.setViewport(x, y, cellW, cellH); renderer.setScissor(x, y, cellW, cellH);
+      renderer.render(scene, camera);
+    });
+  }
+
+  function animate() { rafId = requestAnimationFrame(animate); renderFrame(); }
+  function closeAllViews() {
+    Object.keys(views).forEach(function (key) { closeView(views[key]); }); views = {};
+    if (allEventSource) { allEventSource.close(); allEventSource = null; }
+    document.getElementById("grid-overlay").style.display = "none";
+  }
+
+  window.enter3DMode = function (index) {
+    if (!ensureScene()) return;
+    closeAllViews(); ensureView(index, true); if (!rafId) animate();
+  };
+  window.enterAll3DMode = function (agents) {
+    if (!ensureScene()) return;
+    if (!allEventSource) {
+      closeAllViews();
+      startAllStream();
+    }
+    var wanted = {};
+    (agents || []).forEach(function (a) {
+      wanted[String(a.index)] = true;
+      var view = ensureView(a.index, false);
+      // Use the fast /agents snapshot immediately; the aggregate world
+      // stream will replace it with the same position when it arrives.
+      if (Number.isFinite(a.x) && Number.isFinite(a.y) && Number.isFinite(a.z)) {
+        activate(view); updateCameraFromPosition(a);
+      }
+    });
+    Object.keys(views).forEach(function (key) { if (!wanted[key]) { closeView(views[key]); delete views[key]; } });
+    updateGridOverlay(agents || []); if (!rafId) animate();
+  };
+  window.updateAll3DMode = function (agents) {
+    if (allEventSource) window.enterAll3DMode(agents);
+  };
+  window.exit3DMode = function () {
+    closeAllViews(); if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  };
+  window.addEventListener("resize", renderFrame);
+})();
+</script>
+</body>
+</html>
