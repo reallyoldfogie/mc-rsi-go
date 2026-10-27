@@ -1,11 +1,17 @@
 module github.com/reallyoldfogie/mc-rsi-trainer
 
-go 1.27.0
+go 1.27.3
 
 exclude (
 	github.com/buger/jsonparser v1.1.1
 	golang.org/x/crypto v0.54.0
 )
+
+// Temporary local replace for the Sleep Action Plan's cross-repo wiring
+// (docs/plans/SLEEP_ACTION_PLAN.md, local/untracked on both sides) -
+// mc-agent's own sleep-action branch isn't merged/published yet. Remove
+// once it is, same convention combat-competition's own go.mod used.
+replace github.com/reallyoldfogie/mc-agent => /home/reallyoldfogie/src/github.com/reallyoldfogie/mc-agent/.worktrees/sleep-action
 
 require (
 	github.com/moby/moby/client v0.2.1

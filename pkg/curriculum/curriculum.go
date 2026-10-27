@@ -109,4 +109,19 @@ type Pool struct {
 	// ChainTargetOffsets/ChainSearchRadius with every other chain stage.
 	// Empty disables the type, same as every other *TargetBlocks field.
 	ChainMineTargetBlocks []string
+
+	// SleepSearchRadius, if > 0, turns on ActionSleep
+	// (docs/plans/SLEEP_ACTION_PLAN.md, local/untracked) for every
+	// episode this Pool poses, regardless of which task type Select
+	// picks that episode - unlike every field above, this is not itself
+	// a task type Select chooses among; it's a cross-cutting capability
+	// TaskSelector injects onto whatever override Select's own task
+	// produced (see rlenvadapter.TaskSelector). Mirrors
+	// rlenv.Config.SleepSearchRadius's own shape directly. 0 (the
+	// default, and what every entry in configs/curriculum.json's own
+	// active pool leaves this at today) means no episode this Pool
+	// poses has the sleep capability turned on - built and available,
+	// deliberately not yet part of what the live trainer actually
+	// draws episodes from.
+	SleepSearchRadius int
 }
