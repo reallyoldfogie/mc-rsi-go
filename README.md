@@ -50,6 +50,25 @@ produces a policy that keeps getting better without a human hand-tuning it after
   serves live Prometheus metrics. Includes a policy-health check that refuses to start from, and
   aborts training on, a network whose hidden units have stopped responding to their input — a real
   failure mode this project hit and that went unnoticed for a week before the check existed.
+- **[`pkg/competition`](pkg/competition)** — architecture competition: several independent,
+  non-interacting learners (different hidden sizes/layer counts/recurrence) trained side by side on
+  a shared server under synchronized deadlines, with per-competitor identity, a frozen evaluation
+  plan replayed identically across all of them, and run-scoped labeled metrics. Runs as a mode of
+  `cmd/rsi-train` itself (not a separate binary) — see `configs/architecture-competition.json` for a
+  worked 8-architecture example.
+- **[`pkg/pvp`](pkg/pvp) + [`pkg/tournament`](pkg/tournament) + [`pkg/liveview`](pkg/liveview)** —
+  combat, the *adversarial* counterpart to architecture competition above: bots that actually fight
+  each other, not just train independently alongside one another. `pkg/pvp` (training mode,
+  `cmd/rsi-pvp-train`) is live multi-agent/team self-play — a synchronized match-reset barrier,
+  shared-arena connection, and containment enforcement, reusing mc-agent's own team-aware PvP
+  targeting. `pkg/tournament` (competition mode, `cmd/rsi-pvp-compete`) plays a single-elimination
+  bracket of frozen checkpoints against each other, pure inference, with incremental result
+  persistence. `pkg/liveview` is a live 3D dashboard (extracted from `cmd/rsi-train`'s own
+  architecture-competition dashboard, generalized for reuse) showing each bot's own ray-traced view
+  of the arena, team-colored by competitor — including its live opponent, which shows up with no
+  combat-specific tracking code since nearby-entity tracking was never filtered to exclude players
+  in the first place. See [`docs/examples/README.md`](docs/examples/README.md) for a worked sample
+  config covering both modes end to end.
 - **[`cmd/rsi-infer`](cmd/rsi-infer)** — runs a saved generation live against a real bot session
   without training, for watching what it's actually learned to do.
 - **[`cmd/widen-checkpoint`](cmd/widen-checkpoint)** — grows a trained network's hidden layer width
