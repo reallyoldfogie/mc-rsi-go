@@ -1,0 +1,12 @@
+{
+  "connection": {
+    "address": "127.0.0.1:25565",
+    "name": "CombatArenaBase",
+    "offline": true,
+    "version": ""
+  },
+  "rcon": {
+    "address": "127.0.0.1:25575",
+    "password": "CHANGE_ME"
+  }
+}

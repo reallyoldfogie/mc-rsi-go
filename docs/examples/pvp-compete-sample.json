@@ -1,0 +1,37 @@
+{
+  "run_id": "arena-1-tournament",
+  "results_root": "./results/arena-1",
+  "greedy": true,
+  "best_of": 3,
+  "episode_len": 120,
+  "weapon": "minecraft:iron_sword",
+  "arena": {
+    "containment": "soft_area",
+    "radius": 24,
+    "check_interval": "2s"
+  },
+  "server": {
+    "world": {
+      "kind": "existing",
+      "mc_agent_config": "docs/examples/mc-agent-config.json"
+    }
+  },
+  "competitors": [
+    {
+      "id": "red",
+      "display_name": "Red",
+      "participants": [
+        { "id": "red1", "managed": true, "hidden_layers": 2, "hidden_size": 8, "checkpoint_path": "./checkpoints/arena-1/red1.json" },
+        { "id": "red2", "managed": true, "hidden_layers": 2, "hidden_size": 8, "checkpoint_path": "./checkpoints/arena-1/red2.json" }
+      ]
+    },
+    {
+      "id": "blue",
+      "display_name": "Blue",
+      "participants": [
+        { "id": "blue1", "managed": true, "hidden_layers": 2, "hidden_size": 8, "checkpoint_path": "./checkpoints/arena-1/blue1.json" },
+        { "id": "blue2", "managed": true, "hidden_layers": 2, "hidden_size": 8, "checkpoint_path": "./checkpoints/arena-1/blue2.json" }
+      ]
+    }
+  ]
+}

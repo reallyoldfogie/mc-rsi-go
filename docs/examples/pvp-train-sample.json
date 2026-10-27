@@ -1,0 +1,32 @@
+{
+  "run_id": "arena-1-train",
+  "checkpoint_root": "./checkpoints",
+  "trainer_config": "docs/examples/trainer-config-sample.json",
+  "training": {
+    "duration": "10m",
+    "checkpoint_interval": "2m"
+  },
+  "server": {
+    "world": {
+      "kind": "existing",
+      "mc_agent_config": "docs/examples/mc-agent-config.json"
+    }
+  },
+  "matches": [
+    {
+      "id": "arena-1",
+      "weapon": "minecraft:iron_sword",
+      "arena": {
+        "containment": "soft_area",
+        "radius": 24,
+        "check_interval": "2s"
+      },
+      "participants": [
+        { "id": "red1", "managed": true, "team": "red", "hidden_layers": 2, "hidden_size": 8 },
+        { "id": "red2", "managed": true, "team": "red", "hidden_layers": 2, "hidden_size": 8 },
+        { "id": "blue1", "managed": true, "team": "blue", "hidden_layers": 2, "hidden_size": 8 },
+        { "id": "blue2", "managed": true, "team": "blue", "hidden_layers": 2, "hidden_size": 8 }
+      ]
+    }
+  ]
+}
