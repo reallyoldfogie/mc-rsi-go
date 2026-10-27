@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/reallyoldfogie/mc-agent/models"
 	"github.com/reallyoldfogie/mc-bot-go/bot/screen"
 )
@@ -413,7 +414,7 @@ func (r *Registry) PollOnce() {
 		inventory := readInventory(b.agent)
 		var nearby []NearbyEntity
 		if ok {
-			nearby = readNearbyEntities(b.agent, pos.X, pos.Y, pos.Z)
+			nearby = r.readNearbyEntities(b.agent, pos.X, pos.Y, pos.Z)
 		}
 
 		r.mu.Lock()
@@ -469,6 +470,14 @@ type NearbyEntity struct {
 	X         float64 `json:"x"`
 	Y         float64 `json:"y"`
 	Z         float64 `json:"z"`
+	// CompetitorID/DisplayName are set only for a Type == "player" entity
+	// that readNearbyEntities was able to resolve, via Registry.resolvePlayerIdentity,
+	// to one of this Registry's own registered bots - the dashboard's own
+	// team-color-coding signal for "which fighter is this," not something
+	// the Minecraft protocol itself ever reports (entity tracking only
+	// ever gives a raw UUID/position, never a competitor identity).
+	CompetitorID string `json:"competitor_id,omitempty"`
+	DisplayName  string `json:"display_name,omitempty"`
 }
 
 // readNearbyEntities summarizes a's already-tracked nearby entities around
@@ -476,13 +485,64 @@ type NearbyEntity struct {
 // nearbyEntityRadius. GetTrackedEntities is a plain read of state mc-agent
 // already tracks from the connection's own packet stream (every entity in
 // the bot's own loaded view distance), not a new network call - same cost
-// class as GetPosition/GetInventory.
-func readNearbyEntities(a models.Agent, originX, originY, originZ float64) []NearbyEntity {
+// class as GetPosition/GetInventory. A "player" entity is additionally
+// resolved to its owning competitor/display name (see
+// resolvePlayerIdentity) when r is non-nil - the receiver is only used
+// for that lookup, never to re-derive originX/Y/Z or anything else about
+// a itself.
+func (r *Registry) readNearbyEntities(a models.Agent, originX, originY, originZ float64) []NearbyEntity {
 	tracked := a.GetTrackedEntities()
 	if len(tracked) == 0 {
 		return nil
 	}
-	return summarizeNearbyEntities(tracked, a.GetRegistry("minecraft:entity_type"), a.GetItemManager(), originX, originY, originZ)
+	entities := summarizeNearbyEntities(tracked, a.GetRegistry("minecraft:entity_type"), a.GetItemManager(), originX, originY, originZ)
+	if r == nil {
+		return entities
+	}
+	for i := range entities {
+		if entities[i].Type != "player" {
+			continue
+		}
+		info, ok := tracked[entities[i].ID]
+		if !ok {
+			continue
+		}
+		if competitorID, displayName, ok := r.resolvePlayerIdentity(info.UUID); ok {
+			entities[i].CompetitorID = competitorID
+			entities[i].DisplayName = displayName
+		}
+	}
+	return entities
+}
+
+// resolvePlayerIdentity reports which registered bot (if any) owns
+// entityUUID, by comparing it against each bot's own deterministic
+// offline-mode UUID (every participant in this ecosystem connects with
+// Offline: true - see mcconfig.ConnectionSettings - so the server assigns
+// exactly this UUID, the same formula mc-agent's own replay_mirror.go
+// uses for the same reason). Matching by UUID rather than by position is
+// the point: two fighters standing right next to each other mid-combat -
+// exactly when a human watching the dashboard most wants correct team
+// colors - is also exactly when position-based matching would be most
+// likely to get it wrong.
+func (r *Registry) resolvePlayerIdentity(entityUUID [16]byte) (competitorID, displayName string, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, b := range r.bots {
+		if b.Username == "" {
+			continue
+		}
+		if offlinePlayerUUID(b.Username) == entityUUID {
+			return b.CompetitorID, b.DisplayName, true
+		}
+	}
+	return "", "", false
+}
+
+// offlinePlayerUUID computes the same MD5-namespace UUID a vanilla
+// server assigns to an offline-mode player named name.
+func offlinePlayerUUID(name string) [16]byte {
+	return uuid.NewMD5(uuid.NameSpaceOID, []byte("OfflinePlayer:"+name))
 }
 
 // summarizeNearbyEntities filters tracked to live (non-Removed) entities

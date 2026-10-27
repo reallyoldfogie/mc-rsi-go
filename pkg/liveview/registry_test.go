@@ -364,3 +364,22 @@ func TestSummarizeNearbyEntitiesCapsAtMax(t *testing.T) {
 
 	assert.Len(t, got, nearbyEntityMax)
 }
+
+func TestResolvePlayerIdentity_MatchesRegisteredBotByOfflineUUID(t *testing.T) {
+	r := NewRegistry()
+	r.AddCompetition("red1", nil, "run1", "red", "Red", "")
+	r.AddCompetition("blue1", nil, "run1", "blue", "Blue", "")
+
+	competitorID, displayName, ok := r.resolvePlayerIdentity(offlinePlayerUUID("blue1"))
+	require.True(t, ok)
+	assert.Equal(t, "blue", competitorID)
+	assert.Equal(t, "Blue", displayName)
+}
+
+func TestResolvePlayerIdentity_UnknownUUIDReportsNotOK(t *testing.T) {
+	r := NewRegistry()
+	r.AddCompetition("red1", nil, "run1", "red", "Red", "")
+
+	_, _, ok := r.resolvePlayerIdentity(offlinePlayerUUID("someone-else"))
+	assert.False(t, ok)
+}

@@ -144,7 +144,7 @@ func (r *Registry) WorldStreamHandler(w http.ResponseWriter, req *http.Request) 
 			writeSSE(w, worldStreamPositionEvent{Type: "position", X: pos.X, Y: pos.Y, Z: pos.Z, Yaw: yaw, Pitch: pitch})
 			writeSSE(w, worldStreamEntitiesEvent{
 				Type:     "entities",
-				Entities: readNearbyEntities(agent, pos.X, pos.Y, pos.Z),
+				Entities: r.readNearbyEntities(agent, pos.X, pos.Y, pos.Z),
 			})
 		}
 
@@ -248,7 +248,7 @@ func (r *Registry) worldStreamAllHandler(w http.ResponseWriter, req *http.Reques
 			writeSSE(w, worldStreamEntitiesEvent{
 				Index:    snapshot.Index,
 				Type:     "entities",
-				Entities: readNearbyEntities(snapshot.agent, pos.X, pos.Y, pos.Z),
+				Entities: r.readNearbyEntities(snapshot.agent, pos.X, pos.Y, pos.Z),
 			})
 			initialized = append(initialized, initializedAgent{snapshot: snapshot})
 		}

@@ -206,9 +206,30 @@
     text-shadow: 0 1px 2px rgba(0,0,0,0.6);
   }
   #stale-overlay.visible { display: flex; }
+  /* backend-down-banner is page-level, not per-agent (contrast
+     #stale-overlay above, which only means one specific bot's own
+     connection went quiet while the backend itself is fine) - shown
+     when the dashboard's own GET /agents polling can't reach the
+     backend process at all, e.g. because the run it was serving has
+     finished and the binary exited. */
+  #backend-down-banner {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    z-index: 1000;
+    background: #c0392b;
+    color: #fff;
+    text-align: center;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 6px 0;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+  }
+  #backend-down-banner.visible { display: block; }
 </style>
 </head>
 <body>
+<div id="backend-down-banner">Lost connection to the backend - retrying…</div>
 <div id="sidebar">
   <h1>Agents</h1>
   <div id="legend">
@@ -818,18 +839,62 @@
     updateStaleOverlay(a);
   }
 
+  // backendDown/consecutivePollFailures/pollDelay implement poll()'s own
+  // backoff: a plain setInterval(poll, 250) with the backend gone would
+  // keep firing a failing fetch - and the console error that comes with
+  // it - 4 times a second forever. Backing off (capped at 5s) instead
+  // cuts that rate by 20x within a few seconds, and setBackendStatus
+  // gives a human watching an actual on-page signal instead of a silent,
+  // frozen-looking dashboard.
+  var backendDown = false;
+  var consecutivePollFailures = 0;
+  var pollDelay = 250;
+
+  // setBackendStatus toggles #backend-down-banner and, on recovery,
+  // resumes whichever 3D stream was active - any EventSource open when
+  // the backend went down was already closed by its own onerror handler
+  // (see startView/startAllStream), so nothing else re-opens it on its
+  // own once polling starts succeeding again.
+  function setBackendStatus(down) {
+    if (down === backendDown) return;
+    backendDown = down;
+    document.getElementById("backend-down-banner").classList.toggle("visible", down);
+    if (!down && viewMode === "3d") {
+      if (selected === null && window.enterAll3DMode) window.enterAll3DMode(latest);
+      else if (selected !== null && window.enter3DMode) window.enter3DMode(selected);
+    }
+  }
+  // Exposed on window: startView/startAllStream's own onerror handlers
+  // live in the second, type="module" <script> block below, which has
+  // its own top-level scope - the same reason that module already
+  // exposes enter3DMode/enterAll3DMode/etc. back the other way.
+  window.setBackendStatus = setBackendStatus;
+
   function poll() {
-    fetch("/agents").then(function (r) { return r.json(); }).then(function (data) {
+    fetch("/agents").then(function (r) {
+      if (!r.ok) throw new Error("bad status " + r.status);
+      return r.json();
+    }).then(function (data) {
+      consecutivePollFailures = 0;
+      pollDelay = 250;
+      setBackendStatus(false);
       latest = data || [];
       updateTrails();
       if (viewMode === "3d" && selected === null && window.updateAll3DMode) window.updateAll3DMode(latest);
       render();
-    }).catch(function () { /* transient fetch error; try again next tick */ });
+    }).catch(function () {
+      consecutivePollFailures++;
+      if (consecutivePollFailures >= 3) {
+        setBackendStatus(true);
+        pollDelay = Math.min(pollDelay * 2, 5000);
+      }
+    }).then(function () {
+      setTimeout(poll, pollDelay);
+    });
   }
 
   window.addEventListener("resize", renderPlot);
   poll();
-  setInterval(poll, 250);
 })();
 </script>
 <script type="module">
@@ -1193,8 +1258,70 @@ import * as THREE from "/vendor/three.module.min.js";
     return view;
   }
 
+  // TEAM_COLOR_NAMES lets a competitor literally named after a color
+  // (as this session's own combat demo competitors are - "red",
+  // "blue", ...) get exactly that color rather than a hash-assigned
+  // one; TEAM_PALETTE is the fallback for any other competitor_id,
+  // chosen for mutual contrast against both the sky and each other.
+  var TEAM_COLOR_NAMES = {
+    red: 0xe74c3c, blue: 0x3498db, green: 0x2ecc71, yellow: 0xf1c40f,
+    orange: 0xe67e22, purple: 0x9b59b6, cyan: 0x1abc9c, pink: 0xe84393,
+    black: 0x34495e, white: 0xecf0f1,
+  };
+  var TEAM_PALETTE = [0xe74c3c, 0x3498db, 0x2ecc71, 0xf1c40f, 0xe67e22, 0x9b59b6, 0x1abc9c, 0xe84393];
+  function hashString(s) {
+    var h = 0;
+    for (var i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+    return h;
+  }
+  // teamColor returns undefined for an unresolved/non-player entity -
+  // entityMaterial's own existing default (0xd9a24b) stays the fallback
+  // for those, exactly as before this feature existed.
+  function teamColor(competitorID) {
+    if (!competitorID) return undefined;
+    var named = TEAM_COLOR_NAMES[competitorID.toLowerCase()];
+    if (named !== undefined) return named;
+    return TEAM_PALETTE[Math.abs(hashString(competitorID)) % TEAM_PALETTE.length];
+  }
+
+  // playerSilhouetteTexture is a small humanoid silhouette drawn once
+  // onto a canvas (head/body/arms/legs, plain white) rather than shipped
+  // as a static asset - a flat-colored sprite reads as "a blob," not "a
+  // fighter," no matter what color it is; this is the cheapest way to
+  // make it legibly person-shaped without a full skin-texture pipeline
+  // (these are synthetic offline-mode bots with no real custom skin to
+  // fetch in the first place - see this function's own call site).
+  // White so SpriteMaterial's own `color` tints it per team, the same
+  // tint trick entityMaterial already uses for mob-type spawn-egg icons.
+  var playerSilhouetteTexture = null;
+  function playerSilhouetteTex() {
+    if (playerSilhouetteTexture) return playerSilhouetteTexture;
+    var canvas = document.createElement("canvas");
+    canvas.width = 32; canvas.height = 32;
+    var ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath(); ctx.arc(16, 7, 5, 0, Math.PI * 2); ctx.fill(); // head
+    ctx.fillRect(10, 12, 12, 12); // torso
+    ctx.fillRect(5, 13, 5, 10); ctx.fillRect(22, 13, 5, 10); // arms
+    ctx.fillRect(11, 24, 5, 7); ctx.fillRect(17, 24, 5, 7); // legs
+    playerSilhouetteTexture = new THREE.CanvasTexture(canvas);
+    playerSilhouetteTexture.magFilter = THREE.NearestFilter;
+    playerSilhouetteTexture.minFilter = THREE.NearestFilter;
+    return playerSilhouetteTexture;
+  }
+
   var entityMaterialCache = {};
-  function entityMaterial(type, itemName) {
+  function entityMaterial(type, itemName, teamColorHex) {
+    if (type === "player") {
+      var playerCacheKey = "player:" + (teamColorHex !== undefined ? teamColorHex : "default");
+      if (entityMaterialCache[playerCacheKey]) return entityMaterialCache[playerCacheKey];
+      var playerMaterial = new THREE.SpriteMaterial({
+        map: playerSilhouetteTex(),
+        color: teamColorHex !== undefined ? teamColorHex : 0xd9a24b,
+      });
+      entityMaterialCache[playerCacheKey] = playerMaterial;
+      return playerMaterial;
+    }
     var cacheKey = type === "item" && itemName ? "item:" + itemName : type;
     if (entityMaterialCache[cacheKey]) return entityMaterialCache[cacheKey];
     var material = new THREE.SpriteMaterial({ color: 0xd9a24b });
@@ -1216,15 +1343,16 @@ import * as THREE from "/vendor/three.module.min.js";
     (entities || []).forEach(function (e) {
       var id = String(e.id), type = stripMCPrefix(e.type || "unknown"), itemName = e.item_name || "";
       seen[id] = true;
+      var teamColorHex = type === "player" ? teamColor(e.competitor_id) : undefined;
       var sprite = view.entityMeshes[id];
       if (!sprite) {
-        sprite = new THREE.Sprite(entityMaterial(type, itemName));
+        sprite = new THREE.Sprite(entityMaterial(type, itemName, teamColorHex));
         var spriteSize = type === "item" ? 0.65 : 0.9;
         sprite.scale.set(spriteSize, spriteSize, spriteSize);
         view.entityMeshes[id] = sprite; view.scene.add(sprite);
       }
       sprite.position.set(e.x, e.y + 0.7, e.z);
-      sprite.material = entityMaterial(type, itemName);
+      sprite.material = entityMaterial(type, itemName, teamColorHex);
     });
     Object.keys(view.entityMeshes).forEach(function (id) {
       if (seen[id]) return;
@@ -1261,10 +1389,24 @@ import * as THREE from "/vendor/three.module.min.js";
         applyStreamMessage(view, msg);
       }
     };
+    // Close rather than let EventSource auto-retry on its own schedule:
+    // a dead backend would otherwise mean TWO independent retry loops
+    // (this one and poll()'s) each logging their own connection errors.
+    // poll()'s own backoff (see setBackendStatus) is the single signal
+    // this dashboard treats as "is the backend up" - it reopens this
+    // stream itself once a poll succeeds again.
+    view.eventSource.onerror = function () {
+      closeView(view); delete views[String(view.index)];
+      window.setBackendStatus(true);
+    };
   }
 
   function startAllStream() {
     allEventSource = new EventSource("/agents/world?index=all");
+    allEventSource.onerror = function () {
+      if (allEventSource) { allEventSource.close(); allEventSource = null; }
+      window.setBackendStatus(true);
+    };
     allEventSource.onmessage = function (ev) {
       var msg; try { msg = JSON.parse(ev.data); } catch (e) { return; }
       if (msg.index === undefined || msg.index === null) return;
