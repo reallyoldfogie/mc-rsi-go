@@ -64,7 +64,7 @@ func runCompetition(f flags) error {
 		mcSettings.RCON.Address = tunnel.RCONAddress()
 		log.Printf("competition SSH tunnel active: Minecraft=%s RCON=%s", mcSettings.Connection.Address, mcSettings.RCON.Address)
 	}
-	connected, _, err := connectEnvironments(ctx, mcSettings, len(cfg.Competitors), cfg.Server.AutoResetOrigin, true, cfg.Server.SeparationChunks, &pool, cfg.CheckpointRoot, episodeLimits{})
+	connected, _, err := connectEnvironments(ctx, mcSettings, len(cfg.Competitors), cfg.Server.AutoResetOrigin, true, cfg.Server.SeparationChunks, &pool, cfg.CheckpointRoot, episodeLimits{}, templateSeedConfig{})
 	if err != nil {
 		return err
 	}

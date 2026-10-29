@@ -64,6 +64,18 @@ type Pool struct {
 	MineBuriedSearchRadius int
 	MineBuriedRequiredTool string
 
+	// MineBuriedRequiredToolEnchantments, if non-empty, enchants
+	// MineBuriedRequiredTool (full enchantment ID -> level, e.g.
+	// {"minecraft:efficiency": 5} — see rlenv.Config.
+	// MineRequiredToolEnchantments) instead of giving it plain. Found
+	// live: once mine_buried's exploration signal actually leads a bot to
+	// the ore, break time (not movement) becomes the next-cheapest thing
+	// to fix, and there's no reason to leave a seeded (not crafted) tool
+	// at wooden-pickaxe speed. Only meaningful alongside
+	// MineBuriedRequiredTool; never applies to chain_mine, whose
+	// pickaxe is crafted by the agent, not seeded.
+	MineBuriedRequiredToolEnchantments map[string]int
+
 	// MineFarTargetOffsets/MineFarBlocks/MineFarSearchRadius pose "go there,
 	// then mine": a mine block is placed beside a goto target sampled from
 	// MineFarTargetOffsets. The search radius must be smaller than the

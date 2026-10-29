@@ -120,19 +120,21 @@ func (mineFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 // reach, just not yet visible), plus a tool seeded into inventory first
 // since the target can't realistically be reached bare-handed.
 type mineBuriedTask struct {
-	block        string
-	searchRadius int
-	requiredTool string
+	block                string
+	searchRadius         int
+	requiredTool         string
+	requiredToolEnchants map[string]int
 }
 
 func (t mineBuriedTask) Name() string            { return "mine_buried" }
 func (t mineBuriedTask) GoalDescription() string { return "mine buried " + shortName(t.block) }
 func (t mineBuriedTask) ToOverride() rlenv.TaskOverride {
 	return rlenv.TaskOverride{
-		GoToTargetDisabled: true,
-		MineTargetBlock:    t.block,
-		MineSearchRadius:   t.searchRadius,
-		MineRequiredTool:   t.requiredTool,
+		GoToTargetDisabled:           true,
+		MineTargetBlock:              t.block,
+		MineSearchRadius:             t.searchRadius,
+		MineRequiredTool:             t.requiredTool,
+		MineRequiredToolEnchantments: t.requiredToolEnchants,
 		// The target already exists, baked into the shared clone
 		// template — DefaultEpisodeSeeder must not also place a fresh,
 		// immediately-visible instance beside the bot (caught live,
@@ -149,7 +151,12 @@ func (mineBuriedFactory) Available(pool curriculum.Pool) bool {
 }
 func (mineBuriedFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 	block := pool.MineBuriedTargetBlocks[rng.IntN(len(pool.MineBuriedTargetBlocks))]
-	return mineBuriedTask{block: block, searchRadius: pool.MineBuriedSearchRadius, requiredTool: pool.MineBuriedRequiredTool}
+	return mineBuriedTask{
+		block:                block,
+		searchRadius:         pool.MineBuriedSearchRadius,
+		requiredTool:         pool.MineBuriedRequiredTool,
+		requiredToolEnchants: pool.MineBuriedRequiredToolEnchantments,
+	}
 }
 
 // craftTask poses crafting an item already craftable from held ingredients.

@@ -46,7 +46,14 @@ func TestParseFlagsRejectsMissingOrInvalidInput(t *testing.T) {
 		{"clear-area-radius over the fill limit", validArgs("-clear-area-radius", "40")},
 		{"malformed clone-area-from", validArgs("-clone-area-from", "not,a,point")},
 		{"clone-area-from with too few coordinates", validArgs("-clone-area-from", "1,2")},
-		{"clone-area-radius over the clone limit", validArgs("-clone-area-from", "0,-61,5000", "-clone-area-radius", "40")},
+		// mc-agent v0.0.52+ splits a box exceeding vanilla's 32,768-block
+		// /clone limit into multiple calls along Z (see validateFlags'
+		// own updated check), so only a radius whose single Z row
+		// ((2r+1)*(height+depth+1)) alone still exceeds the limit is
+		// rejected now - 40 (this test's old value, 81*8=648) comfortably
+		// fits in one row and no longer errors; 5000 (10001*8=80008) does
+		// not.
+		{"clone-area-radius over the clone limit even one Z row at a time", validArgs("-clone-area-from", "0,-61,5000", "-clone-area-radius", "5000")},
 		{"zero parallel-envs", validArgs("-parallel-envs", "0")},
 		{"negative parallel-envs", validArgs("-parallel-envs", "-1")},
 		{"zero shared-server-separation-chunks with -shared-server", validArgs("-shared-server", "-shared-server-separation-chunks", "0")},
@@ -82,6 +89,28 @@ func TestParseFlagsIgnoresSeparationChunksValidationWithoutSharedServer(t *testi
 	require.NoError(t, err, "-shared-server-separation-chunks is only validated when -shared-server is set")
 	assert.False(t, f.sharedServer)
 	assert.Equal(t, 0, f.sharedServerSeparationChunks)
+}
+
+// TestParseFlagsAcceptsCloneAreaRadiusWhoseFullBoxExceedsTheCloneLimit
+// confirms a radius whose whole box exceeds vanilla's 32,768-block /clone
+// limit, but whose single Z row doesn't, is accepted - mc-agent v0.0.52+'s
+// own cloneArea splits that box into multiple /clone calls along Z (see
+// validateFlags' own doc comment on its updated check). Radius
+// 32/height 4(default)/depth 8 is this run's own live values: the full
+// box is 65*65*13=54,925 blocks (over the limit in one call), one Z row
+// is 65*13=845 (comfortably under it) - found live, 2026-10-29, widening
+// -clone-area-radius to 32 so it covers mine_buried's own, larger search
+// radius (mine_buried_search_radius 24 against the old clone radius 16
+// left a third of its search volume with no ore ever possible).
+func TestParseFlagsAcceptsCloneAreaRadiusWhoseFullBoxExceedsTheCloneLimit(t *testing.T) {
+	_, err := parseFlags([]string{
+		"-checkpoint-dir", "/tmp/ckpt",
+		"-mc-agent-config", "/tmp/config.json",
+		"-clone-area-from", "0,-1,5000",
+		"-clone-area-radius", "32",
+		"-clone-area-depth", "8",
+	})
+	require.NoError(t, err)
 }
 
 func TestParseFlagsAcceptsValidInputAndDefaults(t *testing.T) {
@@ -777,14 +806,16 @@ func TestLoadCurriculumPoolReadsTheBuriedMiningKeys(t *testing.T) {
 		"target_offsets": [[5,0,0]],
 		"mine_buried_target_blocks": ["minecraft:coal_ore"],
 		"mine_buried_search_radius": 24,
-		"mine_buried_required_tool": "minecraft:wooden_pickaxe",
+		"mine_buried_required_tool": "minecraft:netherite_pickaxe",
+		"mine_buried_required_tool_enchantments": {"minecraft:efficiency": 5},
 		"chain_mine_target_blocks": ["minecraft:coal_ore"]
 	}`), 0o600))
 	pool, err := loadCurriculumPool(path)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"minecraft:coal_ore"}, pool.MineBuriedTargetBlocks)
 	assert.Equal(t, 24, pool.MineBuriedSearchRadius)
-	assert.Equal(t, "minecraft:wooden_pickaxe", pool.MineBuriedRequiredTool)
+	assert.Equal(t, "minecraft:netherite_pickaxe", pool.MineBuriedRequiredTool)
+	assert.Equal(t, map[string]int{"minecraft:efficiency": 5}, pool.MineBuriedRequiredToolEnchantments)
 	assert.Equal(t, []string{"minecraft:coal_ore"}, pool.ChainMineTargetBlocks)
 }
 

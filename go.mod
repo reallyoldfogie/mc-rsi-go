@@ -1,6 +1,6 @@
 module github.com/reallyoldfogie/mc-rsi-trainer
 
-go 1.27.0
+go 1.27.3
 
 exclude (
 	github.com/buger/jsonparser v1.1.1
@@ -11,7 +11,7 @@ require (
 	github.com/moby/moby/client v0.2.1
 	github.com/prometheus/client_golang v1.24.0
 	github.com/reallyoldfogie/cRL-go v0.14.2
-	github.com/reallyoldfogie/mc-agent v0.0.47
+	github.com/reallyoldfogie/mc-agent v0.0.52
 	github.com/reallyoldfogie/mc-bot-go v0.2.7
 	github.com/reallyoldfogie/mc-client-test-go v0.2.0
 	github.com/stretchr/testify v1.12.1

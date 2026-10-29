@@ -37,5 +37,10 @@
   "chain_goal_items": [
     "minecraft:bowl", "minecraft:chest", "minecraft:wooden_pickaxe"
   ],
-  "chain_search_radius": 8
+  "chain_search_radius": 8,
+  "mine_buried_target_blocks": ["minecraft:coal_ore"],
+  "mine_buried_search_radius": 24,
+  "mine_buried_required_tool": "minecraft:netherite_pickaxe",
+  "mine_buried_required_tool_enchantments": {"minecraft:efficiency": 5},
+  "chain_mine_target_blocks": ["minecraft:coal_ore"]
 }

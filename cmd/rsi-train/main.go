@@ -97,6 +97,9 @@ type flags struct {
 	cloneAreaRadius              int
 	cloneAreaHeight              int
 	cloneAreaDepth               int
+	seedTemplateOreCount         int
+	seedTemplateOreMinDepth      int
+	seedTemplateOreMaxDepth      int
 	autoResetOrigin              bool
 	parallelEnvs                 int
 	sharedServer                 bool
@@ -135,6 +138,9 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.cloneAreaRadius, "clone-area-radius", 0, "half-width/depth in blocks of both the template and every destination working area; 0 (the default) falls back to -clear-area-radius if that's set too, otherwise disables cloning even if -clone-area-from is set")
 	fs.IntVar(&f.cloneAreaHeight, "clone-area-height", 0, "blocks above -clone-area-from's own Y to include (the air-clearing portion); 0 (the default) uses 4, same as -clear-area-radius's own default")
 	fs.IntVar(&f.cloneAreaDepth, "clone-area-depth", 0, "blocks below -clone-area-from's own Y to include (the ground-healing portion -clear-area-radius never had); 0 (the default) uses 3")
+	fs.IntVar(&f.seedTemplateOreCount, "seed-template-ore-count", defaultSeedTemplateOreCount, "how many instances of each mine_buried/chain_mine target ore block (curriculum Pool.MineBuriedTargetBlocks + Pool.ChainMineTargetBlocks, deduplicated) to place inside the -clone-area-from template once at trainer startup, before any environment's first Reset clones from it - generalizes runs/buried-block-mining-2026-10-14/gen_template.py (which produced a one-block-type, hand-copy-into-RCON command list, and for at least one run was generated but never actually run) into a repeatable, idempotent startup step: positions are deterministic per block name, so repeat startups re-seed the same spots rather than accumulating stray ore. 0 disables (e.g. a template already seeded by some other means). Ignored unless -clone-area-from is also set and a curriculum config supplies at least one of those two block lists.")
+	fs.IntVar(&f.seedTemplateOreMinDepth, "seed-template-ore-min-depth", defaultSeedTemplateOreMinDepth, "shallowest depth, in blocks below -clone-area-from's own Y, -seed-template-ore-count's placements are drawn from - keep above 0 so ore still requires real digging, not an instantly-visible surface block")
+	fs.IntVar(&f.seedTemplateOreMaxDepth, "seed-template-ore-max-depth", defaultSeedTemplateOreMaxDepth, "deepest depth, in blocks below -clone-area-from's own Y, -seed-template-ore-count's placements are drawn from; a band wider than -seed-template-ore-min-depth spreads ore across several Y layers instead of one fixed plane a policy could otherwise learn to target by Y alone")
 	fs.BoolVar(&f.autoResetOrigin, "auto-reset-origin", false, "if RCON is configured and -mc-agent-config didn't already set env.use_reset_origin, teleport back to the bot's actual spawn position every episode (via a captured Config.ResetOrigin) plus a small default Config.Jitter, instead of letting the goto task's target drift from wherever the previous episode ended — see run's own doc comment for why this exists. Opt-in: false preserves every existing config's behavior unchanged.")
 	fs.IntVar(&f.parallelEnvs, "parallel-envs", 1, "number of concurrent live Minecraft environments to train against (see docs/plans/08-parallel-environments-and-scaling.md); each needs its own already-running server — addresses/RCON/bot usernames beyond the first are derived from -mc-agent-config via pkg/parallelenv.DeriveSettings. 1 (the default) preserves single-environment behavior exactly.")
 	fs.BoolVar(&f.sharedServer, "shared-server", false, "run all -parallel-envs bots against ONE already-running server instead of one server each, each confined to its own working area (see -shared-server-separation-chunks). Requires RCON to be configured. The operator is responsible for launching that server with a reduced VIEW_DISTANCE/SIMULATION_DISTANCE (e.g. 4-6) small enough not to overlap adjacent bots' working areas.")
@@ -208,8 +214,18 @@ func parseFlags(args []string) (flags, error) {
 		if depth <= 0 {
 			depth = defaultCloneAreaDepthBlocks
 		}
-		if r < 0 || (2*r+1)*(2*r+1)*(height+depth+1) > 32768 {
-			return flags{}, fmt.Errorf("rsi-train: -clone-area-radius/-clone-area-height/-clone-area-depth combination is too large (vanilla's clone command caps at 32768 blocks): radius %d, height %d, depth %d", r, height, depth)
+		// Only a single Z row ((2r+1) x (height+depth+1)) needs to fit
+		// under vanilla's 32,768-block /clone limit, not the whole box:
+		// mc-agent's own cloneArea (rlenv v0.0.52+) splits a box that
+		// exceeds the limit into multiple /clone calls along Z, same cap,
+		// same mechanism -clear-area-radius's single /fill call still
+		// needs the whole box to fit (see that flag's own check above) -
+		// found live, 2026-10-29, widening -clone-area-radius to 32 so it
+		// covers mine_buried's own, larger search radius: the full
+		// radius-32/height-4/depth-8 box is 54,925 blocks, over the limit
+		// in one call, but a single Z row of it is only 845.
+		if r < 0 || (2*r+1)*(height+depth+1) > 32768 {
+			return flags{}, fmt.Errorf("rsi-train: -clone-area-radius/-clone-area-height/-clone-area-depth combination is too large even one Z row at a time (vanilla's clone command caps at 32768 blocks, and mc-agent's own Z-band splitting needs at least one row to fit): radius %d, height %d, depth %d", r, height, depth)
 		}
 	}
 	if f.parallelEnvs <= 0 {
@@ -320,7 +336,7 @@ func run(args []string) error {
 		return fmt.Errorf("rsi-train: one SSH tunnel can support multiple environments only with -shared-server")
 	}
 
-	connected, sharedOriginBase, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumPool, f.packetLogDir(), f.episodeLimits())
+	connected, sharedOriginBase, err := connectEnvironments(ctx, mcSettings, initialParallelEnvs, f.autoResetOrigin, f.sharedServer, f.sharedServerSeparationChunks, curriculumPool, f.packetLogDir(), f.episodeLimits(), f.templateSeedConfig(curriculumPool))
 	if err != nil {
 		return err
 	}
@@ -2101,13 +2117,32 @@ func (f flags) packetLogDir() string {
 // On a mid-loop failure, every already-connected agent is closed before
 // the error is returned, so a partial connect never leaks live bot
 // sessions.
-func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits) ([]connectedEnvironment, [3]float64, error) {
+func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, autoResetOrigin, sharedServer bool, separationChunks int, curriculumPool *curriculum.Pool, trainingDataDir string, limits episodeLimits, seedConfig templateSeedConfig) ([]connectedEnvironment, [3]float64, error) {
 	if sharedServer {
 		if base.RCON.Address == "" {
 			return nil, [3]float64{}, fmt.Errorf("rsi-train: -shared-server requires RCON to be configured in -mc-agent-config")
 		}
 		if err := applySharedServerGamerules(ctx, base.RCON.Address, base.RCON.Password); err != nil {
 			return nil, [3]float64{}, fmt.Errorf("applying shared-server gamerules: %w", err)
+		}
+	}
+	// Runs once, before any bot connects or clones from the template -
+	// same placement rationale as applySharedServerGamerules above, but
+	// gated on -clone-area-from being set rather than -shared-server
+	// (single-environment -clone-area-from runs need this too; see
+	// templateSeedConfig's own doc comment for why it's not folded into
+	// episodeLimits). base.RCON is used even outside -shared-server: with
+	// multiple non-shared environments (separate servers each),
+	// base.RCON only reaches the first one's server - a known gap, not
+	// yet a real one since every run using -clone-area-from so far also
+	// uses -shared-server.
+	if seedConfig.cloneAreaFrom != nil {
+		// -clone-area-from itself already requires RCON (its own /clone
+		// every Reset issues needs it) - no separate check here, DialRCON
+		// below fails clearly on its own if that requirement was somehow
+		// missed.
+		if err := seedTemplateOres(ctx, base.RCON.Address, base.RCON.Password, *seedConfig.cloneAreaFrom, seedConfig.cloneAreaRadius, seedConfig.oreBlocks, seedConfig.oreCount, seedConfig.oreMinDepth, seedConfig.oreMaxDepth); err != nil {
+			return nil, [3]float64{}, fmt.Errorf("seeding clone-area-from template ore: %w", err)
 		}
 	}
 	return connectEnvironmentRange(ctx, base, 0, n, n, autoResetOrigin, sharedServer, separationChunks, curriculumPool, trainingDataDir, limits, nil)

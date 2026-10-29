@@ -33,10 +33,11 @@ type curriculumPoolJSON struct {
 
 	// MineBuried*/ChainMineTargetBlocks pose docs/plans/14's two buried-
 	// block task kinds ("mine_buried" and "chain_buried_mining").
-	MineBuriedTargetBlocks []string `json:"mine_buried_target_blocks"`
-	MineBuriedSearchRadius int      `json:"mine_buried_search_radius"`
-	MineBuriedRequiredTool string   `json:"mine_buried_required_tool"`
-	ChainMineTargetBlocks  []string `json:"chain_mine_target_blocks"`
+	MineBuriedTargetBlocks             []string       `json:"mine_buried_target_blocks"`
+	MineBuriedSearchRadius             int            `json:"mine_buried_search_radius"`
+	MineBuriedRequiredTool             string         `json:"mine_buried_required_tool"`
+	MineBuriedRequiredToolEnchantments map[string]int `json:"mine_buried_required_tool_enchantments"`
+	ChainMineTargetBlocks              []string       `json:"chain_mine_target_blocks"`
 }
 
 // loadCurriculumPool reads path as curriculumPoolJSON and converts it
@@ -67,9 +68,10 @@ func loadCurriculumPool(path string) (curriculum.Pool, error) {
 		ChainGoalItems:     cfg.ChainGoalItems,
 		ChainSearchRadius:  cfg.ChainSearchRadius,
 
-		MineBuriedTargetBlocks: cfg.MineBuriedTargetBlocks,
-		MineBuriedSearchRadius: cfg.MineBuriedSearchRadius,
-		MineBuriedRequiredTool: cfg.MineBuriedRequiredTool,
-		ChainMineTargetBlocks:  cfg.ChainMineTargetBlocks,
+		MineBuriedTargetBlocks:             cfg.MineBuriedTargetBlocks,
+		MineBuriedSearchRadius:             cfg.MineBuriedSearchRadius,
+		MineBuriedRequiredTool:             cfg.MineBuriedRequiredTool,
+		MineBuriedRequiredToolEnchantments: cfg.MineBuriedRequiredToolEnchantments,
+		ChainMineTargetBlocks:              cfg.ChainMineTargetBlocks,
 	}, nil
 }
