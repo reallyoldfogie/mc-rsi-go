@@ -84,6 +84,21 @@ const (
 	// ProvenanceLeapfrog for that later generation, while staying
 	// Recurrent, since warm-starting only ever happens once per lineage.
 	ProvenanceWarmStarted Provenance = "warm-started"
+
+	// ProvenanceExpanded is a generation produced by cmd/expand-checkpoint
+	// applying cRL-go's actorcritic.ExpandParams/ExpandRecurrentParams to
+	// a generation from another (or, in principle, this same) lineage
+	// directory - the same "fresh generation 0 in its own output
+	// directory, source lineage untouched" shape as ProvenanceWidened/
+	// ProvenanceDeepened, and for the same reasons. Unlike those two,
+	// most callers never need this command at all: Load itself already
+	// expands a smaller actions=/obs() shape transparently on ordinary
+	// resume (see PlainCodec/RecurrentCodec's own "Expanding" loaders),
+	// with no new generation record of any kind - this Provenance value
+	// exists only for cmd/expand-checkpoint's own explicit, offline
+	// conversion, e.g. to inspect or hand off a reshaped checkpoint
+	// without resuming training against it.
+	ProvenanceExpanded Provenance = "expanded"
 )
 
 // Record is the RSI-specific metadata for one generation, stored
@@ -163,7 +178,7 @@ func (rec Record) Validate() error {
 				rec.Generation, rec.Provenance,
 			)
 		}
-	case ProvenanceWidened, ProvenanceDeepened, ProvenanceWarmStarted:
+	case ProvenanceWidened, ProvenanceDeepened, ProvenanceWarmStarted, ProvenanceExpanded:
 		if rec.SeededFromGeneration != -1 {
 			return fmt.Errorf(
 				"lineage: generation %d has provenance %q but a seeded-from generation %d set",
@@ -210,11 +225,16 @@ type Codec[P any] struct {
 
 // PlainCodec is the Codec for ordinary actorcritic.Params generations —
 // every generation saved before recurrence existed, and the default for
-// any caller that doesn't train recurrently.
+// any caller that doesn't train recurrently. Load is the "Expanding"
+// variant (not plain LoadFile): a saved generation whose EnvironmentID
+// differs from what's asked for only by a smaller actions=/obs() count
+// (see actorcritic.ExpandTarget) is widened to fit, zero-padded, rather
+// than rejected outright - see Load's own doc comment below for why
+// this is never a risk for a genuinely different architecture.
 var PlainCodec = Codec[*actorcritic.Params]{
 	Suffix: "",
 	Save:   actorcritic.SaveFile,
-	Load:   actorcritic.LoadFile,
+	Load:   actorcritic.LoadFileExpanding,
 }
 
 // RecurrentCodec is the Codec for actorcritic.RecurrentParams
@@ -222,12 +242,13 @@ var PlainCodec = Codec[*actorcritic.Params]{
 // function (the one API asymmetry Part B's checkpoint design left
 // between the two params types), so Save needs a one-line wrapper
 // rather than assigning the method directly the way PlainCodec does.
+// Load is the "Expanding" variant, same reasoning as PlainCodec's own.
 var RecurrentCodec = Codec[*actorcritic.RecurrentParams]{
 	Suffix: "-recurrent",
 	Save: func(path string, p *actorcritic.RecurrentParams, environmentID string, metadata checkpoint.Metadata) error {
 		return p.SaveFile(path, environmentID, metadata)
 	},
-	Load: actorcritic.RecurrentLoadFile,
+	Load: actorcritic.RecurrentLoadFileExpanding,
 }
 
 // Save persists params as a cRL-go checkpoint (via codec) and rec as its
@@ -304,12 +325,21 @@ func writeRecordAtomically(path string, rec Record) error {
 
 // Load reads back the cRL-go checkpoint (via codec) and lineage record
 // previously written by Save for the given generation under dir,
-// rejecting the pair if the record's own Generation or EnvironmentID
-// don't match what was asked for. Pass PlainCodec/RecurrentCodec
-// matching whichever codec Save was given - a mismatch (e.g. loading a
-// recurrent generation with PlainCodec) looks for the wrong params
-// filename and fails with an ordinary "file not found" error, since
-// Record.Recurrent (see Latest) is what tells a caller which one to pass.
+// rejecting the pair if the record's own Generation doesn't match what
+// was asked for, or if its EnvironmentID doesn't match and isn't a
+// smaller-actions=/obs()-only difference codec.Load's own "Expanding"
+// loader can widen to fit (see actorcritic.ExpandTarget) - genuinely
+// incompatible IDs (a shrink, or a difference anywhere else in the
+// string, which for this repo's own EnvironmentID convention always
+// means a real architecture difference, e.g. two competition entrants'
+// own distinct prefixes) still fail exactly as before, just inside
+// codec.Load rather than here, so the error message names the actual
+// params file rather than just the record. Pass PlainCodec/
+// RecurrentCodec matching whichever codec Save was given - a mismatch
+// (e.g. loading a recurrent generation with PlainCodec) looks for the
+// wrong params filename and fails with an ordinary "file not found"
+// error, since Record.Recurrent (see Latest) is what tells a caller
+// which one to pass.
 func Load[P any](dir string, generation int, environmentID string, codec Codec[P]) (P, Record, error) {
 	var zero P
 	recordFile, err := os.Open(recordPath(dir, generation))
@@ -328,10 +358,12 @@ func Load[P any](dir string, generation int, environmentID string, codec Codec[P
 		)
 	}
 	if rec.EnvironmentID != environmentID {
-		return zero, Record{}, fmt.Errorf(
-			"lineage: generation %d saved for environment %q, want %q",
-			generation, rec.EnvironmentID, environmentID,
-		)
+		if _, _, expandable := actorcritic.ExpandTarget(rec.EnvironmentID, environmentID); !expandable {
+			return zero, Record{}, fmt.Errorf(
+				"lineage: generation %d saved for environment %q, want %q",
+				generation, rec.EnvironmentID, environmentID,
+			)
+		}
 	}
 
 	params, _, err := codec.Load(paramsPath(dir, generation, codec.Suffix), environmentID)

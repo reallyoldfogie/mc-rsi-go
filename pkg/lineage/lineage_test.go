@@ -264,3 +264,53 @@ func TestLatestIgnoresUnrelatedFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, latest.Generation)
 }
+
+// TestLoadExpandsAGrownObservationActionShapeAutomatically is Load's
+// own half of the "resume without a manual conversion step" requirement
+// (actorcritic.ExpandTarget/ExpandParams, PlainCodec/RecurrentCodec's
+// own "Expanding" loaders): a generation saved against a smaller
+// actions=/obs() shape loads successfully, already reshaped, rather
+// than failing the way TestLoadRejectsEnvironmentMismatch's genuinely
+// different environment does.
+func TestLoadExpandsAGrownObservationActionShapeAutomatically(t *testing.T) {
+	dir := t.TempDir()
+	rng := rand.New(rand.NewPCG(1, 2))
+	params := actorcritic.NewParams(rng, 25, 8, 5, 2)
+	require.NoError(t, Save(dir, params, rootRecord("mc-agent-rlenv:actions=5:obs=25"), PlainCodec))
+
+	loaded, rec, err := Load(dir, 0, "mc-agent-rlenv:actions=19:obs=76", PlainCodec)
+	require.NoError(t, err)
+	assert.Equal(t, 76, loaded.InputSize())
+	assert.Equal(t, 19, loaded.OutputSize())
+	assert.Equal(t, 0, rec.Generation)
+}
+
+// TestLoadExpandsARecurrentGenerationAutomatically is the same check
+// against RecurrentCodec.
+func TestLoadExpandsARecurrentGenerationAutomatically(t *testing.T) {
+	dir := t.TempDir()
+	rng := rand.New(rand.NewPCG(3, 4))
+	params := actorcritic.NewRecurrentParams(rng, 25, 8, 5, 2)
+	rec := rootRecord("mc-agent-rlenv:actions=5:obs=25")
+	rec.Recurrent = true
+	require.NoError(t, Save(dir, params, rec, RecurrentCodec))
+
+	loaded, _, err := Load(dir, 0, "mc-agent-rlenv:actions=19:obs=76", RecurrentCodec)
+	require.NoError(t, err)
+	assert.Equal(t, 76, loaded.PolicyTrunk.InputSize())
+	assert.Equal(t, 19, loaded.PolicyTrunk.OutputSize())
+}
+
+// TestLoadStillRejectsAShrunkenShape confirms the plan's own explicit
+// requirement held through this integration too: a checkpoint bigger
+// than what's now expected is a hard error, same as before, not a
+// silent truncation.
+func TestLoadStillRejectsAShrunkenShape(t *testing.T) {
+	dir := t.TempDir()
+	rng := rand.New(rand.NewPCG(5, 6))
+	params := actorcritic.NewParams(rng, 76, 8, 19, 2)
+	require.NoError(t, Save(dir, params, rootRecord("mc-agent-rlenv:actions=19:obs=76"), PlainCodec))
+
+	_, _, err := Load(dir, 0, "mc-agent-rlenv:actions=5:obs=25", PlainCodec)
+	assert.Error(t, err)
+}
