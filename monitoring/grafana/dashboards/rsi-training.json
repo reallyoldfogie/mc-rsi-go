@@ -44,7 +44,7 @@
       },
       "targets": [
         {
-          "expr": "up{job=\"rsi-train\"}",
+          "expr": "up{job=\"$trainer_job\"}",
           "refId": "A"
         }
       ],
@@ -1292,7 +1292,7 @@
       },
       "targets": [
         {
-          "expr": "rate(process_cpu_seconds_total{job=\"rsi-train\"}[1m])",
+          "expr": "rate(process_cpu_seconds_total{job=\"$trainer_job\"}[1m])",
           "refId": "A",
           "legendFormat": "CPU cores"
         }
@@ -1333,12 +1333,12 @@
       },
       "targets": [
         {
-          "expr": "process_resident_memory_bytes{job=\"rsi-train\"}",
+          "expr": "process_resident_memory_bytes{job=\"$trainer_job\"}",
           "refId": "A",
           "legendFormat": "RSS"
         },
         {
-          "expr": "go_memstats_heap_alloc_bytes{job=\"rsi-train\"}",
+          "expr": "go_memstats_heap_alloc_bytes{job=\"$trainer_job\"}",
           "refId": "B",
           "legendFormat": "heap in use"
         }
@@ -1380,7 +1380,7 @@
       },
       "targets": [
         {
-          "expr": "go_goroutines{job=\"rsi-train\"}",
+          "expr": "go_goroutines{job=\"$trainer_job\"}",
           "refId": "A",
           "legendFormat": "goroutines"
         }
@@ -1977,6 +1977,21 @@
         "type": "datasource",
         "query": "prometheus",
         "current": {},
+        "hide": 0
+      },
+      {
+        "name": "trainer_job",
+        "type": "query",
+        "label": "Trainer job",
+        "description": "Which Prometheus scrape job the Process panels (CPU usage, memory usage, goroutines, up/down) read from. Two jobs are always configured - rsi-train (plain trainer, :9400) and rsi-train-recurrent (recurrent trainer, :9401) - but normally only one is actually running. A job-agnostic query like job=~\"rsi-train.*\" returns one `up` series per configured job (one real, one permanently down) with nothing on the panel distinguishing which is which (found live 2026-10-25) - this variable picks a single explicit job instead, so each Process panel shows exactly one series. Populated from Prometheus's own up{} series (label_values), not hardcoded, so a future third job shows up here automatically.",
+        "query": "label_values(up, job)",
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {},
+        "options": [],
         "hide": 0
       },
       {
