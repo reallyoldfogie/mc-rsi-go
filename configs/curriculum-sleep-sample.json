@@ -1,0 +1,9 @@
+{
+  "_comment": "Minimal curriculum for validating the Sleep action (mc-agent docs/plans/SLEEP_ACTION_PLAN.md) in real training, not just live protocol tests. Deliberately isolated to just a goto task + sleep_search_radius, rather than the full production task mix, so Sleep's own legality/reward signal isn't diluted by mine/craft noise while checking it. SleepSearchRadius is cross-cutting (rlenv.Config.SleepSearchRadius, injected centrally by rlenvadapter.TaskSelector) - it turns ActionSleep on for every episode this pool poses, whatever task Select picks, which here is only ever goto.",
+  "target_offsets": [
+    [5, 0, 0], [-5, 0, 0], [0, 0, 5], [0, 0, -5],
+    [4, 0, 4], [-4, 0, 4], [4, 0, -4], [-4, 0, -4],
+    [8, 0, 0], [0, 0, 8]
+  ],
+  "sleep_search_radius": 10
+}
