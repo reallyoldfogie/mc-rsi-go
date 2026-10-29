@@ -1801,7 +1801,13 @@ func loadResumableStudent(interimDir, environmentID string, parentGeneration int
 		return nil, -1, checkpoint.Metadata{}
 	}
 
-	params, metadata, err := actorcritic.LoadFile(filepath.Join(interimDir, newestName), environmentID)
+	// LoadFileExpanding, not LoadFile: an interim/final checkpoint saved
+	// for a smaller mc-agent observation/action shape is zero-padded up
+	// to the current one instead of refusing to resume (see
+	// lineage.PlainCodec's own doc comment on the same choice for
+	// generation checkpoints - this path is the interim-checkpoint
+	// sibling of that one, not covered by pkg/lineage at all).
+	params, metadata, err := actorcritic.LoadFileExpanding(filepath.Join(interimDir, newestName), environmentID)
 	if err != nil {
 		return nil, -1, checkpoint.Metadata{}
 	}
@@ -1835,7 +1841,9 @@ func loadResumableRecurrentStudent(interimDir, environmentID string, parentGener
 	if newestName == "" {
 		return nil, -1, checkpoint.Metadata{}
 	}
-	params, metadata, err := actorcritic.RecurrentLoadFile(filepath.Join(interimDir, newestName), environmentID)
+	// RecurrentLoadFileExpanding, not RecurrentLoadFile - see the plain
+	// loadResumableStudent's own comment above for why.
+	params, metadata, err := actorcritic.RecurrentLoadFileExpanding(filepath.Join(interimDir, newestName), environmentID)
 	if err != nil {
 		return nil, -1, checkpoint.Metadata{}
 	}
