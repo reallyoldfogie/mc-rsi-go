@@ -7,6 +7,16 @@ exclude (
 	golang.org/x/crypto v0.54.0
 )
 
+// Temporary local replace for the Sleep Action Plan's cross-repo wiring
+// (docs/plans/SLEEP_ACTION_PLAN.md, local/untracked on both sides) -
+// mc-agent's own sleep-action branch merged to its local master
+// (2026-10-29) but isn't tagged/published yet, and that branch's own
+// worktree was deleted once merged there, so this points at the main
+// checkout directly rather than the now-gone worktree path. Remove once
+// a tagged mc-agent release includes Sleep, same convention
+// combat-competition's own go.mod used for an identical reason.
+replace github.com/reallyoldfogie/mc-agent => /home/reallyoldfogie/src/github.com/reallyoldfogie/mc-agent
+
 require (
 	github.com/moby/moby/client v0.2.1
 	github.com/prometheus/client_golang v1.24.0
@@ -42,7 +52,7 @@ require (
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/moby/api v1.52.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/ollama/ollama v0.20.7 // indirect
+	github.com/ollama/ollama v0.40.8 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect

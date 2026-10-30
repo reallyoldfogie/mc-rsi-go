@@ -401,6 +401,21 @@ func Select(pool curriculum.Pool, rng *rand.Rand) Task {
 // that). Each call draws a fresh Task via Select and converts it.
 func TaskSelector(pool curriculum.Pool, rng *rand.Rand) rlenv.TaskSelector {
 	return func(int, *oldrand.Rand) rlenv.TaskOverride {
-		return Select(pool, rng).ToOverride()
+		override := Select(pool, rng).ToOverride()
+		// SleepSearchRadius is deliberately injected here, after whatever
+		// task-specific ToOverride() built, rather than added to each
+		// task type's own override literal individually: unlike
+		// MineTargetBlock/CraftTargetItem (each task's own thing to
+		// pose), ActionSleep is structurally always available as a
+		// general-purpose defensive option DURING any other active task
+		// (docs/plans/SLEEP_ACTION_PLAN.md, local/untracked) - it needs
+		// to flow through regardless of which task type Select picked
+		// this episode, not just a dedicated sleep task. Zero (the
+		// default, since pool.SleepSearchRadius is never set by
+		// configs/curriculum.json's own active pool - see that field's
+		// own doc comment) leaves every episode's sleep capability off,
+		// exactly as before this existed.
+		override.SleepSearchRadius = pool.SleepSearchRadius
+		return override
 	}
 }

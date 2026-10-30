@@ -38,6 +38,11 @@ type curriculumPoolJSON struct {
 	MineBuriedRequiredTool             string         `json:"mine_buried_required_tool"`
 	MineBuriedRequiredToolEnchantments map[string]int `json:"mine_buried_required_tool_enchantments"`
 	ChainMineTargetBlocks              []string       `json:"chain_mine_target_blocks"`
+
+	// SleepSearchRadius (docs/plans/SLEEP_ACTION_PLAN.md, local/untracked)
+	// - see curriculum.Pool.SleepSearchRadius's own doc comment. Left
+	// unset (0) in configs/curriculum.json's active pool.
+	SleepSearchRadius int `json:"sleep_search_radius"`
 }
 
 // loadCurriculumPool reads path as curriculumPoolJSON and converts it
@@ -73,5 +78,7 @@ func loadCurriculumPool(path string) (curriculum.Pool, error) {
 		MineBuriedRequiredTool:             cfg.MineBuriedRequiredTool,
 		MineBuriedRequiredToolEnchantments: cfg.MineBuriedRequiredToolEnchantments,
 		ChainMineTargetBlocks:              cfg.ChainMineTargetBlocks,
+
+		SleepSearchRadius: cfg.SleepSearchRadius,
 	}, nil
 }
