@@ -18,6 +18,12 @@
 /cmd/*/libraries/
 /cmd/*/logs/
 /cmd/*/versions/
+# Same reasoning, for pkg/pvp's and pkg/tournament's own live tests
+# (pkg/pvp/run_live_test.go) - EnsureServer writes these relative to
+# whatever package directory go test happens to run from.
+/pkg/*/libraries/
+/pkg/*/logs/
+/pkg/*/versions/
 /libraries/
 /versions/
 /logs/

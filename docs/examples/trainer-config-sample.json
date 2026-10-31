@@ -1,0 +1,16 @@
+{
+  "rollout_size": 2,
+  "episode_len": 30,
+  "gamma": 0.99,
+  "learning_rate": 0.05,
+  "grid_size": 1,
+  "hidden_size": 8,
+  "seed": 42,
+  "workers": 1,
+  "clip_eps": 0.2,
+  "entropy_coef": 0.01,
+  "value_coef": 0.5,
+  "gae_lambda": 0.95,
+  "ppo_epochs": 1,
+  "minibatch_size": 2
+}

@@ -8,6 +8,7 @@ exclude (
 )
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/moby/moby/client v0.2.1
 	github.com/prometheus/client_golang v1.24.0
 	github.com/reallyoldfogie/cRL-go v0.15.0
@@ -34,9 +35,9 @@ require (
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorcon/rcon v1.4.0 // indirect
 	github.com/iancoleman/strcase v0.2.0 // indirect
+	github.com/kylelemons/godebug v1.1.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/maxsupermanhd/go-mc-ms-auth v0.0.0-20230820124717-22f4d907eac4 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
