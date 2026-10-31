@@ -7,21 +7,11 @@ exclude (
 	golang.org/x/crypto v0.54.0
 )
 
-// Temporary local replace for the Sleep Action Plan's cross-repo wiring
-// (docs/plans/SLEEP_ACTION_PLAN.md, local/untracked on both sides) -
-// mc-agent's own sleep-action branch merged to its local master
-// (2026-10-29) but isn't tagged/published yet, and that branch's own
-// worktree was deleted once merged there, so this points at the main
-// checkout directly rather than the now-gone worktree path. Remove once
-// a tagged mc-agent release includes Sleep, same convention
-// combat-competition's own go.mod used for an identical reason.
-replace github.com/reallyoldfogie/mc-agent => /home/reallyoldfogie/src/github.com/reallyoldfogie/mc-agent
-
 require (
 	github.com/moby/moby/client v0.2.1
 	github.com/prometheus/client_golang v1.24.0
 	github.com/reallyoldfogie/cRL-go v0.15.0
-	github.com/reallyoldfogie/mc-agent v0.0.52
+	github.com/reallyoldfogie/mc-agent v0.0.53
 	github.com/reallyoldfogie/mc-bot-go v0.2.7
 	github.com/reallyoldfogie/mc-client-test-go v0.2.0
 	github.com/stretchr/testify v1.12.1
