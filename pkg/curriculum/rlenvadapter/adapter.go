@@ -693,6 +693,292 @@ func (followFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 	return followTask{playerName: pool.FollowTargetPlayerNames[rng.IntN(len(pool.FollowTargetPlayerNames))]}
 }
 
+// equipTask poses equipping (and optionally using) a held/worn item.
+type equipTask struct{ item string }
+
+func (t equipTask) Name() string            { return "equip" }
+func (t equipTask) GoalDescription() string { return "equip " + shortName(t.item) }
+func (t equipTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{GoToTargetDisabled: true, EquipTargetItem: t.item}
+}
+
+type equipFactory struct{}
+
+func (equipFactory) Kind() string { return "equip" }
+
+func (equipFactory) Available(pool curriculum.Pool) bool { return len(pool.EquipTargetItems) > 0 }
+func (equipFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return equipTask{item: pool.EquipTargetItems[rng.IntN(len(pool.EquipTargetItems))]}
+}
+
+// pickupTask poses collecting a named ground item.
+type pickupTask struct {
+	item         string
+	searchRadius int
+}
+
+func (t pickupTask) Name() string            { return "pickup" }
+func (t pickupTask) GoalDescription() string { return "pickup " + shortName(t.item) }
+func (t pickupTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled: true,
+		PickupTargetItem:   t.item,
+		PickupSearchRadius: t.searchRadius,
+	}
+}
+
+type pickupFactory struct{}
+
+func (pickupFactory) Kind() string { return "pickup" }
+
+func (pickupFactory) Available(pool curriculum.Pool) bool { return len(pool.PickupTargetItems) > 0 }
+func (pickupFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return pickupTask{
+		item:         pool.PickupTargetItems[rng.IntN(len(pool.PickupTargetItems))],
+		searchRadius: pool.PickupSearchRadius,
+	}
+}
+
+// pickupAnyTask poses collecting whatever item is nearest, regardless of content.
+type pickupAnyTask struct{ searchRadius int }
+
+func (t pickupAnyTask) Name() string            { return "pickup_any" }
+func (t pickupAnyTask) GoalDescription() string { return "pickup any nearby item" }
+func (t pickupAnyTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled: true,
+		PickupAnyItem:      true,
+		PickupSearchRadius: t.searchRadius,
+	}
+}
+
+type pickupAnyFactory struct{}
+
+func (pickupAnyFactory) Kind() string { return "pickup_any" }
+
+func (pickupAnyFactory) Available(pool curriculum.Pool) bool { return pool.PickupAnyItem }
+func (pickupAnyFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return pickupAnyTask{searchRadius: pool.PickupSearchRadius}
+}
+
+// placeTask poses standalone block/item placement outside a chain episode.
+type placeTask struct{ item string }
+
+func (t placeTask) Name() string            { return "place" }
+func (t placeTask) GoalDescription() string { return "place " + shortName(t.item) }
+func (t placeTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{GoToTargetDisabled: true, PlaceTargetItem: t.item}
+}
+
+type placeFactory struct{}
+
+func (placeFactory) Kind() string { return "place" }
+
+func (placeFactory) Available(pool curriculum.Pool) bool { return len(pool.PlaceTargetItems) > 0 }
+func (placeFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return placeTask{item: pool.PlaceTargetItems[rng.IntN(len(pool.PlaceTargetItems))]}
+}
+
+// flyTask poses elytra flight to an offset target.
+type flyTask struct {
+	offset        [3]float64
+	arrivalRadius float64
+}
+
+func (t flyTask) Name() string { return "fly" }
+func (t flyTask) GoalDescription() string {
+	return fmt.Sprintf("fly to (%+.0f, %+.0f, %+.0f) from spawn", t.offset[0], t.offset[1], t.offset[2])
+}
+func (t flyTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled: true,
+		FlyTargetOffset:    t.offset,
+		FlyTargetActive:    true,
+		FlyArrivalRadius:   t.arrivalRadius,
+	}
+}
+
+type flyFactory struct{}
+
+func (flyFactory) Kind() string { return "fly" }
+
+func (flyFactory) Available(pool curriculum.Pool) bool { return len(pool.FlyTargetOffsets) > 0 }
+func (flyFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return flyTask{
+		offset:        pool.FlyTargetOffsets[rng.IntN(len(pool.FlyTargetOffsets))],
+		arrivalRadius: pool.FlyArrivalRadius,
+	}
+}
+
+// rideTask poses mounting/dismounting/jumping a vehicle.
+type rideTask struct {
+	vehicleType  string
+	searchRadius int
+}
+
+func (t rideTask) Name() string            { return "ride" }
+func (t rideTask) GoalDescription() string { return "ride " + shortName(t.vehicleType) }
+func (t rideTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled: true,
+		RideVehicleType:    t.vehicleType,
+		RideSearchRadius:   t.searchRadius,
+	}
+}
+
+type rideFactory struct{}
+
+func (rideFactory) Kind() string { return "ride" }
+
+func (rideFactory) Available(pool curriculum.Pool) bool { return len(pool.RideVehicleTypes) > 0 }
+func (rideFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return rideTask{
+		vehicleType:  pool.RideVehicleTypes[rng.IntN(len(pool.RideVehicleTypes))],
+		searchRadius: pool.RideSearchRadius,
+	}
+}
+
+// combatTask poses fighting a mob type via ActionCombat.
+type combatTask struct {
+	mobType        string
+	radius         float64
+	includePlayers bool
+	includeNeutral bool
+}
+
+func (t combatTask) Name() string            { return "combat" }
+func (t combatTask) GoalDescription() string { return "combat " + shortName(t.mobType) }
+func (t combatTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:   true,
+		CombatTargetMobType:  t.mobType,
+		CombatRadius:         t.radius,
+		CombatIncludePlayers: t.includePlayers,
+		CombatIncludeNeutral: t.includeNeutral,
+	}
+}
+
+type combatFactory struct{}
+
+func (combatFactory) Kind() string { return "combat" }
+
+func (combatFactory) Available(pool curriculum.Pool) bool { return len(pool.CombatTargetMobTypes) > 0 }
+func (combatFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return combatTask{
+		mobType:        pool.CombatTargetMobTypes[rng.IntN(len(pool.CombatTargetMobTypes))],
+		radius:         pool.CombatRadius,
+		includePlayers: pool.CombatIncludePlayers,
+		includeNeutral: pool.CombatIncludeNeutral,
+	}
+}
+
+// creeperGunpowderTask poses the hardcoded creeper-for-gunpowder encounter.
+type creeperGunpowderTask struct{ radius float64 }
+
+func (t creeperGunpowderTask) Name() string            { return "creeper_gunpowder" }
+func (t creeperGunpowderTask) GoalDescription() string { return "kill creeper for gunpowder" }
+func (t creeperGunpowderTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:     true,
+		CreeperGunpowderActive: true,
+		CreeperGunpowderRadius: t.radius,
+	}
+}
+
+type creeperGunpowderFactory struct{}
+
+func (creeperGunpowderFactory) Kind() string { return "creeper_gunpowder" }
+
+func (creeperGunpowderFactory) Available(pool curriculum.Pool) bool {
+	return pool.CreeperGunpowderActive
+}
+func (creeperGunpowderFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return creeperGunpowderTask{radius: pool.CreeperGunpowderRadius}
+}
+
+// spearChargeTask poses a spear-charge approach against a mob type.
+type spearChargeTask struct {
+	mobType string
+	radius  float64
+}
+
+func (t spearChargeTask) Name() string            { return "spear_charge" }
+func (t spearChargeTask) GoalDescription() string { return "spear charge " + shortName(t.mobType) }
+func (t spearChargeTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:       true,
+		SpearChargeTargetMobType: t.mobType,
+		SpearChargeRadius:        t.radius,
+	}
+}
+
+type spearChargeFactory struct{}
+
+func (spearChargeFactory) Kind() string { return "spear_charge" }
+
+func (spearChargeFactory) Available(pool curriculum.Pool) bool {
+	return len(pool.SpearChargeTargetMobTypes) > 0
+}
+func (spearChargeFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return spearChargeTask{
+		mobType: pool.SpearChargeTargetMobTypes[rng.IntN(len(pool.SpearChargeTargetMobTypes))],
+		radius:  pool.SpearChargeRadius,
+	}
+}
+
+// maceSmashTask poses a mace-smash approach against a mob type.
+type maceSmashTask struct {
+	mobType string
+	radius  float64
+}
+
+func (t maceSmashTask) Name() string            { return "mace_smash" }
+func (t maceSmashTask) GoalDescription() string { return "mace smash " + shortName(t.mobType) }
+func (t maceSmashTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:     true,
+		MaceSmashTargetMobType: t.mobType,
+		MaceSmashRadius:        t.radius,
+	}
+}
+
+type maceSmashFactory struct{}
+
+func (maceSmashFactory) Kind() string { return "mace_smash" }
+
+func (maceSmashFactory) Available(pool curriculum.Pool) bool {
+	return len(pool.MaceSmashTargetMobTypes) > 0
+}
+func (maceSmashFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return maceSmashTask{
+		mobType: pool.MaceSmashTargetMobTypes[rng.IntN(len(pool.MaceSmashTargetMobTypes))],
+		radius:  pool.MaceSmashRadius,
+	}
+}
+
+// followTask poses following (and stopping following) a named player.
+type followTask struct{ playerName string }
+
+func (t followTask) Name() string            { return "follow" }
+func (t followTask) GoalDescription() string { return "follow " + t.playerName }
+func (t followTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:     true,
+		FollowTargetPlayerName: t.playerName,
+	}
+}
+
+type followFactory struct{}
+
+func (followFactory) Kind() string { return "follow" }
+
+func (followFactory) Available(pool curriculum.Pool) bool {
+	return len(pool.FollowTargetPlayerNames) > 0
+}
+func (followFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return followTask{playerName: pool.FollowTargetPlayerNames[rng.IntN(len(pool.FollowTargetPlayerNames))]}
+}
+
 // errEmptyPool is ValidatePool's error when pool has nothing to draw.
 var errEmptyPool = fmt.Errorf("rlenvadapter: pool has no candidate values for any task kind")
 
