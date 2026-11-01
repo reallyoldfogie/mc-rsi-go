@@ -1,46 +1,270 @@
 {
   "target_offsets": [
-    [5, 0, 0], [-5, 0, 0], [0, 0, 5], [0, 0, -5],
-    [4, 0, 4], [-4, 0, 4], [4, 0, -4], [-4, 0, -4],
-    [8, 0, 0], [0, 0, 8]
+    [
+      5,
+      0,
+      0
+    ],
+    [
+      -5,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      5
+    ],
+    [
+      0,
+      0,
+      -5
+    ],
+    [
+      4,
+      0,
+      4
+    ],
+    [
+      -4,
+      0,
+      4
+    ],
+    [
+      4,
+      0,
+      -4
+    ],
+    [
+      -4,
+      0,
+      -4
+    ],
+    [
+      8,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      8
+    ]
   ],
   "mine_target_blocks": [
-    "minecraft:dirt", "minecraft:sand", "minecraft:gravel",
-    "minecraft:grass_block", "minecraft:coarse_dirt", "minecraft:clay"
+    "minecraft:dirt",
+    "minecraft:sand",
+    "minecraft:gravel",
+    "minecraft:grass_block",
+    "minecraft:coarse_dirt",
+    "minecraft:clay"
   ],
   "mine_search_radius": 16,
   "craft_target_items": [
-    "minecraft:stick", "minecraft:crafting_table", "minecraft:torch",
-    "minecraft:oak_planks", "minecraft:chest", "minecraft:bowl"
+    "minecraft:stick",
+    "minecraft:crafting_table",
+    "minecraft:torch",
+    "minecraft:oak_planks",
+    "minecraft:chest",
+    "minecraft:bowl"
   ],
   "mine_far_target_offsets": [
-    [28, 0, 0], [-28, 0, 0], [0, 0, 28], [0, 0, -28],
-    [28, 0, 28], [-28, 0, 28], [28, 0, -28], [-28, 0, -28],
-    [36, 0, 0], [0, 0, 36]
+    [
+      28,
+      0,
+      0
+    ],
+    [
+      -28,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      28
+    ],
+    [
+      0,
+      0,
+      -28
+    ],
+    [
+      28,
+      0,
+      28
+    ],
+    [
+      -28,
+      0,
+      28
+    ],
+    [
+      28,
+      0,
+      -28
+    ],
+    [
+      -28,
+      0,
+      -28
+    ],
+    [
+      36,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      36
+    ]
   ],
   "mine_far_blocks": [
-    "minecraft:sand", "minecraft:gravel", "minecraft:coarse_dirt", "minecraft:clay"
+    "minecraft:sand",
+    "minecraft:gravel",
+    "minecraft:coarse_dirt",
+    "minecraft:clay"
   ],
   "mine_far_search_radius": 8,
   "craft_far_target_offsets": [
-    [28, 0, 0], [-28, 0, 0], [0, 0, 28], [0, 0, -28],
-    [28, 0, 28], [-28, 0, 28], [28, 0, -28], [-28, 0, -28],
-    [36, 0, 0], [0, 0, 36]
+    [
+      28,
+      0,
+      0
+    ],
+    [
+      -28,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      28
+    ],
+    [
+      0,
+      0,
+      -28
+    ],
+    [
+      28,
+      0,
+      28
+    ],
+    [
+      -28,
+      0,
+      28
+    ],
+    [
+      28,
+      0,
+      -28
+    ],
+    [
+      -28,
+      0,
+      -28
+    ],
+    [
+      36,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      36
+    ]
   ],
-  "craft_far_items": ["minecraft:chest", "minecraft:bowl"],
+  "craft_far_items": [
+    "minecraft:chest",
+    "minecraft:bowl"
+  ],
   "craft_far_search_radius": 8,
   "chain_target_offsets": [
-    [28, 0, 0], [-28, 0, 0], [0, 0, 28], [0, 0, -28],
-    [28, 0, 28], [-28, 0, 28], [28, 0, -28], [-28, 0, -28],
-    [36, 0, 0], [0, 0, 36]
+    [
+      28,
+      0,
+      0
+    ],
+    [
+      -28,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      28
+    ],
+    [
+      0,
+      0,
+      -28
+    ],
+    [
+      28,
+      0,
+      28
+    ],
+    [
+      -28,
+      0,
+      28
+    ],
+    [
+      28,
+      0,
+      -28
+    ],
+    [
+      -28,
+      0,
+      -28
+    ],
+    [
+      36,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      36
+    ]
   ],
   "chain_goal_items": [
-    "minecraft:bowl", "minecraft:chest", "minecraft:wooden_pickaxe"
+    "minecraft:bowl",
+    "minecraft:chest",
+    "minecraft:wooden_pickaxe"
   ],
   "chain_search_radius": 8,
-  "mine_buried_target_blocks": ["minecraft:coal_ore"],
+  "mine_buried_target_blocks": [
+    "minecraft:coal_ore"
+  ],
   "mine_buried_search_radius": 16,
   "mine_buried_required_tool": "minecraft:netherite_pickaxe",
-  "mine_buried_required_tool_enchantments": {"minecraft:efficiency": 5},
-  "chain_mine_target_blocks": ["minecraft:coal_ore"]
+  "mine_buried_required_tool_enchantments": {
+    "minecraft:efficiency": 5
+  },
+  "chain_mine_target_blocks": [
+    "minecraft:coal_ore"
+  ],
+  "mine_buried_explore_depth": 3,
+  "task_weights": {
+    "goto": 1,
+    "mine": 1,
+    "craft": 1,
+    "mine_far": 1,
+    "craft_far": 1,
+    "mine_buried": 8,
+    "chain_gather": 0.5,
+    "chain_table": 0.5,
+    "chain_place": 0.5,
+    "chain_use": 0.5,
+    "chain_mine": 0
+  }
 }
