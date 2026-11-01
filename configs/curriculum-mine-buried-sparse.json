@@ -1,0 +1,15 @@
+{
+  "_comment": "Sparser/deeper buried teacher for annealing (docs/plans/21 Phase 6b). Pair with lower -seed-template-ore-count and deeper min/max depth flags matching explore_depth.",
+  "mine_buried_target_blocks": [
+    "minecraft:coal_ore"
+  ],
+  "mine_buried_search_radius": 12,
+  "mine_buried_explore_depth": 8,
+  "mine_buried_required_tool": "minecraft:netherite_pickaxe",
+  "mine_buried_required_tool_enchantments": {
+    "minecraft:efficiency": 5
+  },
+  "task_weights": {
+    "mine_buried": 1
+  }
+}
