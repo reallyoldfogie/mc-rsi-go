@@ -45,8 +45,12 @@ type Task interface {
 
 // TaskFactory draws a random Task of its own kind from pool, or reports
 // that pool has nothing to draw (Available) so Select leaves it out of
-// that episode's draw.
+// that episode's draw. Kind is the stable name Select uses for
+// curriculum.Pool.TaskWeights lookup and must match the Name() of every
+// Task Draw returns (e.g. "goto", "chain_mine") — weights are keyed by
+// that string, not by factory type.
 type TaskFactory interface {
+	Kind() string
 	Available(pool curriculum.Pool) bool
 	Draw(pool curriculum.Pool, rng *rand.Rand) Task
 }
@@ -70,6 +74,17 @@ var allFactories = []TaskFactory{
 	chainPlaceFactory{},
 	chainUseFactory{},
 	chainMineFactory{},
+	equipFactory{},
+	pickupFactory{},
+	pickupAnyFactory{},
+	placeFactory{},
+	flyFactory{},
+	rideFactory{},
+	combatFactory{},
+	creeperGunpowderFactory{},
+	spearChargeFactory{},
+	maceSmashFactory{},
+	followFactory{},
 }
 
 func shortName(id string) string { return strings.TrimPrefix(id, "minecraft:") }
@@ -79,19 +94,31 @@ func gotoGoalDescription(offset [3]float64) string {
 }
 
 // gotoTask poses "reach a point offset from wherever Reset finds the bot."
-type gotoTask struct{ offset [3]float64 }
+type gotoTask struct {
+	offset         [3]float64
+	arriveSneaking bool
+}
 
 func (t gotoTask) Name() string            { return "goto" }
 func (t gotoTask) GoalDescription() string { return gotoGoalDescription(t.offset) }
 func (t gotoTask) ToOverride() rlenv.TaskOverride {
-	return rlenv.TaskOverride{GoToTargetDisabled: false, TargetOffset: t.offset}
+	return rlenv.TaskOverride{
+		GoToTargetDisabled: false,
+		TargetOffset:       t.offset,
+		ArriveSneaking:     t.arriveSneaking,
+	}
 }
 
 type gotoFactory struct{}
 
+func (gotoFactory) Kind() string { return "goto" }
+
 func (gotoFactory) Available(pool curriculum.Pool) bool { return len(pool.TargetOffsets) > 0 }
 func (gotoFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
-	return gotoTask{offset: pool.TargetOffsets[rng.IntN(len(pool.TargetOffsets))]}
+	return gotoTask{
+		offset:         pool.TargetOffsets[rng.IntN(len(pool.TargetOffsets))],
+		arriveSneaking: pool.ArriveSneaking,
+	}
 }
 
 // mineTask poses mining a block already within reach.
@@ -107,6 +134,8 @@ func (t mineTask) ToOverride() rlenv.TaskOverride {
 }
 
 type mineFactory struct{}
+
+func (mineFactory) Kind() string { return "mine" }
 
 func (mineFactory) Available(pool curriculum.Pool) bool { return len(pool.MineTargetBlocks) > 0 }
 func (mineFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
@@ -124,6 +153,7 @@ type mineBuriedTask struct {
 	searchRadius         int
 	requiredTool         string
 	requiredToolEnchants map[string]int
+	exploreDepth         int
 }
 
 func (t mineBuriedTask) Name() string            { return "mine_buried" }
@@ -135,6 +165,7 @@ func (t mineBuriedTask) ToOverride() rlenv.TaskOverride {
 		MineSearchRadius:             t.searchRadius,
 		MineRequiredTool:             t.requiredTool,
 		MineRequiredToolEnchantments: t.requiredToolEnchants,
+		MineBuriedExploreDepth:       t.exploreDepth,
 		// The target already exists, baked into the shared clone
 		// template — DefaultEpisodeSeeder must not also place a fresh,
 		// immediately-visible instance beside the bot (caught live,
@@ -146,6 +177,8 @@ func (t mineBuriedTask) ToOverride() rlenv.TaskOverride {
 
 type mineBuriedFactory struct{}
 
+func (mineBuriedFactory) Kind() string { return "mine_buried" }
+
 func (mineBuriedFactory) Available(pool curriculum.Pool) bool {
 	return len(pool.MineBuriedTargetBlocks) > 0
 }
@@ -156,6 +189,7 @@ func (mineBuriedFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 		searchRadius:         pool.MineBuriedSearchRadius,
 		requiredTool:         pool.MineBuriedRequiredTool,
 		requiredToolEnchants: pool.MineBuriedRequiredToolEnchantments,
+		exploreDepth:         pool.MineBuriedExploreDepth,
 	}
 }
 
@@ -169,6 +203,8 @@ func (t craftTask) ToOverride() rlenv.TaskOverride {
 }
 
 type craftFactory struct{}
+
+func (craftFactory) Kind() string { return "craft" }
 
 func (craftFactory) Available(pool curriculum.Pool) bool { return len(pool.CraftTargetItems) > 0 }
 func (craftFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
@@ -196,6 +232,8 @@ func (t mineFarTask) ToOverride() rlenv.TaskOverride {
 }
 
 type mineFarFactory struct{}
+
+func (mineFarFactory) Kind() string { return "mine_far" }
 
 func (mineFarFactory) Available(pool curriculum.Pool) bool {
 	return len(pool.MineFarTargetOffsets) > 0 && len(pool.MineFarBlocks) > 0
@@ -228,6 +266,8 @@ func (t craftFarTask) ToOverride() rlenv.TaskOverride {
 }
 
 type craftFarFactory struct{}
+
+func (craftFarFactory) Kind() string { return "craft_far" }
 
 func (craftFarFactory) Available(pool curriculum.Pool) bool {
 	return len(pool.CraftFarTargetOffsets) > 0 && len(pool.CraftFarItems) > 0 && pool.CraftFarSearchRadius > 0
@@ -263,6 +303,7 @@ type chainTask struct {
 	searchRadius int
 	craftItem    string // "" for stage 1; curriculum.ChainTableItem for 2/3; the goal item for 4/5.
 	mineTarget   string // only meaningful at stage 5 (ChainMine): the buried block to mine once craftItem is crafted.
+	exploreDepth int    // MineBuriedExploreDepth for stage 5; ignored earlier.
 }
 
 func (t chainTask) Name() string {
@@ -284,15 +325,16 @@ func (t chainTask) GoalDescription() string {
 }
 func (t chainTask) ToOverride() rlenv.TaskOverride {
 	return rlenv.TaskOverride{
-		GoToTargetDisabled:   false,
-		TargetOffset:         t.offset,
-		MineTargetBlock:      curriculum.ChainTreeBlock,
-		MineSearchRadius:     t.searchRadius,
-		CraftTargetItem:      t.craftItem,
-		ChainStage:           t.stage,
-		ChainMineTargetBlock: t.mineTarget,
-		CollectDrops:         true,
-		SeedAtGoal:           true,
+		GoToTargetDisabled:     false,
+		TargetOffset:           t.offset,
+		MineTargetBlock:        curriculum.ChainTreeBlock,
+		MineSearchRadius:       t.searchRadius,
+		CraftTargetItem:        t.craftItem,
+		ChainStage:             t.stage,
+		ChainMineTargetBlock:   t.mineTarget,
+		MineBuriedExploreDepth: t.exploreDepth,
+		CollectDrops:           true,
+		SeedAtGoal:             true,
 	}
 }
 
@@ -305,6 +347,8 @@ func chainAvailable(pool curriculum.Pool) bool {
 
 type chainGatherFactory struct{}
 
+func (chainGatherFactory) Kind() string { return "chain_gather" }
+
 func (chainGatherFactory) Available(pool curriculum.Pool) bool { return chainAvailable(pool) }
 func (chainGatherFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 	offset := pool.ChainTargetOffsets[rng.IntN(len(pool.ChainTargetOffsets))]
@@ -312,6 +356,8 @@ func (chainGatherFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 }
 
 type chainTableFactory struct{}
+
+func (chainTableFactory) Kind() string { return "chain_table" }
 
 func (chainTableFactory) Available(pool curriculum.Pool) bool { return chainAvailable(pool) }
 func (chainTableFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
@@ -321,6 +367,8 @@ func (chainTableFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 
 type chainPlaceFactory struct{}
 
+func (chainPlaceFactory) Kind() string { return "chain_place" }
+
 func (chainPlaceFactory) Available(pool curriculum.Pool) bool { return chainAvailable(pool) }
 func (chainPlaceFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 	offset := pool.ChainTargetOffsets[rng.IntN(len(pool.ChainTargetOffsets))]
@@ -328,6 +376,8 @@ func (chainPlaceFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 }
 
 type chainUseFactory struct{}
+
+func (chainUseFactory) Kind() string { return "chain_use" }
 
 func (chainUseFactory) Available(pool curriculum.Pool) bool {
 	return chainAvailable(pool) && len(pool.ChainGoalItems) > 0
@@ -345,6 +395,8 @@ func (chainUseFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 // its items.
 type chainMineFactory struct{}
 
+func (chainMineFactory) Kind() string { return "chain_mine" }
+
 func (chainMineFactory) Available(pool curriculum.Pool) bool {
 	return chainAvailable(pool) && len(pool.ChainGoalItems) > 0 && len(pool.ChainMineTargetBlocks) > 0
 }
@@ -352,46 +404,400 @@ func (chainMineFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 	offset := pool.ChainTargetOffsets[rng.IntN(len(pool.ChainTargetOffsets))]
 	item := pool.ChainGoalItems[rng.IntN(len(pool.ChainGoalItems))]
 	mineTarget := pool.ChainMineTargetBlocks[rng.IntN(len(pool.ChainMineTargetBlocks))]
-	return chainTask{stage: rlenv.ChainMine, offset: offset, searchRadius: pool.ChainSearchRadius, craftItem: item, mineTarget: mineTarget}
+	return chainTask{stage: rlenv.ChainMine, offset: offset, searchRadius: pool.ChainSearchRadius, craftItem: item, mineTarget: mineTarget, exploreDepth: pool.MineBuriedExploreDepth}
+}
+
+// equipTask poses equipping (and optionally using) a held/worn item.
+type equipTask struct{ item string }
+
+func (t equipTask) Name() string            { return "equip" }
+func (t equipTask) GoalDescription() string { return "equip " + shortName(t.item) }
+func (t equipTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{GoToTargetDisabled: true, EquipTargetItem: t.item}
+}
+
+type equipFactory struct{}
+
+func (equipFactory) Kind() string { return "equip" }
+
+func (equipFactory) Available(pool curriculum.Pool) bool { return len(pool.EquipTargetItems) > 0 }
+func (equipFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return equipTask{item: pool.EquipTargetItems[rng.IntN(len(pool.EquipTargetItems))]}
+}
+
+// pickupTask poses collecting a named ground item.
+type pickupTask struct {
+	item         string
+	searchRadius int
+}
+
+func (t pickupTask) Name() string            { return "pickup" }
+func (t pickupTask) GoalDescription() string { return "pickup " + shortName(t.item) }
+func (t pickupTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled: true,
+		PickupTargetItem:   t.item,
+		PickupSearchRadius: t.searchRadius,
+	}
+}
+
+type pickupFactory struct{}
+
+func (pickupFactory) Kind() string { return "pickup" }
+
+func (pickupFactory) Available(pool curriculum.Pool) bool { return len(pool.PickupTargetItems) > 0 }
+func (pickupFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return pickupTask{
+		item:         pool.PickupTargetItems[rng.IntN(len(pool.PickupTargetItems))],
+		searchRadius: pool.PickupSearchRadius,
+	}
+}
+
+// pickupAnyTask poses collecting whatever item is nearest, regardless of content.
+type pickupAnyTask struct{ searchRadius int }
+
+func (t pickupAnyTask) Name() string            { return "pickup_any" }
+func (t pickupAnyTask) GoalDescription() string { return "pickup any nearby item" }
+func (t pickupAnyTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled: true,
+		PickupAnyItem:      true,
+		PickupSearchRadius: t.searchRadius,
+	}
+}
+
+type pickupAnyFactory struct{}
+
+func (pickupAnyFactory) Kind() string { return "pickup_any" }
+
+func (pickupAnyFactory) Available(pool curriculum.Pool) bool { return pool.PickupAnyItem }
+func (pickupAnyFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return pickupAnyTask{searchRadius: pool.PickupSearchRadius}
+}
+
+// placeTask poses standalone block/item placement outside a chain episode.
+type placeTask struct{ item string }
+
+func (t placeTask) Name() string            { return "place" }
+func (t placeTask) GoalDescription() string { return "place " + shortName(t.item) }
+func (t placeTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{GoToTargetDisabled: true, PlaceTargetItem: t.item}
+}
+
+type placeFactory struct{}
+
+func (placeFactory) Kind() string { return "place" }
+
+func (placeFactory) Available(pool curriculum.Pool) bool { return len(pool.PlaceTargetItems) > 0 }
+func (placeFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return placeTask{item: pool.PlaceTargetItems[rng.IntN(len(pool.PlaceTargetItems))]}
+}
+
+// flyTask poses elytra flight to an offset target.
+type flyTask struct {
+	offset        [3]float64
+	arrivalRadius float64
+}
+
+func (t flyTask) Name() string { return "fly" }
+func (t flyTask) GoalDescription() string {
+	return fmt.Sprintf("fly to (%+.0f, %+.0f, %+.0f) from spawn", t.offset[0], t.offset[1], t.offset[2])
+}
+func (t flyTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled: true,
+		FlyTargetOffset:    t.offset,
+		FlyTargetActive:    true,
+		FlyArrivalRadius:   t.arrivalRadius,
+	}
+}
+
+type flyFactory struct{}
+
+func (flyFactory) Kind() string { return "fly" }
+
+func (flyFactory) Available(pool curriculum.Pool) bool { return len(pool.FlyTargetOffsets) > 0 }
+func (flyFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return flyTask{
+		offset:        pool.FlyTargetOffsets[rng.IntN(len(pool.FlyTargetOffsets))],
+		arrivalRadius: pool.FlyArrivalRadius,
+	}
+}
+
+// rideTask poses mounting/dismounting/jumping a vehicle.
+type rideTask struct {
+	vehicleType  string
+	searchRadius int
+}
+
+func (t rideTask) Name() string            { return "ride" }
+func (t rideTask) GoalDescription() string { return "ride " + shortName(t.vehicleType) }
+func (t rideTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled: true,
+		RideVehicleType:    t.vehicleType,
+		RideSearchRadius:   t.searchRadius,
+	}
+}
+
+type rideFactory struct{}
+
+func (rideFactory) Kind() string { return "ride" }
+
+func (rideFactory) Available(pool curriculum.Pool) bool { return len(pool.RideVehicleTypes) > 0 }
+func (rideFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return rideTask{
+		vehicleType:  pool.RideVehicleTypes[rng.IntN(len(pool.RideVehicleTypes))],
+		searchRadius: pool.RideSearchRadius,
+	}
+}
+
+// combatTask poses fighting a mob type via ActionCombat.
+type combatTask struct {
+	mobType        string
+	radius         float64
+	includePlayers bool
+	includeNeutral bool
+}
+
+func (t combatTask) Name() string            { return "combat" }
+func (t combatTask) GoalDescription() string { return "combat " + shortName(t.mobType) }
+func (t combatTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:   true,
+		CombatTargetMobType:  t.mobType,
+		CombatRadius:         t.radius,
+		CombatIncludePlayers: t.includePlayers,
+		CombatIncludeNeutral: t.includeNeutral,
+	}
+}
+
+type combatFactory struct{}
+
+func (combatFactory) Kind() string { return "combat" }
+
+func (combatFactory) Available(pool curriculum.Pool) bool { return len(pool.CombatTargetMobTypes) > 0 }
+func (combatFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return combatTask{
+		mobType:        pool.CombatTargetMobTypes[rng.IntN(len(pool.CombatTargetMobTypes))],
+		radius:         pool.CombatRadius,
+		includePlayers: pool.CombatIncludePlayers,
+		includeNeutral: pool.CombatIncludeNeutral,
+	}
+}
+
+// creeperGunpowderTask poses the hardcoded creeper-for-gunpowder encounter.
+type creeperGunpowderTask struct{ radius float64 }
+
+func (t creeperGunpowderTask) Name() string            { return "creeper_gunpowder" }
+func (t creeperGunpowderTask) GoalDescription() string { return "kill creeper for gunpowder" }
+func (t creeperGunpowderTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:     true,
+		CreeperGunpowderActive: true,
+		CreeperGunpowderRadius: t.radius,
+	}
+}
+
+type creeperGunpowderFactory struct{}
+
+func (creeperGunpowderFactory) Kind() string { return "creeper_gunpowder" }
+
+func (creeperGunpowderFactory) Available(pool curriculum.Pool) bool {
+	return pool.CreeperGunpowderActive
+}
+func (creeperGunpowderFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return creeperGunpowderTask{radius: pool.CreeperGunpowderRadius}
+}
+
+// spearChargeTask poses a spear-charge approach against a mob type.
+type spearChargeTask struct {
+	mobType string
+	radius  float64
+}
+
+func (t spearChargeTask) Name() string            { return "spear_charge" }
+func (t spearChargeTask) GoalDescription() string { return "spear charge " + shortName(t.mobType) }
+func (t spearChargeTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:       true,
+		SpearChargeTargetMobType: t.mobType,
+		SpearChargeRadius:        t.radius,
+	}
+}
+
+type spearChargeFactory struct{}
+
+func (spearChargeFactory) Kind() string { return "spear_charge" }
+
+func (spearChargeFactory) Available(pool curriculum.Pool) bool {
+	return len(pool.SpearChargeTargetMobTypes) > 0
+}
+func (spearChargeFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return spearChargeTask{
+		mobType: pool.SpearChargeTargetMobTypes[rng.IntN(len(pool.SpearChargeTargetMobTypes))],
+		radius:  pool.SpearChargeRadius,
+	}
+}
+
+// maceSmashTask poses a mace-smash approach against a mob type.
+type maceSmashTask struct {
+	mobType string
+	radius  float64
+}
+
+func (t maceSmashTask) Name() string            { return "mace_smash" }
+func (t maceSmashTask) GoalDescription() string { return "mace smash " + shortName(t.mobType) }
+func (t maceSmashTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:     true,
+		MaceSmashTargetMobType: t.mobType,
+		MaceSmashRadius:        t.radius,
+	}
+}
+
+type maceSmashFactory struct{}
+
+func (maceSmashFactory) Kind() string { return "mace_smash" }
+
+func (maceSmashFactory) Available(pool curriculum.Pool) bool {
+	return len(pool.MaceSmashTargetMobTypes) > 0
+}
+func (maceSmashFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return maceSmashTask{
+		mobType: pool.MaceSmashTargetMobTypes[rng.IntN(len(pool.MaceSmashTargetMobTypes))],
+		radius:  pool.MaceSmashRadius,
+	}
+}
+
+// followTask poses following (and stopping following) a named player.
+type followTask struct{ playerName string }
+
+func (t followTask) Name() string            { return "follow" }
+func (t followTask) GoalDescription() string { return "follow " + t.playerName }
+func (t followTask) ToOverride() rlenv.TaskOverride {
+	return rlenv.TaskOverride{
+		GoToTargetDisabled:     true,
+		FollowTargetPlayerName: t.playerName,
+	}
+}
+
+type followFactory struct{}
+
+func (followFactory) Kind() string { return "follow" }
+
+func (followFactory) Available(pool curriculum.Pool) bool {
+	return len(pool.FollowTargetPlayerNames) > 0
+}
+func (followFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
+	return followTask{playerName: pool.FollowTargetPlayerNames[rng.IntN(len(pool.FollowTargetPlayerNames))]}
 }
 
 // errEmptyPool is ValidatePool's error when pool has nothing to draw.
 var errEmptyPool = fmt.Errorf("rlenvadapter: pool has no candidate values for any task kind")
 
-// ValidatePool reports an error if pool has no task kind with at least one
-// candidate value (otherwise Select would have nothing to draw) — call
-// once at startup against an operator-supplied curriculum config, so a
-// misconfigured pool fails fast with a clear error instead of panicking
-// the first time an episode needs a task.
-func ValidatePool(pool curriculum.Pool) error {
-	for _, f := range allFactories {
-		if f.Available(pool) {
-			return nil
-		}
+// errNoPositiveWeight is ValidatePool's error when every available kind
+// is excluded by TaskWeights (weight <= 0) — the pool has candidates,
+// but Select would still have nothing to draw.
+var errNoPositiveWeight = fmt.Errorf("rlenvadapter: every available task kind has task_weights <= 0")
+
+// defaultTaskWeight is the relative draw weight Select uses for a kind
+// whose key is missing from curriculum.Pool.TaskWeights (or when that
+// map is nil). 1 preserves the historical uniform draw among available
+// kinds when no weights are configured.
+const defaultTaskWeight = 1.0
+
+// kindWeight returns pool.TaskWeights[kind], or defaultTaskWeight when
+// the key is absent. Does not clamp negatives — ValidatePool rejects
+// those; Select treats weight <= 0 as "skip this kind."
+func kindWeight(pool curriculum.Pool, kind string) float64 {
+	if pool.TaskWeights == nil {
+		return defaultTaskWeight
 	}
-	return errEmptyPool
+	weight, ok := pool.TaskWeights[kind]
+	if !ok {
+		return defaultTaskWeight
+	}
+	return weight
 }
 
-// Select implements docs/plans/07's "Selection strategy": picks a task
-// kind uniformly at random from whichever of allFactories pool actually
-// has candidates for (equal probability among however many are available
-// this episode), then asks that kind's own factory to draw a uniformly
-// random parameter set from pool. No difficulty progression — see
-// docs/plans/07's own "deliberate v2 deferral" note on why that's not
-// attempted here. Panics if pool is empty — callers validate with
-// ValidatePool first, same two-step shape this package's predecessor
-// (NewUniformRandom, then Next) already had.
-func Select(pool curriculum.Pool, rng *rand.Rand) Task {
+// availableFactories returns every factory whose parameter pool is
+// non-empty and whose TaskWeights entry is > 0, in allFactories order.
+// A kind with weight <= 0 is skipped even when Available — soft disable
+// without clearing its parameter pool.
+func availableFactories(pool curriculum.Pool) []TaskFactory {
 	var available []TaskFactory
-	for _, f := range allFactories {
-		if f.Available(pool) {
-			available = append(available, f)
+	for _, factory := range allFactories {
+		if !factory.Available(pool) {
+			continue
+		}
+		if kindWeight(pool, factory.Kind()) <= 0 {
+			continue
+		}
+		available = append(available, factory)
+	}
+	return available
+}
+
+// ValidatePool reports an error if Select would have nothing to draw:
+// either no task kind has candidates, every available kind is weight-
+// excluded, or some TaskWeights entry is negative (config mistake —
+// fail fast rather than silently treating it like zero). Call once at
+// startup against an operator-supplied curriculum config.
+func ValidatePool(pool curriculum.Pool) error {
+	anyCandidates := false
+	for _, factory := range allFactories {
+		if !factory.Available(pool) {
+			continue
+		}
+		anyCandidates = true
+		weight := kindWeight(pool, factory.Kind())
+		if weight < 0 {
+			return fmt.Errorf("rlenvadapter: task_weights[%q] is negative (%v)", factory.Kind(), weight)
 		}
 	}
+	if !anyCandidates {
+		return errEmptyPool
+	}
+	if len(availableFactories(pool)) == 0 {
+		return errNoPositiveWeight
+	}
+	return nil
+}
+
+// Select picks a task kind from whichever of allFactories pool actually
+// has candidates for, weighted by curriculum.Pool.TaskWeights (missing
+// keys default to 1 — uniform among available kinds when the map is
+// empty/nil). Then asks that kind's own factory to draw a uniformly
+// random parameter set from pool. No difficulty progression — see
+// docs/plans/07's own "deliberate v2 deferral" note on why that's not
+// attempted here; TaskWeights is the operator-side counter to pool
+// dilution when many kinds are available at once. Panics if pool is
+// empty — callers validate with ValidatePool first.
+func Select(pool curriculum.Pool, rng *rand.Rand) Task {
+	available := availableFactories(pool)
 	if len(available) == 0 {
 		panic("rlenvadapter: Select called with an empty pool; call ValidatePool first")
 	}
-	return available[rng.IntN(len(available))].Draw(pool, rng)
+	if len(available) == 1 {
+		return available[0].Draw(pool, rng)
+	}
+	totalWeight := 0.0
+	for _, factory := range available {
+		totalWeight += kindWeight(pool, factory.Kind())
+	}
+	// Weighted pick via cumulative thresholds over [0, totalWeight).
+	// Float64 edge noise can land exactly on totalWeight; the final
+	// bucket absorbs that rather than panicking.
+	pick := rng.Float64() * totalWeight
+	cumulative := 0.0
+	for _, factory := range available {
+		cumulative += kindWeight(pool, factory.Kind())
+		if pick < cumulative {
+			return factory.Draw(pool, rng)
+		}
+	}
+	return available[len(available)-1].Draw(pool, rng)
 }
 
 // TaskSelector wraps pool as an rlenv.TaskSelector for a caller that only
@@ -402,20 +808,18 @@ func Select(pool curriculum.Pool, rng *rand.Rand) Task {
 func TaskSelector(pool curriculum.Pool, rng *rand.Rand) rlenv.TaskSelector {
 	return func(int, *oldrand.Rand) rlenv.TaskOverride {
 		override := Select(pool, rng).ToOverride()
-		// SleepSearchRadius is deliberately injected here, after whatever
-		// task-specific ToOverride() built, rather than added to each
-		// task type's own override literal individually: unlike
-		// MineTargetBlock/CraftTargetItem (each task's own thing to
-		// pose), ActionSleep is structurally always available as a
-		// general-purpose defensive option DURING any other active task
-		// (docs/plans/SLEEP_ACTION_PLAN.md, local/untracked) - it needs
-		// to flow through regardless of which task type Select picked
-		// this episode, not just a dedicated sleep task. Zero (the
-		// default, since pool.SleepSearchRadius is never set by
-		// configs/curriculum.json's own active pool - see that field's
-		// own doc comment) leaves every episode's sleep capability off,
-		// exactly as before this existed.
+		// SleepSearchRadius / PortalSearchRadius / LightPortalSearchRadius
+		// are deliberately injected here, after whatever task-specific
+		// ToOverride() built, rather than added to each task type's own
+		// override literal individually: unlike MineTargetBlock/
+		// CraftTargetItem (each task's own thing to pose), these are
+		// cross-cutting capabilities available DURING any other active
+		// task (ActionSleep as a general-purpose defensive option;
+		// ActionUsePortal/ActionLightPortal once a portal/frame is in
+		// range). Zero (the default) leaves each capability off.
 		override.SleepSearchRadius = pool.SleepSearchRadius
+		override.PortalSearchRadius = pool.PortalSearchRadius
+		override.LightPortalSearchRadius = pool.LightPortalSearchRadius
 		return override
 	}
 }

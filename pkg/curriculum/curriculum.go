@@ -76,6 +76,14 @@ type Pool struct {
 	// pickaxe is crafted by the agent, not seeded.
 	MineBuriedRequiredToolEnchantments map[string]int
 
+	// MineBuriedExploreDepth is how many blocks below the episode's
+	// mine-search anchor buried-search waypoints aim (rlenv.Config.
+	// MineBuriedExploreDepth). Shared across mine_buried and chain_mine.
+	// 0 leaves rlenv's legacy MineSearchRadius/2 behavior. Should match
+	// the run's -seed-template-ore-min/max-depth band (typically the
+	// midpoint or max), not a hardcoded distribution in the agent.
+	MineBuriedExploreDepth int
+
 	// MineFarTargetOffsets/MineFarBlocks/MineFarSearchRadius pose "go there,
 	// then mine": a mine block is placed beside a goto target sampled from
 	// MineFarTargetOffsets. The search radius must be smaller than the
@@ -136,4 +144,100 @@ type Pool struct {
 	// deliberately not yet part of what the live trainer actually
 	// draws episodes from.
 	SleepSearchRadius int
+
+	// PortalSearchRadius/LightPortalSearchRadius, if > 0, turn on
+	// ActionUsePortal / ActionLightPortal the same cross-cutting way
+	// SleepSearchRadius turns on ActionSleep (rlenv.Config.
+	// PortalSearchRadius / LightPortalSearchRadius). Unlike sleep,
+	// DefaultEpisodeSeeder does not place a portal/frame today — the
+	// working-area template (or some other world setup) must already
+	// provide one within the radius, or the actions stay masked off as
+	// "nothing visible." 0 leaves both capabilities off.
+	PortalSearchRadius      int
+	LightPortalSearchRadius int
+
+	// ArriveSneaking, if true, makes every goto episode this Pool poses
+	// dispatch movetoandsneakquiet instead of movetoquiet (rlenv.Config.
+	// ArriveSneaking). Purely a dispatch-time choice on ActionGoToTarget;
+	// false (the default) preserves standing arrival.
+	ArriveSneaking bool
+
+	// EquipTargetItems is the set of candidate item names an equip
+	// episode samples from (e.g. "minecraft:elytra"). Enables ActionEquip
+	// and ActionUseItem for that episode (rlenv.Config.EquipTargetItem).
+	// Empty disables the type.
+	EquipTargetItems []string
+
+	// PickupTargetItems/PickupSearchRadius pose a named item-pickup
+	// task (ActionPickUpItem). Empty items disable the named type.
+	// PickupAnyItem, if true, additionally enables a separate "collect
+	// whatever's nearest" pickup kind (rlenv.Config.PickupAnyItem) that
+	// does not need a name pool.
+	PickupTargetItems  []string
+	PickupSearchRadius int
+	PickupAnyItem      bool
+
+	// PlaceTargetItems pose standalone ActionPlace outside a chain
+	// episode (rlenv.Config.PlaceTargetItem). Chain stage 3 still uses
+	// its own hardcoded crafting-table placement; this pool is the
+	// non-chain path. Empty disables the type.
+	PlaceTargetItems []string
+
+	// FlyTargetOffsets/FlyArrivalRadius pose ActionFlyTo (rlenv.Config.
+	// FlyTargetOffset + FlyTargetActive). Empty offsets disable the type.
+	// FlyArrivalRadius <= 0 defers to rlenv's own DefaultConfig value.
+	FlyTargetOffsets [][3]float64
+	FlyArrivalRadius float64
+
+	// RideVehicleTypes/RideSearchRadius pose ActionMount/ActionDismount/
+	// ActionVehicleJump (rlenv.Config.RideVehicleType). Empty types
+	// disable the type. RideSearchRadius <= 0 defers to rlenv's default.
+	RideVehicleTypes []string
+	RideSearchRadius int
+
+	// CombatTargetMobTypes/CombatRadius/CombatIncludePlayers/
+	// CombatIncludeNeutral pose ActionCombat (rlenv.Config.
+	// CombatTargetMobType). Empty types disable the type. Radius <= 0
+	// defers to rlenv's default. Include flags are shared across every
+	// combat episode this Pool poses, not themselves sampled.
+	CombatTargetMobTypes []string
+	CombatRadius         float64
+	CombatIncludePlayers bool
+	CombatIncludeNeutral bool
+
+	// CreeperGunpowderActive/CreeperGunpowderRadius pose
+	// ActionKillCreeperForGunpowder (rlenv.Config.CreeperGunpowderActive).
+	// False (the default) disables the type. Radius <= 0 defers to
+	// rlenv's default.
+	CreeperGunpowderActive bool
+	CreeperGunpowderRadius float64
+
+	// SpearChargeTargetMobTypes/SpearChargeRadius pose
+	// ActionSpearChargeWithApproach. Empty types disable the type.
+	SpearChargeTargetMobTypes []string
+	SpearChargeRadius         float64
+
+	// MaceSmashTargetMobTypes/MaceSmashRadius pose
+	// ActionMaceSmashWithApproach. Empty types disable the type.
+	MaceSmashTargetMobTypes []string
+	MaceSmashRadius         float64
+
+	// FollowTargetPlayerNames pose ActionFollow/ActionStopFollow
+	// (rlenv.Config.FollowTargetPlayerName). Empty disables the type.
+	// Real precondition not solvable by this package: a second connected
+	// player (or bot) with the sampled name must already be in the
+	// session — see rlenv.Config.FollowTargetPlayerName's own doc comment.
+	FollowTargetPlayerNames []string
+
+	// TaskWeights optionally reweights how often Select draws each task
+	// kind (keys are the kind names Task.Name returns: "goto", "mine",
+	// "combat", "chain_gather", …). A missing key defaults to 1 — so a
+	// nil/empty map preserves the historical uniform draw among available
+	// kinds. Weight <= 0 excludes a kind from the draw even when its
+	// parameter pool is non-empty (soft disable without clearing the
+	// pool). Negative weights are rejected by rlenvadapter.ValidatePool.
+	// Relative magnitudes matter, not absolute ones: {"combat": 4,
+	// "goto": 1} makes combat four times as likely as goto among those
+	// two when both are available.
+	TaskWeights map[string]float64
 }

@@ -469,3 +469,174 @@ func TestTaskSelectorMatchesSelectForTheSameDraw(t *testing.T) {
 }
 
 var _ rlenv.TaskSelector = TaskSelector(curriculum.Pool{}, rand.New(rand.NewPCG(0, 0)))
+
+func expansionPool() curriculum.Pool {
+	return curriculum.Pool{
+		TargetOffsets:             [][3]float64{{5, 0, 0}},
+		EquipTargetItems:          []string{"minecraft:elytra", "minecraft:iron_sword"},
+		PickupTargetItems:         []string{"minecraft:stick"},
+		PickupSearchRadius:        8,
+		PickupAnyItem:             true,
+		PlaceTargetItems:          []string{"minecraft:dirt"},
+		FlyTargetOffsets:          [][3]float64{{24, 8, 0}},
+		FlyArrivalRadius:          5,
+		RideVehicleTypes:          []string{"minecraft:horse"},
+		RideSearchRadius:          16,
+		CombatTargetMobTypes:      []string{"minecraft:zombie"},
+		CombatRadius:              16,
+		CreeperGunpowderActive:    true,
+		CreeperGunpowderRadius:    16,
+		SpearChargeTargetMobTypes: []string{"minecraft:zombie"},
+		SpearChargeRadius:         16,
+		MaceSmashTargetMobTypes:   []string{"minecraft:skeleton"},
+		MaceSmashRadius:           16,
+		FollowTargetPlayerNames:   []string{"companion"},
+		SleepSearchRadius:         10,
+		PortalSearchRadius:        16,
+		LightPortalSearchRadius:   12,
+		ArriveSneaking:            true,
+	}
+}
+
+func TestSelectProducesExpansionKindsOverManySamples(t *testing.T) {
+	pool := expansionPool()
+	rng := rand.New(rand.NewPCG(9, 10))
+	seen := map[string]bool{}
+	for range 5000 {
+		seen[Select(pool, rng).Name()] = true
+	}
+	for _, name := range []string{
+		"goto", "equip", "pickup", "pickup_any", "place", "fly", "ride",
+		"combat", "creeper_gunpowder", "spear_charge", "mace_smash", "follow",
+	} {
+		assert.True(t, seen[name], "%s must be reachable", name)
+	}
+}
+
+func TestExpansionTaskOverridesPoseTheirActions(t *testing.T) {
+	assert.Equal(t, "minecraft:elytra", equipTask{item: "minecraft:elytra"}.ToOverride().EquipTargetItem)
+	assert.True(t, pickupAnyTask{searchRadius: 8}.ToOverride().PickupAnyItem)
+	assert.True(t, flyTask{offset: [3]float64{1, 2, 3}, arrivalRadius: 5}.ToOverride().FlyTargetActive)
+	assert.Equal(t, "minecraft:horse", rideTask{vehicleType: "minecraft:horse", searchRadius: 16}.ToOverride().RideVehicleType)
+	assert.Equal(t, "minecraft:zombie", combatTask{mobType: "minecraft:zombie", radius: 16}.ToOverride().CombatTargetMobType)
+	assert.True(t, creeperGunpowderTask{radius: 16}.ToOverride().CreeperGunpowderActive)
+	assert.Equal(t, "minecraft:zombie", spearChargeTask{mobType: "minecraft:zombie", radius: 16}.ToOverride().SpearChargeTargetMobType)
+	assert.Equal(t, "minecraft:skeleton", maceSmashTask{mobType: "minecraft:skeleton", radius: 16}.ToOverride().MaceSmashTargetMobType)
+	assert.Equal(t, "companion", followTask{playerName: "companion"}.ToOverride().FollowTargetPlayerName)
+	assert.True(t, gotoTask{offset: [3]float64{5, 0, 0}, arriveSneaking: true}.ToOverride().ArriveSneaking)
+}
+
+func TestTaskSelectorInjectsCrossCuttingRadii(t *testing.T) {
+	pool := expansionPool()
+	rngA := rand.New(rand.NewPCG(1, 2))
+	rngB := rand.New(rand.NewPCG(1, 2))
+	selector := TaskSelector(pool, rngA)
+
+	for episode := range 30 {
+		want := Select(pool, rngB).ToOverride()
+		want.SleepSearchRadius = pool.SleepSearchRadius
+		want.PortalSearchRadius = pool.PortalSearchRadius
+		want.LightPortalSearchRadius = pool.LightPortalSearchRadius
+		assert.Equal(t, want, selector(episode, nil))
+	}
+}
+
+func TestValidatePoolRejectsNegativeTaskWeight(t *testing.T) {
+	pool := curriculum.Pool{
+		TargetOffsets: [][3]float64{{1, 0, 0}},
+		TaskWeights:   map[string]float64{"goto": -1},
+	}
+	err := ValidatePool(pool)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "negative")
+}
+
+func TestValidatePoolRejectsAllZeroTaskWeights(t *testing.T) {
+	pool := curriculum.Pool{
+		TargetOffsets:    [][3]float64{{1, 0, 0}},
+		MineTargetBlocks: []string{"minecraft:stone"},
+		TaskWeights:      map[string]float64{"goto": 0, "mine": 0},
+	}
+	assert.ErrorIs(t, ValidatePool(pool), errNoPositiveWeight)
+}
+
+func TestSelectExcludesZeroWeightKinds(t *testing.T) {
+	pool := curriculum.Pool{
+		TargetOffsets:    [][3]float64{{1, 0, 0}},
+		MineTargetBlocks: []string{"minecraft:stone"},
+		CraftTargetItems: []string{"minecraft:stick"},
+		TaskWeights:      map[string]float64{"goto": 0, "mine": 1, "craft": 0},
+	}
+	require.NoError(t, ValidatePool(pool))
+	rng := rand.New(rand.NewPCG(1, 2))
+	for range 200 {
+		assert.Equal(t, "mine", Select(pool, rng).Name())
+	}
+}
+
+func TestSelectWeightsBiasTowardHeavierKinds(t *testing.T) {
+	// combat weight 100 vs goto weight 1: combat should dominate without
+	// needing an exact-distribution assertion (those are flaky by design).
+	pool := curriculum.Pool{
+		TargetOffsets:        [][3]float64{{1, 0, 0}},
+		CombatTargetMobTypes: []string{"minecraft:zombie"},
+		CombatRadius:         16,
+		TaskWeights:          map[string]float64{"goto": 1, "combat": 100},
+	}
+	require.NoError(t, ValidatePool(pool))
+	rng := rand.New(rand.NewPCG(3, 4))
+	counts := map[string]int{}
+	const samples = 2000
+	for range samples {
+		counts[Select(pool, rng).Name()]++
+	}
+	assert.Greater(t, counts["combat"], counts["goto"]*10,
+		"combat=%d goto=%d; expected combat >> goto under 100:1 weights", counts["combat"], counts["goto"])
+	assert.Greater(t, counts["goto"], 0, "goto must still appear occasionally under a positive weight")
+}
+
+func TestSelectWithNilTaskWeightsStillDrawsAllAvailableKinds(t *testing.T) {
+	// Regression: empty/nil TaskWeights must keep the historical
+	// "every available kind is reachable" property (uniform default weight 1).
+	pool := fullPool()
+	require.Nil(t, pool.TaskWeights)
+	require.NoError(t, ValidatePool(pool))
+	rng := rand.New(rand.NewPCG(5, 6))
+	seen := map[string]bool{}
+	for range 500 {
+		seen[Select(pool, rng).Name()] = true
+	}
+	assert.True(t, seen["goto"])
+	assert.True(t, seen["mine"])
+	assert.True(t, seen["craft"])
+}
+
+func TestFactoryKindMatchesDrawnTaskName(t *testing.T) {
+	// Weights are keyed by Kind(); a mismatch would silently default a
+	// configured weight back to 1. Guard the whole registry.
+	pool := expansionPool()
+	pool.MineTargetBlocks = []string{"minecraft:stone"}
+	pool.MineSearchRadius = 8
+	pool.CraftTargetItems = []string{"minecraft:stick"}
+	pool.MineFarTargetOffsets = [][3]float64{{24, 0, 0}}
+	pool.MineFarBlocks = []string{"minecraft:sand"}
+	pool.MineFarSearchRadius = 6
+	pool.CraftFarTargetOffsets = [][3]float64{{24, 0, 0}}
+	pool.CraftFarItems = []string{"minecraft:chest"}
+	pool.CraftFarSearchRadius = 6
+	pool.MineBuriedTargetBlocks = []string{"minecraft:coal_ore"}
+	pool.MineBuriedSearchRadius = 10
+	pool.MineBuriedRequiredTool = "minecraft:wooden_pickaxe"
+	pool.ChainTargetOffsets = [][3]float64{{18, 0, 0}}
+	pool.ChainSearchRadius = 8
+	pool.ChainGoalItems = []string{"minecraft:bowl"}
+	pool.ChainMineTargetBlocks = []string{"minecraft:coal_ore"}
+	rng := rand.New(rand.NewPCG(7, 8))
+	for _, factory := range allFactories {
+		if !factory.Available(pool) {
+			t.Fatalf("%s reported unavailable against a fully populated pool", factory.Kind())
+		}
+		task := factory.Draw(pool, rng)
+		assert.Equal(t, factory.Kind(), task.Name(), "factory Kind must match Task.Name for weight lookup")
+	}
+}
