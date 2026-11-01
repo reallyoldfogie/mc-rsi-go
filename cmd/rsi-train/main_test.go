@@ -678,7 +678,13 @@ func TestFlagsEpisodeLimitsOmitsCloneAreaFromWhenUnset(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, f.episodeLimits().cloneAreaFrom)
 
-	f, err = parseFlags([]string{"-checkpoint-dir", "/tmp/ckpt", "-mc-agent-config", "/tmp/config.json", "-clone-area-from", "0,-61,5000"})
+	// -seed-template-ore-count 0: this test only cares about
+	// episodeLimits' own cloneAreaFrom population, not ore seeding -
+	// disabling it sidesteps validateFlags' own, unrelated
+	// -clone-area-depth-vs-seed-template-ore-max-depth guardrail
+	// (docs/plans/21-buried-mining-success.md Phase 0), whose defaults
+	// (depth 3 vs max depth 4) don't satisfy each other.
+	f, err = parseFlags([]string{"-checkpoint-dir", "/tmp/ckpt", "-mc-agent-config", "/tmp/config.json", "-clone-area-from", "0,-61,5000", "-seed-template-ore-count", "0"})
 	require.NoError(t, err)
 	limits := f.episodeLimits()
 	require.NotNil(t, limits.cloneAreaFrom)
