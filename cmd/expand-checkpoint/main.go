@@ -249,4 +249,3 @@ func absDiff(a, b float64) float64 {
 	}
 	return d
 }
-

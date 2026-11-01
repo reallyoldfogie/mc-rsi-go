@@ -28,8 +28,8 @@ type TrainingSummary struct {
 }
 
 type EvaluationSummary struct {
-	Seed     uint64    `json:"seed,omitempty"`
-	Episodes int       `json:"episodes"`
+	Seed     uint64 `json:"seed,omitempty"`
+	Episodes int    `json:"episodes"`
 	// EpisodeRewards, EpisodeTasks, and EpisodeTerminationReasons are
 	// parallel, index-aligned per-episode records: episode i's reward,
 	// task label, and termination reason. Task/TerminationReason let a
