@@ -1,0 +1,15 @@
+{
+  "_comment": "Acquisition curriculum for mine_buried only (docs/plans/21-buried-mining-success.md Phase 2). Pair with -seed-template-ore-count 150 -seed-template-ore-min-depth 2 -seed-template-ore-max-depth 3 -clone-area-depth >=3 and trainer episode_len >= 300. Explore depth must match the seed band.",
+  "mine_buried_target_blocks": [
+    "minecraft:coal_ore"
+  ],
+  "mine_buried_search_radius": 10,
+  "mine_buried_explore_depth": 3,
+  "mine_buried_required_tool": "minecraft:netherite_pickaxe",
+  "mine_buried_required_tool_enchantments": {
+    "minecraft:efficiency": 5
+  },
+  "task_weights": {
+    "mine_buried": 1
+  }
+}

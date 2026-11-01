@@ -1,0 +1,382 @@
+{
+  "_comment": "Full curriculum pool that poses every task kind currently wired through pkg/curriculum + rlenvadapter, so every rlenv action can become legal during training (when its preconditions are met). Built from configs/curriculum.json plus the newer action-space fields (equip/useitem, pickup, place, fly, ride, combat, creeper/spear/mace, follow, sleep/portal/light-portal, arrive_sneaking). Cross-cutting radii (sleep/portal/light_portal) are injected onto every episode; task kinds are selected uniformly among those with non-empty pools. Notes: (1) follow_target_player_names needs a second real connected player/bot already in the session; (2) portal/light_portal have no DefaultEpisodeSeeder yet \u2014 the working-area template must already provide a portal/frame within radius, or those actions stay masked as nothing-visible; (3) arrive_sneaking only affects goto dispatch. Sample values mirror production curriculum.json distances/radii and rlenv.DefaultConfig where a default already exists. task_weights boosts newer action-space kinds so the full pool does not dilute them to ~1/N each.",
+  "target_offsets": [
+    [
+      5,
+      0,
+      0
+    ],
+    [
+      -5,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      5
+    ],
+    [
+      0,
+      0,
+      -5
+    ],
+    [
+      4,
+      0,
+      4
+    ],
+    [
+      -4,
+      0,
+      4
+    ],
+    [
+      4,
+      0,
+      -4
+    ],
+    [
+      -4,
+      0,
+      -4
+    ],
+    [
+      8,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      8
+    ]
+  ],
+  "arrive_sneaking": true,
+  "mine_target_blocks": [
+    "minecraft:dirt",
+    "minecraft:sand",
+    "minecraft:gravel",
+    "minecraft:grass_block",
+    "minecraft:coarse_dirt",
+    "minecraft:clay"
+  ],
+  "mine_search_radius": 16,
+  "craft_target_items": [
+    "minecraft:stick",
+    "minecraft:crafting_table",
+    "minecraft:torch",
+    "minecraft:oak_planks",
+    "minecraft:chest",
+    "minecraft:bowl"
+  ],
+  "mine_far_target_offsets": [
+    [
+      28,
+      0,
+      0
+    ],
+    [
+      -28,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      28
+    ],
+    [
+      0,
+      0,
+      -28
+    ],
+    [
+      28,
+      0,
+      28
+    ],
+    [
+      -28,
+      0,
+      28
+    ],
+    [
+      28,
+      0,
+      -28
+    ],
+    [
+      -28,
+      0,
+      -28
+    ],
+    [
+      36,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      36
+    ]
+  ],
+  "mine_far_blocks": [
+    "minecraft:sand",
+    "minecraft:gravel",
+    "minecraft:coarse_dirt",
+    "minecraft:clay"
+  ],
+  "mine_far_search_radius": 8,
+  "craft_far_target_offsets": [
+    [
+      28,
+      0,
+      0
+    ],
+    [
+      -28,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      28
+    ],
+    [
+      0,
+      0,
+      -28
+    ],
+    [
+      28,
+      0,
+      28
+    ],
+    [
+      -28,
+      0,
+      28
+    ],
+    [
+      28,
+      0,
+      -28
+    ],
+    [
+      -28,
+      0,
+      -28
+    ],
+    [
+      36,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      36
+    ]
+  ],
+  "craft_far_items": [
+    "minecraft:chest",
+    "minecraft:bowl"
+  ],
+  "craft_far_search_radius": 8,
+  "chain_target_offsets": [
+    [
+      28,
+      0,
+      0
+    ],
+    [
+      -28,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      28
+    ],
+    [
+      0,
+      0,
+      -28
+    ],
+    [
+      28,
+      0,
+      28
+    ],
+    [
+      -28,
+      0,
+      28
+    ],
+    [
+      28,
+      0,
+      -28
+    ],
+    [
+      -28,
+      0,
+      -28
+    ],
+    [
+      36,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      36
+    ]
+  ],
+  "chain_goal_items": [
+    "minecraft:bowl",
+    "minecraft:chest",
+    "minecraft:wooden_pickaxe"
+  ],
+  "chain_search_radius": 8,
+  "chain_mine_target_blocks": [
+    "minecraft:coal_ore"
+  ],
+  "mine_buried_target_blocks": [
+    "minecraft:coal_ore"
+  ],
+  "mine_buried_search_radius": 16,
+  "mine_buried_required_tool": "minecraft:netherite_pickaxe",
+  "mine_buried_required_tool_enchantments": {
+    "minecraft:efficiency": 5
+  },
+  "sleep_search_radius": 10,
+  "portal_search_radius": 16,
+  "light_portal_search_radius": 16,
+  "equip_target_items": [
+    "minecraft:iron_sword",
+    "minecraft:shield",
+    "minecraft:bow",
+    "minecraft:elytra",
+    "minecraft:golden_apple"
+  ],
+  "pickup_target_items": [
+    "minecraft:stick",
+    "minecraft:oak_log",
+    "minecraft:cobblestone",
+    "minecraft:iron_ingot"
+  ],
+  "pickup_search_radius": 8,
+  "pickup_any_item": true,
+  "place_target_items": [
+    "minecraft:dirt",
+    "minecraft:cobblestone",
+    "minecraft:oak_planks",
+    "minecraft:torch"
+  ],
+  "fly_target_offsets": [
+    [
+      24,
+      8,
+      0
+    ],
+    [
+      -24,
+      8,
+      0
+    ],
+    [
+      0,
+      8,
+      24
+    ],
+    [
+      0,
+      8,
+      -24
+    ],
+    [
+      24,
+      12,
+      24
+    ],
+    [
+      -24,
+      12,
+      24
+    ],
+    [
+      24,
+      12,
+      -24
+    ],
+    [
+      -24,
+      12,
+      -24
+    ]
+  ],
+  "fly_arrival_radius": 5,
+  "ride_vehicle_types": [
+    "minecraft:horse",
+    "minecraft:donkey",
+    "minecraft:mule",
+    "minecraft:pig",
+    "minecraft:boat"
+  ],
+  "ride_search_radius": 16,
+  "combat_target_mob_types": [
+    "minecraft:zombie",
+    "minecraft:skeleton",
+    "minecraft:spider",
+    "minecraft:husk"
+  ],
+  "combat_radius": 16,
+  "combat_include_players": false,
+  "combat_include_neutral": false,
+  "creeper_gunpowder_active": true,
+  "creeper_gunpowder_radius": 16,
+  "spear_charge_target_mob_types": [
+    "minecraft:zombie",
+    "minecraft:husk"
+  ],
+  "spear_charge_radius": 16,
+  "mace_smash_target_mob_types": [
+    "minecraft:zombie",
+    "minecraft:skeleton"
+  ],
+  "mace_smash_radius": 16,
+  "follow_target_player_names": [
+    "companion"
+  ],
+  "task_weights": {
+    "goto": 1,
+    "mine": 1,
+    "craft": 1,
+    "mine_far": 1,
+    "craft_far": 1,
+    "mine_buried": 2,
+    "chain_gather": 0.5,
+    "chain_table": 0.5,
+    "chain_place": 0.5,
+    "chain_use": 0.5,
+    "chain_mine": 1,
+    "equip": 3,
+    "pickup": 3,
+    "pickup_any": 1,
+    "place": 2,
+    "fly": 3,
+    "ride": 3,
+    "combat": 4,
+    "creeper_gunpowder": 3,
+    "spear_charge": 3,
+    "mace_smash": 3,
+    "follow": 1
+  },
+  "mine_buried_explore_depth": 3
+}
