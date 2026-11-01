@@ -361,6 +361,19 @@ var (
 		Name: "rsi_task_episodes_total",
 		Help: "Episodes posed by the curriculum, by task type. Only emitted when -curriculum-config is set.",
 	}, []string{"task"}) // "goto" | "mine" | "craft" | "mine_far" | "craft_far" | "chain_gather" | "chain_table" | "chain_place" | "chain_use"
+
+	// Buried-search diagnostics (docs/plans/21-buried-mining-success.md Phase 0).
+	// Only incremented when the wrapped env implements buriedSearchReporter
+	// (mc-agent rlenv.Environment) and BuriedSearchStats reports active=true.
+	metricBuriedSearchEpisodesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "rsi_buried_search_episodes_total",
+		Help: "Completed buried-search episodes (mine_buried / chain_mine ore phase), by whether ore was ever LOS-visible and by outcome.",
+	}, []string{"task", "ever_visible", "outcome"})
+	metricBuriedQuadrantsExplored = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "rsi_buried_quadrants_explored",
+		Help:    "How many of the four buried-search exploration quadrants were marked before the episode ended.",
+		Buckets: []float64{0, 1, 2, 3, 4},
+	}, []string{"task", "outcome"})
 )
 
 // recordEpochDiagnostics publishes the PPO objective, advantage, and
@@ -682,6 +695,12 @@ type doneReasonReporter interface {
 	DoneReason() string
 }
 
+// buriedSearchReporter is implemented by mc-agent rlenv.Environment
+// (BuriedSearchStats). Optional so test fakes need not implement it.
+type buriedSearchReporter interface {
+	BuriedSearchStats() (active bool, everVisible bool, quadrantsExplored int)
+}
+
 func environmentDoneReason(env rl.Environment) string {
 	if reporter, ok := env.(doneReasonReporter); ok {
 		if reason := reporter.DoneReason(); reason != "" {
@@ -827,6 +846,16 @@ func (e *instrumentedEnvironment) Step(ctx context.Context, action rl.Action) (r
 		metricEpisodesTotal.WithLabelValues(task, outcome).Inc()
 		metricEpisodeLengthSteps.WithLabelValues(task, outcome, episodeLengthPhase()).Observe(float64(e.steps))
 		metricEpisodeTerminationsTotal.WithLabelValues(task, doneReason, episodeLengthPhase()).Inc()
+		if reporter, ok := e.env.(buriedSearchReporter); ok {
+			if active, everVisible, quadrants := reporter.BuriedSearchStats(); active {
+				vis := "false"
+				if everVisible {
+					vis = "true"
+				}
+				metricBuriedSearchEpisodesTotal.WithLabelValues(task, vis, outcome).Inc()
+				metricBuriedQuadrantsExplored.WithLabelValues(task, outcome).Observe(float64(quadrants))
+			}
+		}
 		e.started = false
 		e.steps = 0
 	}

@@ -228,6 +228,18 @@ func parseFlags(args []string) (flags, error) {
 			return flags{}, fmt.Errorf("rsi-train: -clone-area-radius/-clone-area-height/-clone-area-depth combination is too large even one Z row at a time (vanilla's clone command caps at 32768 blocks, and mc-agent's own Z-band splitting needs at least one row to fit): radius %d, height %d, depth %d", r, height, depth)
 		}
 	}
+	// clone-area-depth must cover seed-template-ore-max-depth or ore
+	// placed in the template is outside the cloned volume and every
+	// working-area Reset silently drops it (docs/plans/21 Phase 0).
+	if f.cloneAreaFrom != "" && f.seedTemplateOreCount > 0 {
+		depth := f.cloneAreaDepth
+		if depth <= 0 {
+			depth = defaultCloneAreaDepthBlocks
+		}
+		if f.seedTemplateOreMaxDepth > depth {
+			return flags{}, fmt.Errorf("rsi-train: -clone-area-depth (%d) must be >= -seed-template-ore-max-depth (%d) so seeded ore is inside the clone volume", depth, f.seedTemplateOreMaxDepth)
+		}
+	}
 	if f.parallelEnvs <= 0 {
 		return flags{}, fmt.Errorf("rsi-train: -parallel-envs must be positive, got %d", f.parallelEnvs)
 	}
@@ -283,6 +295,9 @@ func run(args []string) error {
 		}
 		if err := rlenvadapter.ValidatePool(pool); err != nil {
 			return fmt.Errorf("building curriculum generator from %s: %w", f.curriculumConfigPath, err)
+		}
+		if err := validateBuriedOreSeeding(f, &pool); err != nil {
+			return err
 		}
 		curriculumPool = &pool
 	}
@@ -2299,6 +2314,15 @@ func connectEnvironmentRange(ctx context.Context, base mcconfig.Settings, start,
 
 				task := rlenvadapter.Select(*curriculumPool, taskRNG)
 				override := task.ToOverride()
+				// Cross-cutting capabilities (ActionSleep / ActionUsePortal /
+				// ActionLightPortal) are injected here the same way
+				// rlenvadapter.TaskSelector does — this closure calls Select
+				// directly so it can also read Name/GoalDescription, so it
+				// must mirror that injection itself rather than leave sleep/
+				// portal radii stranded on the pool.
+				override.SleepSearchRadius = curriculumPool.SleepSearchRadius
+				override.PortalSearchRadius = curriculumPool.PortalSearchRadius
+				override.LightPortalSearchRadius = curriculumPool.LightPortalSearchRadius
 				taskMu.Lock()
 				selectedTask = task.Name()
 				selectedGoal = task.GoalDescription()

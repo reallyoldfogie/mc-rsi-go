@@ -3,6 +3,8 @@ package main
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/curriculum"
 )
 
@@ -111,4 +113,17 @@ func TestOreTemplatePositionsCountCappedByFootprint(t *testing.T) {
 	if len(positions) != want {
 		t.Fatalf("len(positions) = %d, want %d (the whole radius-1 footprint, since 100 was asked for)", len(positions), want)
 	}
+}
+
+func TestValidateBuriedOreSeedingRequiresCountWhenBuriedAndClone(t *testing.T) {
+	pool := &curriculum.Pool{MineBuriedTargetBlocks: []string{"minecraft:coal_ore"}}
+	f := flags{cloneAreaFrom: "0,-1,5000", seedTemplateOreCount: 0}
+	err := validateBuriedOreSeeding(f, pool)
+	require.Error(t, err)
+
+	f.seedTemplateOreCount = 60
+	require.NoError(t, validateBuriedOreSeeding(f, pool))
+
+	require.NoError(t, validateBuriedOreSeeding(flags{}, pool), "no clone-area-from: nothing to validate")
+	require.NoError(t, validateBuriedOreSeeding(f, &curriculum.Pool{}), "no buried blocks")
 }

@@ -224,3 +224,22 @@ func seedTemplateOres(ctx context.Context, rconAddress, rconPassword string, cen
 	}
 	return nil
 }
+
+// validateBuriedOreSeeding fails fast when the curriculum poses buried ore
+// tasks against a clone template but template ore seeding is disabled or
+// has nothing to place — those episodes would search empty stone forever
+// (docs/plans/21-buried-mining-success.md Phase 0; found live before
+// seedTemplateOres existed).
+func validateBuriedOreSeeding(f flags, pool *curriculum.Pool) error {
+	if pool == nil || f.cloneAreaFrom == "" {
+		return nil
+	}
+	blocks := uniqueOreTargets(pool)
+	if len(blocks) == 0 {
+		return nil
+	}
+	if f.seedTemplateOreCount <= 0 {
+		return fmt.Errorf("rsi-train: curriculum poses buried ore (%v) with -clone-area-from set, but -seed-template-ore-count is %d (disabled); refuse to train against an empty template", blocks, f.seedTemplateOreCount)
+	}
+	return nil
+}
