@@ -286,6 +286,49 @@ type Config[P RecurrentOrNot] struct {
 	ResumeStudent           P
 	ResumeStudentStartEpoch int
 	ResumeOptimizerState    *actorcritic.AdamState
+
+	// OnRolloutCollected, if set, is called once for every freshly
+	// collected trajectory within an epoch - well before that epoch's own
+	// PPO update, let alone OnEpoch - letting a caller persist progress
+	// within the epoch so a crash mid-epoch doesn't lose every trajectory
+	// collected so far, only whichever one was in flight. Only the
+	// recurrent trainer supports this today (see
+	// ppo.RecurrentTrainer.SetRolloutProgress); trainStudent checks for
+	// the capability via an unexported interface rather than failing a
+	// plain-params Round over it, so this is silently ignored for P =
+	// *actorcritic.Params. nil (the default) costs nothing extra.
+	OnRolloutCollected func(epoch, index int, rollout *ppo.RecurrentRollout)
+	// ResumeRollouts supplies ResumeStudentStartEpoch's own
+	// already-collected trajectories (nil for any not yet collected) -
+	// the other half of OnRolloutCollected, letting a caller that
+	// persisted them before a crash skip re-collecting whatever an
+	// earlier, interrupted attempt at this exact epoch had already
+	// finished. Applies to the very first epoch trainStudent runs only
+	// (ppo.RecurrentTrainer.ResumeRollouts is itself consumed exactly
+	// once), and only if the trainer supports it - same capability check
+	// as OnRolloutCollected. Caller-cleared, same convention as
+	// ResumeStudent: cfg is passed by value, so reusing one Config across
+	// several Round calls without clearing this would resupply a stale
+	// epoch's rollouts to a later one that never asked for them.
+	ResumeRollouts []*ppo.RecurrentRollout
+}
+
+// rolloutResumeTrainer is implemented by a trainer that supports
+// mid-epoch rollout persistence/resume (today, only
+// ppo.RecurrentTrainer) - checked the same way optimizerStateTrainer is,
+// so a trainer that doesn't support it (the plain, non-recurrent
+// ppo.Trainer) is left alone rather than failing the round over it. See
+// Config.OnRolloutCollected/ResumeRollouts.
+type rolloutResumeTrainer interface {
+	// fn's parameter must be ppo.RolloutCollected itself, not a
+	// structurally-equal func literal: Go interface satisfaction requires
+	// identical parameter types, and a named type is never identical to
+	// an unnamed one even with the same underlying signature - writing
+	// the literal here would make this interface un-satisfiable by
+	// *ppo.RecurrentTrainer and silently disable the whole feature (the
+	// type assertion below would just always report ok=false).
+	SetRolloutProgress(fn ppo.RolloutCollected)
+	ResumeRollouts(rollouts []*ppo.RecurrentRollout)
 }
 
 // EvalSide identifies which side of a leapfrog comparison
@@ -435,6 +478,14 @@ func trainStudent[P RecurrentOrNot](ctx context.Context, envs []rl.Environment, 
 			if err := restorer.RestoreOptimizerState(*cfg.ResumeOptimizerState); err != nil {
 				return zero, fmt.Errorf("restoring optimizer state: %w", err)
 			}
+		}
+	}
+	if resumer, ok := trainer.(rolloutResumeTrainer); ok {
+		if cfg.OnRolloutCollected != nil {
+			resumer.SetRolloutProgress(cfg.OnRolloutCollected)
+		}
+		if cfg.ResumeRollouts != nil {
+			resumer.ResumeRollouts(cfg.ResumeRollouts)
 		}
 	}
 

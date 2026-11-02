@@ -11,7 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/moby/moby/client v0.2.1
 	github.com/prometheus/client_golang v1.24.0
-	github.com/reallyoldfogie/cRL-go v0.15.0
+	github.com/reallyoldfogie/cRL-go v0.16.0
 	github.com/reallyoldfogie/mc-agent v0.0.58
 	github.com/reallyoldfogie/mc-bot-go v0.2.7
 	github.com/reallyoldfogie/mc-client-test-go v0.2.0

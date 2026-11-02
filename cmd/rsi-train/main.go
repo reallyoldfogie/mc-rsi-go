@@ -1376,6 +1376,22 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 		log.Printf("resuming recurrent student from interim checkpoint: epoch %d, generation %d, best return %.3f, total updates %d", epoch, rec.Generation, metadata.BestReturn, metadata.TotalUpdates)
 	}
 
+	// epochRolloutsDir persists each trajectory as it's collected within
+	// the current, not-yet-finished epoch - a crash mid-epoch (the
+	// common case for a long-running live-bot session: 64 trajectories
+	// against a real Minecraft server takes real wall-clock time) would
+	// otherwise lose every one already collected, not just whichever was
+	// in flight. See epoch_rollouts.go for the save/load/cleanup
+	// mechanics and docs/plans/21-buried-mining-success.md's resumption
+	// discussion, 2026-11-02, for why this exists.
+	epochRolloutsDir := filepath.Join(f.checkpointDir, "epoch-rollouts")
+	startEpoch := 0
+	if resumeParams != nil {
+		startEpoch = resumeEpoch + 1
+	}
+	pruneStaleEpochRollouts(epochRolloutsDir, rec.Generation, startEpoch)
+	resumeRollouts := loadEpochRollouts(epochRolloutsDir, rec.Generation, startEpoch, trainerSettings.RolloutSize)
+
 	networkDead := false
 	deadEpochs := 0
 
@@ -1385,24 +1401,29 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 	epochsCount := 0
 
 	cfg := leapfrog.Config[*actorcritic.RecurrentParams]{
-		Trainer:             trainerSettings,
-		EpochsPerGeneration: f.epochsPerGeneration,
-		EvalEpisodes:        f.evalEpisodes,
-		EvalEpisodeLen:      f.evalEpisodeLen,
-		WinZScore:           float32(f.winZScore),
-		MinWinMargin:        float32(f.minWinMargin),
-		EvalGreedy:          f.evalGreedy,
-		ResumeStudent:       resumeParams,
-		ResumeStudentStartEpoch: func() int {
-			if resumeParams != nil {
-				return resumeEpoch + 1
+		Trainer:                 trainerSettings,
+		EpochsPerGeneration:     f.epochsPerGeneration,
+		EvalEpisodes:            f.evalEpisodes,
+		EvalEpisodeLen:          f.evalEpisodeLen,
+		WinZScore:               float32(f.winZScore),
+		MinWinMargin:            float32(f.minWinMargin),
+		EvalGreedy:              f.evalGreedy,
+		ResumeStudent:           resumeParams,
+		ResumeStudentStartEpoch: startEpoch,
+		ResumeRollouts:          resumeRollouts,
+		OnRolloutCollected: func(epoch, index int, rollout *ppo.RecurrentRollout) {
+			if err := saveEpochRollout(epochRolloutsDir, rec.Generation, epoch, index, rollout); err != nil {
+				log.Printf("  epoch %d: persisting rollout %d for crash recovery: %v", epoch, index, err)
 			}
-			return 0
-		}(),
+		},
 		OnBeforeEvaluation: markEvaluationInProgress(pairedEvalTaskReseeder(evalTaskReseeders(connected))),
 		OnEpoch: func(stats ppo.EpochStats, params *actorcritic.RecurrentParams) {
 			madeEpochProgress = true
 			latestParams = params
+			// This epoch is done; its own partial-rollout cache (if any
+			// trajectory ever got persisted for it) is now fully
+			// subsumed by this epoch's own interim checkpoint below.
+			clearEpochRollouts(epochRolloutsDir, rec.Generation, stats.Epoch)
 			exporter.setRecurrentStudent(params, environmentID, progress, rec.Generation)
 			progress.Epoch = stats.Epoch
 			progress.TotalUpdates += stats.UpdateCount

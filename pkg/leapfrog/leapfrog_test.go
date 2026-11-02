@@ -217,6 +217,87 @@ func TestRoundResumesStudentFromConfigInsteadOfCloningTeacher(t *testing.T) {
 	assert.True(t, sawResumedParamsFirst, "the very first epoch must train the resumed params object itself, not a fresh clone of teacherParams")
 }
 
+// TestRoundCallsOnRolloutCollectedForRecurrentTrainerOnly covers
+// Config.OnRolloutCollected/ResumeRollouts (added so a caller can persist
+// trajectories as they're collected and skip re-collecting them after a
+// crash mid-epoch - see ppo.RecurrentTrainer.SetRolloutProgress/
+// ResumeRollouts). The capability check in trainStudent (an unexported
+// rolloutResumeTrainer interface, mirroring optimizerStateTrainer) is
+// easy to get subtly wrong by writing a structurally-equal but
+// not-identical method signature, which would silently never fire
+// instead of failing to compile - this test catches exactly that, by
+// asserting the callback DOES fire for the real *ppo.RecurrentTrainer
+// Round builds via RecurrentSeams, and by confirming it is simply never
+// called for PlainSeams (ppo.Trainer doesn't support this), never
+// erroring over its absence.
+func TestRoundCallsOnRolloutCollectedForRecurrentTrainerOnly(t *testing.T) {
+	recurrentEnv, recurrentTeacherParams := newTestGridEnvRecurrent(t)
+	recurrentCfg := testRecurrentConfig(recurrentEnv)
+
+	var seen []struct{ epoch, index int }
+	recurrentCfg.OnRolloutCollected = func(epoch, index int, rollout *ppo.RecurrentRollout) {
+		require.NotNil(t, rollout)
+		seen = append(seen, struct{ epoch, index int }{epoch, index})
+	}
+
+	_, err := Round(context.Background(), []rl.Environment{recurrentEnv}, recurrentTeacherParams, recurrentCfg, RecurrentSeams, rand.New(rand.NewPCG(1, 2)))
+	require.NoError(t, err)
+
+	require.Len(t, seen, recurrentCfg.Trainer.RolloutSize, "must fire exactly once per collected trajectory")
+	for _, s := range seen {
+		assert.Equal(t, 0, s.epoch)
+	}
+
+	plainEnv, plainTeacherParams := newTestGridEnv(t)
+	plainCfg := testConfig(plainEnv)
+	plainCfg.OnRolloutCollected = func(epoch, index int, rollout *ppo.RecurrentRollout) {
+		t.Fatal("OnRolloutCollected must never fire for the plain (non-recurrent) trainer")
+	}
+	_, err = Round(context.Background(), []rl.Environment{plainEnv}, plainTeacherParams, plainCfg, PlainSeams, rand.New(rand.NewPCG(1, 2)))
+	require.NoError(t, err)
+}
+
+// TestRoundResumeRolloutsSkipsAlreadyCollectedTrajectories mirrors
+// cRL-go's own TestRecurrentResumeRolloutsSkipsAlreadyCollectedSlots one
+// layer up: a caller that persisted some of this epoch's trajectories
+// before a crash (via a first Round's own OnRolloutCollected) and
+// supplies them back through Config.ResumeRollouts on a second, fresh
+// Round call must see OnRolloutCollected fire only for the slots that
+// were nil, never re-reporting (or re-collecting) the ones already
+// supplied.
+func TestRoundResumeRolloutsSkipsAlreadyCollectedTrajectories(t *testing.T) {
+	env, teacherParams := newTestGridEnvRecurrent(t)
+	cfg := testRecurrentConfig(env)
+	rolloutSize := cfg.Trainer.RolloutSize
+
+	var firstPass []*ppo.RecurrentRollout = make([]*ppo.RecurrentRollout, rolloutSize)
+	cfg.OnRolloutCollected = func(epoch, index int, rollout *ppo.RecurrentRollout) {
+		firstPass[index] = rollout
+	}
+	_, err := Round(context.Background(), []rl.Environment{env}, teacherParams, cfg, RecurrentSeams, rand.New(rand.NewPCG(1, 2)))
+	require.NoError(t, err)
+	for _, r := range firstPass {
+		require.NotNil(t, r, "every slot must have been collected and reported on the first pass")
+	}
+
+	resumeFreshEnv, resumeTeacherParams := newTestGridEnvRecurrent(t)
+	resumeCfg := testRecurrentConfig(resumeFreshEnv)
+	resumeCfg.ResumeRollouts = make([]*ppo.RecurrentRollout, rolloutSize)
+	resumeCfg.ResumeRollouts[0] = firstPass[0] // every other slot stays nil - still needs collecting.
+
+	var secondPassIndices []int
+	resumeCfg.OnRolloutCollected = func(epoch, index int, rollout *ppo.RecurrentRollout) {
+		secondPassIndices = append(secondPassIndices, index)
+	}
+	_, err = Round(context.Background(), []rl.Environment{resumeFreshEnv}, resumeTeacherParams, resumeCfg, RecurrentSeams, rand.New(rand.NewPCG(1, 2)))
+	require.NoError(t, err)
+
+	for _, index := range secondPassIndices {
+		assert.NotEqual(t, 0, index, "slot 0 was supplied via ResumeRollouts - it must never be re-collected or re-reported")
+	}
+	assert.Len(t, secondPassIndices, rolloutSize-1, "every slot except the one supplied via ResumeRollouts must still be freshly collected")
+}
+
 // TestRoundResumedPastTheEpochBudgetSkipsTrainingAndStillEvaluates: a
 // resume at or beyond EpochsPerGeneration must not re-arm a fresh budget
 // (the live bug: every restart added another full round of epochs); it
