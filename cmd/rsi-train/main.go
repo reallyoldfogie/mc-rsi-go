@@ -2026,10 +2026,11 @@ func craftIngredientSeeder(ctx context.Context, seedAgent rlenv.SeedAgent, cfg r
 	// replacement beside the bot.
 	if cfg.MineTargetBlock != "" {
 		mineCfg := rlenv.Config{
-			MineTargetBlock:  cfg.MineTargetBlock,
-			MineSearchRadius: cfg.MineSearchRadius,
-			MineRequiredTool: cfg.MineRequiredTool,
-			MineTargetBuried: cfg.MineTargetBuried,
+			MineTargetBlock:              cfg.MineTargetBlock,
+			MineSearchRadius:             cfg.MineSearchRadius,
+			MineRequiredTool:             cfg.MineRequiredTool,
+			MineRequiredToolEnchantments: cfg.MineRequiredToolEnchantments,
+			MineTargetBuried:             cfg.MineTargetBuried,
 		}
 		if err := rlenv.DefaultEpisodeSeeder(ctx, seedAgent, mineCfg); err != nil {
 			return err
