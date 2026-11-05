@@ -172,6 +172,14 @@ func (t mineBuriedTask) ToOverride() rlenv.TaskOverride {
 		// against a real server: it otherwise does exactly that, since
 		// the real buried instance is never visible by design).
 		MineTargetBuried: true,
+		// Without this, mc-agent's mine/minedBuried used to credit
+		// success the instant the target block broke, regardless of
+		// whether the bot ever kept the drop — found live, 2026-11-04:
+		// roughly half of mine_buried's agents never held the ore they'd
+		// just "successfully" mined. chainTask.ToOverride below already
+		// sets this (ChainMine needed the gathered log collected to craft
+		// with); mine_buried never did.
+		CollectDrops: true,
 	}
 }
 
