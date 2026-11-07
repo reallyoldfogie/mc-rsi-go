@@ -473,7 +473,7 @@
     {
       "type": "timeseries",
       "title": "Training throughput (samples/sec)",
-      "description": "rate(rsi_epoch_samples_total[5m]) \u2014 how many rollout steps (samples) Student training is consuming per second. A sustained drop usually means the live Minecraft session has slowed down (server load, network), not that PPO itself changed.",
+      "description": "rate(rsi_epoch_samples_total[20m]) \u2014 how many rollout steps (samples) Student training is consuming per second. A sustained drop usually means the live Minecraft session has slowed down (server load, network), not that PPO itself changed. Window widened from 5m to 20m on 2026-11-07: rsi_epoch_samples_total only increments once per epoch, in a single jump, not continuously - once episodes got much shorter (an earlier, separate fix) and epoch duration routinely exceeded 5m, a 5m rate() window showed a multi-minute false zero-throughput stretch between every jump even while agents were actively running the whole time. 20m keeps at least one real jump inside the window as long as epochs stay under that; if they ever grow past it again, widen this further rather than reading a flat zero here as a stall - check the per-epoch log lines/rsi_current_epoch for the ground truth instead.",
       "id": 11,
       "gridPos": {
         "h": 9,
@@ -487,7 +487,7 @@
       },
       "targets": [
         {
-          "expr": "rate(rsi_epoch_samples_total[5m])",
+          "expr": "rate(rsi_epoch_samples_total[20m])",
           "refId": "A",
           "legendFormat": "samples/sec"
         }
@@ -968,7 +968,7 @@
     {
       "type": "timeseries",
       "title": "Gradient updates/sec",
-      "description": "rate(rsi_gradient_updates_total[5m]) \u2014 optimizer update throughput during Student training.",
+      "description": "rate(rsi_gradient_updates_total[20m]) \u2014 optimizer update throughput during Student training. Window widened from 5m to 20m on 2026-11-07, same reason as the \"Training throughput\" panel's own description: this counter also only increments once per epoch, not continuously, so a window shorter than typical epoch duration shows a false zero-throughput stretch between jumps.",
       "id": 32,
       "gridPos": {
         "h": 8,
@@ -982,7 +982,7 @@
       },
       "targets": [
         {
-          "expr": "rate(rsi_gradient_updates_total[5m])",
+          "expr": "rate(rsi_gradient_updates_total[20m])",
           "refId": "A",
           "legendFormat": "updates/sec"
         }
