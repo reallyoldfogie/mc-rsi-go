@@ -53,6 +53,13 @@ const (
 	defaultSeedTemplateOreMaxDepth = 4
 )
 
+// defaultCloneAreaJitter is -clone-area-jitter's own default - unlike
+// every other -clone-area-* flag, which default to 0 (off, preserving
+// behavior from before that flag existed), this one defaults on: see its
+// own doc comment for why a fixed template window is the bug it exists to
+// fix, not an opt-in extra.
+const defaultCloneAreaJitter = 64
+
 // uniqueOreTargets collects every block name mine_buried/chain_mine's own
 // curriculum fields can pose this run (Pool.MineBuriedTargetBlocks and
 // Pool.ChainMineTargetBlocks - the two fields DefaultEpisodeSeeder's own
@@ -120,7 +127,6 @@ func (f flags) templateSeedConfig(curriculumPool *curriculum.Pool) templateSeedC
 		veinSizeMin, veinSizeMax = veinSizeMax, veinSizeMin
 	}
 	cfg := templateSeedConfig{
-		oreCount:               f.seedTemplateOreCount,
 		oreMinDepth:            f.seedTemplateOreMinDepth,
 		oreMaxDepth:            f.seedTemplateOreMaxDepth,
 		veinSizeMin:            veinSizeMin,
@@ -128,6 +134,7 @@ func (f flags) templateSeedConfig(curriculumPool *curriculum.Pool) templateSeedC
 		veinDiscardOnAirChance: f.seedTemplateOreVeinDiscardOnAirChance,
 	}
 	if f.cloneAreaFrom == "" {
+		cfg.oreCount = f.seedTemplateOreCount
 		return cfg
 	}
 	from := f.cloneAreaFromParsed
@@ -136,6 +143,16 @@ func (f flags) templateSeedConfig(curriculumPool *curriculum.Pool) templateSeedC
 	if radius <= 0 {
 		radius = f.clearAreaRadius
 	}
+	// densityPct is -seed-template-ore-count's own ratio over the base
+	// (unjittered) footprint, as a percentage - derived rather than a
+	// hardcoded figure so it stays correct automatically if either flag
+	// ever changes, unless -seed-template-ore-density-pct overrides it
+	// directly (see that flag's own doc comment).
+	densityPct := f.seedTemplateOreDensityPct
+	if densityPct <= 0 {
+		baseArea := float64((2*radius + 1) * (2*radius + 1))
+		densityPct = float64(f.seedTemplateOreCount) / baseArea * 100
+	}
 	// Widened by -clone-area-jitter: seedTemplateOres needs ore spread
 	// across every window -clone-area-jitter could ever pick, not just the
 	// one centered on -clone-area-from itself - see -clone-area-jitter's
@@ -143,7 +160,16 @@ func (f flags) templateSeedConfig(curriculumPool *curriculum.Pool) templateSeedC
 	// the whole point of jittering which window gets cloned.
 	// episodeLimits.cloneAreaRadius (the actual per-Reset /clone box size)
 	// is unaffected - only this seeding radius grows.
-	cfg.cloneAreaRadius = radius + f.cloneAreaJitter
+	seedRadius := radius + f.cloneAreaJitter
+	cfg.cloneAreaRadius = seedRadius
+	// oreCount is re-derived from densityPct over the (possibly widened)
+	// seedRadius, not read straight from -seed-template-ore-count, so the
+	// actual seeded density matches densityPct exactly regardless of
+	// -clone-area-jitter - rounding is exact (not just close) when jitter
+	// is 0, since densityPct was itself just derived from this same count
+	// and radius a moment ago.
+	seedArea := float64((2*seedRadius + 1) * (2*seedRadius + 1))
+	cfg.oreCount = int(math.Round(densityPct / 100 * seedArea))
 	cfg.oreBlocks = uniqueOreTargets(curriculumPool)
 	return cfg
 }

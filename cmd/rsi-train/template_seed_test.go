@@ -244,17 +244,38 @@ func TestTemplateSeedConfigWidensRadiusByCloneAreaJitter(t *testing.T) {
 	f := flags{
 		cloneAreaFrom:        "0,-1,5000",
 		cloneAreaFromParsed:  [3]float64{0, -1, 5000},
-		cloneAreaRadius:      16,
+		cloneAreaRadius:      32,
 		seedTemplateOreCount: 8,
 	}
 	cfg := f.templateSeedConfig(pool)
-	require.Equal(t, 16, cfg.cloneAreaRadius, "no jitter: seeding radius must match -clone-area-radius exactly")
+	require.Equal(t, 32, cfg.cloneAreaRadius, "no jitter: seeding radius must match -clone-area-radius exactly")
+	require.Equal(t, 8, cfg.oreCount, "no jitter: ore count must stay exactly -seed-template-ore-count (derived density must round-trip exactly)")
 
-	f.cloneAreaJitter = 20
+	f.cloneAreaJitter = 64
 	cfg = f.templateSeedConfig(pool)
-	require.Equal(t, 36, cfg.cloneAreaRadius, "with jitter: seeding radius must cover -clone-area-radius+-clone-area-jitter")
+	require.Equal(t, 96, cfg.cloneAreaRadius, "with jitter: seeding radius must cover -clone-area-radius+-clone-area-jitter")
+	require.Equal(t, 71, cfg.oreCount, "with jitter: ore count must scale up to hold the same density (~0.19%%) across the widened area")
 
 	// episodeLimits' own clone radius (the actual per-Reset /clone box
 	// size) must stay unaffected by jitter - only the seeding radius grows.
-	require.Equal(t, 16, f.episodeLimits().cloneAreaRadius)
+	require.Equal(t, 32, f.episodeLimits().cloneAreaRadius)
+}
+
+// TestTemplateSeedConfigDensityPctOverride confirms
+// -seed-template-ore-density-pct, when explicitly set, replaces the
+// density -seed-template-ore-count/-clone-area-radius would otherwise
+// imply, rather than only ever being derived from them.
+func TestTemplateSeedConfigDensityPctOverride(t *testing.T) {
+	pool := &curriculum.Pool{MineBuriedTargetBlocks: []string{"minecraft:coal_ore"}}
+	f := flags{
+		cloneAreaFrom:             "0,-1,5000",
+		cloneAreaFromParsed:       [3]float64{0, -1, 5000},
+		cloneAreaRadius:           32,
+		cloneAreaJitter:           64,
+		seedTemplateOreCount:      8, // must be ignored once densityPct overrides it
+		seedTemplateOreDensityPct: 1.0,
+	}
+	cfg := f.templateSeedConfig(pool)
+	// seedRadius = 96, footprint = 193^2 = 37249, 1% of that = 372.49 -> 372
+	require.Equal(t, 372, cfg.oreCount, "an explicit density-pct override must be used as-is, not derived from -seed-template-ore-count")
 }
