@@ -1381,6 +1381,17 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 	var latestParams *actorcritic.RecurrentParams
 	madeEpochProgress := false
 	var latestOptimizerState *actorcritic.AdamState
+	// bgWriter runs each epoch's own interim-checkpoint save in the
+	// background instead of blocking the next epoch's rollout collection
+	// for the full duration of the disk write - see its own doc comment.
+	// The deferred Wait must run before this function's own final,
+	// synchronous save below (not after it returns), so every return path
+	// out of this function blocks on any in-flight background write
+	// first - otherwise that final save and a still-running background
+	// one could write the same checkpoint file with no ordering guarantee
+	// between them.
+	var bgWriter backgroundCheckpointWriter
+	defer bgWriter.Wait()
 
 	var resumeParams *actorcritic.RecurrentParams
 	var resumeEpoch int
@@ -1534,18 +1545,33 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 		if f.checkpointInterval <= 0 || (stats.Epoch+1)%f.checkpointInterval != 0 {
 			return
 		}
-		if err := saveInterimRecurrentCheckpoint(interimDir, params, environmentID, stats.Epoch, progress, rec.Generation); err != nil {
-			log.Printf("  saving recurrent interim checkpoint: %v", err)
-			return
-		}
 		rngState, err := rngSource.MarshalBinary()
 		if err != nil {
 			log.Printf("  saving recurrent RNG state: %v", err)
 			return
 		}
-		if err := savePersistedTrainingState(interimDir, persistedTrainingState{SchemaVersion: 1, ParentGeneration: rec.Generation, Epoch: stats.Epoch, Optimizer: &optimizer, RNG: rngState, Environments: captureEnvironmentStates(envs)}); err != nil {
-			log.Printf("  saving recurrent continuation state: %v", err)
-		}
+		// Snapshotted here, synchronously, before handing off to
+		// bgWriter - params itself is the trainer's own live pointer
+		// (RecurrentTrainer.Params returns it directly, not a copy),
+		// and the very next epoch mutates it in place the moment this
+		// callback returns. optimizerCopy and rngState are already
+		// independent copies (Adam.State's and MarshalBinary's own
+		// contracts), and captureEnvironmentStates' per-call result
+		// isn't shared with anything that mutates it later either - only
+		// params needs this extra step. See backgroundCheckpointWriter's
+		// own doc comment for why the write itself still happens off
+		// this callback's own critical path despite this snapshot.
+		bgWriter.Submit(recurrentCheckpointJob{
+			interimDir:       interimDir,
+			params:           params.Snapshot(),
+			environmentID:    environmentID,
+			epoch:            stats.Epoch,
+			progress:         progress,
+			parentGeneration: rec.Generation,
+			optimizer:        optimizerCopy,
+			rngState:         rngState,
+			envStates:        captureEnvironmentStates(envs),
+		})
 	}
 
 	for round := startRound; f.maxRounds == 0 || round <= f.maxRounds; round++ {
@@ -1638,6 +1664,15 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 		clearInterimCheckpoints(interimDir)
 		madeEpochProgress = false
 	}
+	// Drained here, explicitly and synchronously, before either return
+	// below: no more Submits happen once the round loop above has exited,
+	// so this is the one point that can safely guarantee the final save
+	// following it never races a still-in-flight background one. The
+	// deferred Wait (see bgWriter's own declaration) is a no-op by the
+	// time this function actually returns, since this call already
+	// drained everything - it only matters for an early return elsewhere
+	// in this function, before the round loop ever exits normally.
+	bgWriter.Wait()
 	if networkDead {
 		return errNetworkDead
 	}
