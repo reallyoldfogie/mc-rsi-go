@@ -642,18 +642,20 @@ func TestApplyEpisodeLimitsFillsUnsetFieldsAndLeavesOperatorValuesAlone(t *testi
 
 	cfg = rlenv.Config{}
 	from := [3]float64{0, -61, 5000}
-	applyEpisodeLimits(&cfg, episodeLimits{cloneAreaFrom: &from, cloneAreaRadius: 16, cloneAreaHeight: 4, cloneAreaDepth: 3})
+	applyEpisodeLimits(&cfg, episodeLimits{cloneAreaFrom: &from, cloneAreaRadius: 16, cloneAreaHeight: 4, cloneAreaDepth: 3, cloneAreaJitter: 20})
 	require.NotNil(t, cfg.CloneAreaFrom)
 	assert.Equal(t, from, *cfg.CloneAreaFrom)
 	assert.Equal(t, 16, cfg.CloneAreaRadius)
 	assert.Equal(t, 4, cfg.CloneAreaHeight)
 	assert.Equal(t, 3, cfg.CloneAreaDepth)
+	assert.Equal(t, 20, cfg.CloneAreaJitter)
 
 	operatorFrom := [3]float64{1, 2, 3}
 	cfg = rlenv.Config{CloneAreaFrom: &operatorFrom, CloneAreaRadius: 5}
-	applyEpisodeLimits(&cfg, episodeLimits{cloneAreaFrom: &from, cloneAreaRadius: 16})
+	applyEpisodeLimits(&cfg, episodeLimits{cloneAreaFrom: &from, cloneAreaRadius: 16, cloneAreaJitter: 20})
 	assert.Equal(t, operatorFrom, *cfg.CloneAreaFrom, "an operator-configured CloneAreaFrom must win")
 	assert.Equal(t, 5, cfg.CloneAreaRadius)
+	assert.Zero(t, cfg.CloneAreaJitter, "an operator-configured CloneAreaFrom must also keep CloneAreaJitter unset")
 }
 
 func TestParseXYZ(t *testing.T) {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"math"
+	"math/rand/v2"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -115,6 +117,109 @@ func TestOreTemplatePositionsCountCappedByFootprint(t *testing.T) {
 	}
 }
 
+// TestVeinShapeSeedDeterministicAndDistinct confirms the seed depends on
+// both block name and origin - two origins for the same block, or the
+// same origin for two blocks, must not collide, mirroring
+// TestOreTemplatePositionsDifferentBlocksDiffer's reasoning for
+// blockPositionSeed.
+func TestVeinShapeSeedDeterministicAndDistinct(t *testing.T) {
+	a := orePosition{x: 10, y: -5, z: 20}
+	b := orePosition{x: 11, y: -5, z: 20}
+
+	if veinShapeSeed("minecraft:coal_ore", a) != veinShapeSeed("minecraft:coal_ore", a) {
+		t.Fatalf("veinShapeSeed not deterministic for the same (block, origin)")
+	}
+	if veinShapeSeed("minecraft:coal_ore", a) == veinShapeSeed("minecraft:coal_ore", b) {
+		t.Fatalf("different origins produced the same seed")
+	}
+	if veinShapeSeed("minecraft:coal_ore", a) == veinShapeSeed("minecraft:iron_ore", a) {
+		t.Fatalf("different blocks at the same origin produced the same seed")
+	}
+}
+
+// TestGenerateVeinBlobSizeZeroOrLess confirms a non-positive size is a
+// clean no-op (nil, no panic) rather than something seedOreVein would need
+// to guard against itself.
+func TestGenerateVeinBlobSizeZeroOrLess(t *testing.T) {
+	rng := rand.New(rand.NewPCG(1, 0))
+	if got := generateVeinBlob(rng, orePosition{}, 0); got != nil {
+		t.Fatalf("generateVeinBlob(size=0) = %v, want nil", got)
+	}
+}
+
+// TestGenerateVeinBlobDeterministic confirms two independently-constructed
+// RNGs seeded identically produce the exact same blob - the property
+// seedOreVein relies on for restart-stability, the same role
+// TestOreTemplatePositionsDeterministic plays for instance positions.
+func TestGenerateVeinBlobDeterministic(t *testing.T) {
+	origin := orePosition{x: 100, y: -10, z: -50}
+	first := generateVeinBlob(rand.New(rand.NewPCG(42, 0)), origin, 9)
+	second := generateVeinBlob(rand.New(rand.NewPCG(42, 0)), origin, 9)
+	if len(first) != len(second) {
+		t.Fatalf("got %d and %d surviving points, want equal", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("point %d differs between calls: %v vs %v", i, first[i], second[i])
+		}
+	}
+}
+
+// TestGenerateVeinBlobStaysNearOrigin is a basic sanity bound: a blob's
+// surviving points shouldn't wander arbitrarily far from where it was
+// rooted - OreFeature's own line length is size/8 plus each point's own
+// radius (at most roughly size/16), so every coordinate should stay well
+// within size blocks of origin on each axis.
+func TestGenerateVeinBlobStaysNearOrigin(t *testing.T) {
+	origin := orePosition{x: 0, y: 0, z: 0}
+	size := 17
+	points := generateVeinBlob(rand.New(rand.NewPCG(7, 0)), origin, size)
+	if len(points) == 0 {
+		t.Fatalf("expected at least one surviving point for size %d", size)
+	}
+	bound := float64(size)
+	for _, p := range points {
+		if math.Abs(p.x) > bound || math.Abs(p.y) > bound || math.Abs(p.z) > bound {
+			t.Fatalf("point %v strayed further than %v blocks from origin", p, bound)
+		}
+		if p.radius <= 0 {
+			t.Fatalf("surviving point %v has non-positive radius, should have been culled", p)
+		}
+	}
+}
+
+// TestVeinCellsDeterministic mirrors TestGenerateVeinBlobDeterministic one
+// level up - the actual absolute cells seedOreVein would issue /setblock
+// for must also be stable across independently-seeded calls.
+func TestVeinCellsDeterministic(t *testing.T) {
+	origin := orePosition{x: 100, y: -10, z: -50}
+	first := veinCells(rand.New(rand.NewPCG(42, 0)), origin, 9)
+	second := veinCells(rand.New(rand.NewPCG(42, 0)), origin, 9)
+	if len(first) != len(second) {
+		t.Fatalf("got %d and %d cells, want equal", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("cell %d differs between calls: %v vs %v", i, first[i], second[i])
+		}
+	}
+}
+
+// TestVeinCellsNoDuplicates confirms overlapping spheres from different
+// surviving points never produce the same cell twice - seedOreVein would
+// otherwise double-count it in its returned placed-block total.
+func TestVeinCellsNoDuplicates(t *testing.T) {
+	origin := orePosition{x: 0, y: 0, z: 0}
+	cells := veinCells(rand.New(rand.NewPCG(7, 0)), origin, 17)
+	seen := make(map[orePosition]bool)
+	for _, c := range cells {
+		if seen[c] {
+			t.Fatalf("duplicate cell %v", c)
+		}
+		seen[c] = true
+	}
+}
+
 func TestValidateBuriedOreSeedingRequiresCountWhenBuriedAndClone(t *testing.T) {
 	pool := &curriculum.Pool{MineBuriedTargetBlocks: []string{"minecraft:coal_ore"}}
 	f := flags{cloneAreaFrom: "0,-1,5000", seedTemplateOreCount: 0}
@@ -126,4 +231,30 @@ func TestValidateBuriedOreSeedingRequiresCountWhenBuriedAndClone(t *testing.T) {
 
 	require.NoError(t, validateBuriedOreSeeding(flags{}, pool), "no clone-area-from: nothing to validate")
 	require.NoError(t, validateBuriedOreSeeding(f, &curriculum.Pool{}), "no buried blocks")
+}
+
+// TestTemplateSeedConfigWidensRadiusByCloneAreaJitter confirms
+// (flags).templateSeedConfig widens its own seeding radius by
+// -clone-area-jitter - see that flag's own doc comment for why: ore must
+// be seeded across every window -clone-area-jitter could ever pick for
+// the actual per-Reset clone, not just the one centered on
+// -clone-area-from itself.
+func TestTemplateSeedConfigWidensRadiusByCloneAreaJitter(t *testing.T) {
+	pool := &curriculum.Pool{MineBuriedTargetBlocks: []string{"minecraft:coal_ore"}}
+	f := flags{
+		cloneAreaFrom:        "0,-1,5000",
+		cloneAreaFromParsed:  [3]float64{0, -1, 5000},
+		cloneAreaRadius:      16,
+		seedTemplateOreCount: 8,
+	}
+	cfg := f.templateSeedConfig(pool)
+	require.Equal(t, 16, cfg.cloneAreaRadius, "no jitter: seeding radius must match -clone-area-radius exactly")
+
+	f.cloneAreaJitter = 20
+	cfg = f.templateSeedConfig(pool)
+	require.Equal(t, 36, cfg.cloneAreaRadius, "with jitter: seeding radius must cover -clone-area-radius+-clone-area-jitter")
+
+	// episodeLimits' own clone radius (the actual per-Reset /clone box
+	// size) must stay unaffected by jitter - only the seeding radius grows.
+	require.Equal(t, 16, f.episodeLimits().cloneAreaRadius)
 }

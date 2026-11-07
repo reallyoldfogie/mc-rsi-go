@@ -76,43 +76,47 @@ func main() {
 // minus that command's config.RegisterXFlags layering, which is
 // mc-agent's own package and not reusable from here.
 type flags struct {
-	checkpointDir                string
-	packetLogs                   bool
-	mcAgentConfigPath            string
-	trainerConfigPath            string
-	epochsPerGeneration          int
-	evalEpisodes                 int
-	evalEpisodeLen               int
-	checkpointInterval           int
-	maxRounds                    int
-	maxStepTimeouts              int
-	timePenalty                  float64
-	evalGreedy                   bool
-	normalizeObservation         bool
-	winZScore                    float64
-	minWinMargin                 float64
-	clearAreaRadius              int
-	cloneAreaFrom                string
-	cloneAreaFromParsed          [3]float64
-	cloneAreaRadius              int
-	cloneAreaHeight              int
-	cloneAreaDepth               int
-	seedTemplateOreCount         int
-	seedTemplateOreMinDepth      int
-	seedTemplateOreMaxDepth      int
-	autoResetOrigin              bool
-	parallelEnvs                 int
-	sharedServer                 bool
-	sharedServerSeparationChunks int
-	curriculumConfigPath         string
-	metricsAddr                  string
-	hiddenLayers                 int
-	competitionConfigPath        string
-	sshTarget                    string
-	sshRemoteServerPort          int
-	sshRemoteRCONPort            int
-	sshLocalServerPort           int
-	sshLocalRCONPort             int
+	checkpointDir                         string
+	packetLogs                            bool
+	mcAgentConfigPath                     string
+	trainerConfigPath                     string
+	epochsPerGeneration                   int
+	evalEpisodes                          int
+	evalEpisodeLen                        int
+	checkpointInterval                    int
+	maxRounds                             int
+	maxStepTimeouts                       int
+	timePenalty                           float64
+	evalGreedy                            bool
+	normalizeObservation                  bool
+	winZScore                             float64
+	minWinMargin                          float64
+	clearAreaRadius                       int
+	cloneAreaFrom                         string
+	cloneAreaFromParsed                   [3]float64
+	cloneAreaRadius                       int
+	cloneAreaHeight                       int
+	cloneAreaDepth                        int
+	cloneAreaJitter                       int
+	seedTemplateOreCount                  int
+	seedTemplateOreMinDepth               int
+	seedTemplateOreMaxDepth               int
+	seedTemplateOreVeinSizeMin            int
+	seedTemplateOreVeinSizeMax            int
+	seedTemplateOreVeinDiscardOnAirChance float64
+	autoResetOrigin                       bool
+	parallelEnvs                          int
+	sharedServer                          bool
+	sharedServerSeparationChunks          int
+	curriculumConfigPath                  string
+	metricsAddr                           string
+	hiddenLayers                          int
+	competitionConfigPath                 string
+	sshTarget                             string
+	sshRemoteServerPort                   int
+	sshRemoteRCONPort                     int
+	sshLocalServerPort                    int
+	sshLocalRCONPort                      int
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -138,9 +142,13 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.cloneAreaRadius, "clone-area-radius", 0, "half-width/depth in blocks of both the template and every destination working area; 0 (the default) falls back to -clear-area-radius if that's set too, otherwise disables cloning even if -clone-area-from is set")
 	fs.IntVar(&f.cloneAreaHeight, "clone-area-height", 0, "blocks above -clone-area-from's own Y to include (the air-clearing portion); 0 (the default) uses 4, same as -clear-area-radius's own default")
 	fs.IntVar(&f.cloneAreaDepth, "clone-area-depth", 0, "blocks below -clone-area-from's own Y to include (the ground-healing portion -clear-area-radius never had); 0 (the default) uses 3")
+	fs.IntVar(&f.cloneAreaJitter, "clone-area-jitter", 0, "picks a uniform-random offset in [-N,+N] blocks for both X and Z of -clone-area-from's own source position, drawn fresh every Reset (rlenv.Config.CloneAreaJitter) - varies *which window* of the template gets cloned, not just where the clone lands (-auto-reset-origin's own jitter already does that). Without this, every episode's seeded ore sits at the exact same position relative to the bot's own spawn, however much the destination itself jitters around the world - found live, 2026-11-07: a policy spectated mid-training mined the identical pattern in the identical relative spot every single episode, a strong sign of a memorized trajectory rather than genuine perception-driven search (docs/plans/21-buried-mining-success.md). 0 (the default) disables it, keeping today's single fixed source exactly as before. Raising this also raises -seed-template-ore-count's own effective seeding radius to -clone-area-radius plus this value, so the ore seeded at startup stays dense enough across the widened area - consider raising -seed-template-ore-count proportionally (roughly by ((clone-area-radius+N)/clone-area-radius)^2) so per-area ore density doesn't thin out and make the task harder as a side effect.")
 	fs.IntVar(&f.seedTemplateOreCount, "seed-template-ore-count", defaultSeedTemplateOreCount, "how many instances of each mine_buried/chain_mine target ore block (curriculum Pool.MineBuriedTargetBlocks + Pool.ChainMineTargetBlocks, deduplicated) to place inside the -clone-area-from template once at trainer startup, before any environment's first Reset clones from it - generalizes runs/buried-block-mining-2026-10-14/gen_template.py (which produced a one-block-type, hand-copy-into-RCON command list, and for at least one run was generated but never actually run) into a repeatable, idempotent startup step: positions are deterministic per block name, so repeat startups re-seed the same spots rather than accumulating stray ore. 0 disables (e.g. a template already seeded by some other means). Ignored unless -clone-area-from is also set and a curriculum config supplies at least one of those two block lists.")
 	fs.IntVar(&f.seedTemplateOreMinDepth, "seed-template-ore-min-depth", defaultSeedTemplateOreMinDepth, "shallowest depth, in blocks below -clone-area-from's own Y, -seed-template-ore-count's placements are drawn from - keep above 0 so ore still requires real digging, not an instantly-visible surface block")
 	fs.IntVar(&f.seedTemplateOreMaxDepth, "seed-template-ore-max-depth", defaultSeedTemplateOreMaxDepth, "deepest depth, in blocks below -clone-area-from's own Y, -seed-template-ore-count's placements are drawn from; a band wider than -seed-template-ore-min-depth spreads ore across several Y layers instead of one fixed plane a policy could otherwise learn to target by Y alone")
+	fs.IntVar(&f.seedTemplateOreVeinSizeMin, "seed-template-ore-vein-size-min", 0, "smallest vein size (number of blob-shape points, ported from vanilla's OreFeature algorithm - see docs/plans/21-buried-mining-success.md Phase 6c) to stamp per ore instance instead of a single block; 0 (with -seed-template-ore-vein-size-max also 0) preserves today's single-/setblock-per-instance behavior exactly. Vanilla itself uses size 17 for coal; this template's working volume is much smaller, so a much smaller size (e.g. 4-9) is the realistic range here. Each instance's position is still chosen exactly as before (oreTemplatePositions) - this only changes what gets stamped at each chosen position.")
+	fs.IntVar(&f.seedTemplateOreVeinSizeMax, "seed-template-ore-vein-size-max", 0, "largest vein size, paired with -seed-template-ore-vein-size-min; each instance draws its own size uniformly from this range. 0 disables vein mode entirely (single-block instances, as before), regardless of -seed-template-ore-vein-size-min.")
+	fs.Float64Var(&f.seedTemplateOreVeinDiscardOnAirChance, "seed-template-ore-vein-discard-on-air-chance", 0, "probability (0-1) a vein's candidate block is discarded if it would be exposed to air - mirrors OreFeatureConfig.discardOnAirChance (vanilla uses 0.0 for near-surface coal, 0.5 for the common underground variant, so veins don't generate as unnaturally hollowed-out blobs inside existing caves). 0 (the default) disables the check: every candidate cell is placed unconditionally, same as every other block this file seeds. Only consulted when vein mode is enabled (-seed-template-ore-vein-size-max > 0).")
 	fs.BoolVar(&f.autoResetOrigin, "auto-reset-origin", false, "if RCON is configured and -mc-agent-config didn't already set env.use_reset_origin, teleport back to the bot's actual spawn position every episode (via a captured Config.ResetOrigin) plus a small default Config.Jitter, instead of letting the goto task's target drift from wherever the previous episode ended — see run's own doc comment for why this exists. Opt-in: false preserves every existing config's behavior unchanged.")
 	fs.IntVar(&f.parallelEnvs, "parallel-envs", 1, "number of concurrent live Minecraft environments to train against (see docs/plans/08-parallel-environments-and-scaling.md); each needs its own already-running server — addresses/RCON/bot usernames beyond the first are derived from -mc-agent-config via pkg/parallelenv.DeriveSettings. 1 (the default) preserves single-environment behavior exactly.")
 	fs.BoolVar(&f.sharedServer, "shared-server", false, "run all -parallel-envs bots against ONE already-running server instead of one server each, each confined to its own working area (see -shared-server-separation-chunks). Requires RCON to be configured. The operator is responsible for launching that server with a reduced VIEW_DISTANCE/SIMULATION_DISTANCE (e.g. 4-6) small enough not to overlap adjacent bots' working areas.")
@@ -226,6 +234,9 @@ func parseFlags(args []string) (flags, error) {
 		// in one call, but a single Z row of it is only 845.
 		if r < 0 || (2*r+1)*(height+depth+1) > 32768 {
 			return flags{}, fmt.Errorf("rsi-train: -clone-area-radius/-clone-area-height/-clone-area-depth combination is too large even one Z row at a time (vanilla's clone command caps at 32768 blocks, and mc-agent's own Z-band splitting needs at least one row to fit): radius %d, height %d, depth %d", r, height, depth)
+		}
+		if f.cloneAreaJitter < 0 {
+			return flags{}, fmt.Errorf("rsi-train: -clone-area-jitter must be >= 0, got %d", f.cloneAreaJitter)
 		}
 	}
 	// clone-area-depth must cover seed-template-ore-max-depth or ore
@@ -899,6 +910,7 @@ type episodeLimits struct {
 	cloneAreaRadius int
 	cloneAreaHeight int
 	cloneAreaDepth  int
+	cloneAreaJitter int
 }
 
 // episodeLimits builds the episodeLimits every connected environment shares
@@ -915,6 +927,7 @@ func (f flags) episodeLimits() episodeLimits {
 		cloneAreaRadius:      f.cloneAreaRadius,
 		cloneAreaHeight:      f.cloneAreaHeight,
 		cloneAreaDepth:       f.cloneAreaDepth,
+		cloneAreaJitter:      f.cloneAreaJitter,
 	}
 	if f.cloneAreaFrom != "" {
 		from := f.cloneAreaFromParsed
@@ -944,6 +957,7 @@ func applyEpisodeLimits(cfg *rlenv.Config, limits episodeLimits) {
 		cfg.CloneAreaRadius = limits.cloneAreaRadius
 		cfg.CloneAreaHeight = limits.cloneAreaHeight
 		cfg.CloneAreaDepth = limits.cloneAreaDepth
+		cfg.CloneAreaJitter = limits.cloneAreaJitter
 	}
 }
 
@@ -2186,7 +2200,7 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 		// every Reset issues needs it) - no separate check here, DialRCON
 		// below fails clearly on its own if that requirement was somehow
 		// missed.
-		if err := seedTemplateOres(ctx, base.RCON.Address, base.RCON.Password, *seedConfig.cloneAreaFrom, seedConfig.cloneAreaRadius, seedConfig.oreBlocks, seedConfig.oreCount, seedConfig.oreMinDepth, seedConfig.oreMaxDepth); err != nil {
+		if err := seedTemplateOres(ctx, base.RCON.Address, base.RCON.Password, *seedConfig.cloneAreaFrom, seedConfig.cloneAreaRadius, seedConfig.oreBlocks, seedConfig.oreCount, seedConfig.oreMinDepth, seedConfig.oreMaxDepth, seedConfig.veinSizeMin, seedConfig.veinSizeMax, seedConfig.veinDiscardOnAirChance); err != nil {
 			return nil, [3]float64{}, fmt.Errorf("seeding clone-area-from template ore: %w", err)
 		}
 	}
