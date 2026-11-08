@@ -620,16 +620,18 @@ func TestMeasureNetworkHealthToleratesAFreshNetworkOfAnyDepth(t *testing.T) {
 
 func TestApplyEpisodeLimitsFillsUnsetFieldsAndLeavesOperatorValuesAlone(t *testing.T) {
 	cfg := rlenv.Config{}
-	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, clearAreaRadius: 16, timePenalty: 0.2})
+	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, stuckTimeout: 300, clearAreaRadius: 16, timePenalty: 0.2})
 	assert.Equal(t, float32(0.2), cfg.TimePenalty)
 	assert.Equal(t, 5, cfg.MaxConsecutiveStepTimeouts)
+	assert.Equal(t, 300, cfg.StuckTimeout)
 	assert.Equal(t, 16, cfg.ClearAreaRadius)
 	assert.Equal(t, clearAreaHeightBlocks, cfg.ClearAreaHeight)
 
-	cfg = rlenv.Config{MaxConsecutiveStepTimeouts: 9, ClearAreaRadius: 3, ClearAreaHeight: 6, TimePenalty: 0.5}
-	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, clearAreaRadius: 16, timePenalty: 0.2})
+	cfg = rlenv.Config{MaxConsecutiveStepTimeouts: 9, StuckTimeout: 42, ClearAreaRadius: 3, ClearAreaHeight: 6, TimePenalty: 0.5}
+	applyEpisodeLimits(&cfg, episodeLimits{maxStepTimeouts: 5, stuckTimeout: 300, clearAreaRadius: 16, timePenalty: 0.2})
 	assert.Equal(t, float32(0.5), cfg.TimePenalty, "an operator-configured time penalty must win")
 	assert.Equal(t, 9, cfg.MaxConsecutiveStepTimeouts, "an operator-configured value must win")
+	assert.Equal(t, 42, cfg.StuckTimeout, "an operator-configured value must win")
 	assert.Equal(t, 3, cfg.ClearAreaRadius)
 	assert.Equal(t, 6, cfg.ClearAreaHeight)
 

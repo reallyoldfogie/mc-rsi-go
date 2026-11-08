@@ -86,6 +86,7 @@ type flags struct {
 	checkpointInterval                    int
 	maxRounds                             int
 	maxStepTimeouts                       int
+	stuckTimeout                          int
 	timePenalty                           float64
 	evalGreedy                            bool
 	normalizeObservation                  bool
@@ -135,6 +136,7 @@ func parseFlags(args []string) (flags, error) {
 	fs.Float64Var(&f.winZScore, "win-z-score", 1.645, "a Student is promoted only if its mean evaluation advantage over the Teacher exceeds this many standard errors of the paired per-episode difference (1.645 = one-sided 95%). Guards against promoting a coin flip once tasks are saturated (11 of 20 rounds were 'won' with return flat); 0 restores the plain strictly-greater rule")
 	fs.Float64Var(&f.minWinMargin, "min-win-margin", 0, "additionally require the Student's mean evaluation reward to beat the Teacher's by at least this much; 0 disables")
 	fs.IntVar(&f.maxStepTimeouts, "max-step-timeouts", 5, "end an episode once this many dispatched steps in a row hit the step timeout without their action resolving - bounds a wedged bot that would otherwise run its whole step budget while every other environment waits on it at the epoch barrier (found live: ~17 minutes); 0 disables. Ignored for an environment whose -mc-agent-config already sets its own")
+	fs.IntVar(&f.stuckTimeout, "stuck-timeout", 0, "end an episode once this many consecutive steps have produced a bit-for-bit identical observation vector (rlenv.Config.StuckTimeout) - a second, generic safety net alongside -max-step-timeouts: that one only catches a dispatched action's own Completion resolving late or with an error, so a bot that keeps dispatching successfully-resolving actions which still never change anything it observes (position, health/food, mine/craft state) can slip past it indefinitely. 0 (the default) disables the check, matching rlenv.Config's own zero-value default - this flag exists because, like -max-step-timeouts before it, this safety net was never actually wired up to any CLI flag here despite being implemented in rlenv. Ignored for an environment whose -mc-agent-config already sets its own")
 	fs.BoolVar(&f.normalizeObservation, "normalize-observation", false, "scale every observation feature to about [-1, 1] (rlenv.Config.NormalizeObservation). Raw blocks and degrees saturate the policy's first layer and, with a learning rate that isn't tiny, kill its ReLU units for good (found live). Changes what the policy sees, so it is part of the checkpoint's environment ID: a checkpoint trained one way is rejected by the other. Ignored for an environment whose -mc-agent-config already sets it")
 	fs.BoolVar(&f.evalGreedy, "eval-greedy", false, "evaluate each side by its highest-probability action instead of sampling from its policy. Off by default: the trained policy is stochastic, and a greedy read of it can be a much worse policy (found live: goto 0.8 vs mine 0.19 at the target made greedy evaluation stand still for 200 steps at -40 while sampling mined within a few steps, so a fine Student looked collapsed round after round)")
 	fs.Float64Var(&f.timePenalty, "time-penalty", 0, "reward subtracted every step (rlenv.Config.TimePenalty); 0 keeps rlenv's built-in 0.01, which is negligible next to the +10 success bonus - a policy that wastes ten steps loses 0.1, so nothing makes it efficient (found live: the Wait action took 38-70% of all steps and mine_far episodes averaged ~10.7 steps where ~3 suffice). Around 0.2 makes a wasted step cost about 2% of the bonus. Changes the reward scale, so returns before and after aren't comparable. Ignored for an environment whose -mc-agent-config already sets its own")
@@ -202,6 +204,9 @@ func parseFlags(args []string) (flags, error) {
 	}
 	if f.maxStepTimeouts < 0 {
 		return flags{}, fmt.Errorf("rsi-train: -max-step-timeouts must not be negative, got %d", f.maxStepTimeouts)
+	}
+	if f.stuckTimeout < 0 {
+		return flags{}, fmt.Errorf("rsi-train: -stuck-timeout must not be negative, got %d", f.stuckTimeout)
 	}
 	if f.clearAreaRadius < 0 || (2*f.clearAreaRadius+1)*(2*f.clearAreaRadius+1)*(clearAreaHeightBlocks+1) > 32768 {
 		return flags{}, fmt.Errorf("rsi-train: -clear-area-radius must be between 0 and %d (vanilla's fill command caps at 32768 blocks), got %d", maxClearAreaRadius, f.clearAreaRadius)
@@ -900,9 +905,11 @@ func parseXYZ(s string) ([3]float64, error) {
 }
 
 // episodeLimits are the per-episode safety nets applied to every
-// environment; see the -max-step-timeouts and -clear-area-radius flags.
+// environment; see the -max-step-timeouts, -stuck-timeout and
+// -clear-area-radius flags.
 type episodeLimits struct {
 	maxStepTimeouts int
+	stuckTimeout    int
 	clearAreaRadius int
 	timePenalty     float32
 
@@ -923,6 +930,7 @@ type episodeLimits struct {
 func (f flags) episodeLimits() episodeLimits {
 	limits := episodeLimits{
 		maxStepTimeouts:      f.maxStepTimeouts,
+		stuckTimeout:         f.stuckTimeout,
 		clearAreaRadius:      f.clearAreaRadius,
 		timePenalty:          float32(f.timePenalty),
 		normalizeObservation: f.normalizeObservation,
@@ -949,6 +957,9 @@ func applyEpisodeLimits(cfg *rlenv.Config, limits episodeLimits) {
 	}
 	if cfg.MaxConsecutiveStepTimeouts == 0 {
 		cfg.MaxConsecutiveStepTimeouts = limits.maxStepTimeouts
+	}
+	if cfg.StuckTimeout == 0 {
+		cfg.StuckTimeout = limits.stuckTimeout
 	}
 	if cfg.ClearAreaRadius == 0 && limits.clearAreaRadius > 0 {
 		cfg.ClearAreaRadius = limits.clearAreaRadius
