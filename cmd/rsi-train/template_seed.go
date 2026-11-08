@@ -525,6 +525,50 @@ func seedTemplateOres(ctx context.Context, rconAddress, rconPassword string, cen
 	return nil
 }
 
+// forceLoadCloneTemplateArea keeps the -clone-area-from source region
+// permanently chunk-loaded via RCON's /forceload, so every episode's own
+// /clone (rlenv's own cloneArea, run every Reset) can actually read from
+// it. Found live, 2026-11-07 (docs/plans/21-buried-mining-success.md): a
+// bot spectated directly was standing in a hole it had dug in an earlier
+// episode, left exactly as it was by what should have been a full
+// clone-template reset. CloneArea's own diagnostic logging (mc-agent
+// v0.0.76) then showed why: every single /clone attempt, for every
+// environment, at every Reset - not just a cold-start transient - failed
+// with "That position is not loaded." -clone-area-from's own X/Z is
+// deliberately far from every real working area (so a reset's own clone
+// destination never collides with it), which means no bot ever stands
+// there to keep its chunks loaded the ordinary way vanilla does around a
+// player. /forceload keeps a chunk loaded regardless of player proximity
+// - exactly the tool for a region nothing ever visits but something
+// still needs to read from.
+//
+// radius must cover every window -clone-area-jitter could ever pick to
+// clone *from*, not just a single -clone-area-radius-sized box centered
+// on center - the caller already computes that wider radius for exactly
+// this reason (see -clone-area-jitter's own doc comment); this is a
+// second consumer of the same number, not a new one. Safe to call on
+// every trainer startup, not just a fresh run's first one: /forceload add
+// is idempotent (loading an already-loaded chunk is a no-op).
+func forceLoadCloneTemplateArea(ctx context.Context, rconAddress, rconPassword string, center [3]float64, radius int) error {
+	if radius <= 0 {
+		return nil
+	}
+	rcon, err := agent.DialRCON(ctx, rconAddress, rconPassword)
+	if err != nil {
+		return fmt.Errorf("dialing RCON for clone-template force-load: %w", err)
+	}
+	defer func() { _ = rcon.Close() }()
+
+	centerX, centerZ := int(center[0]), int(center[2])
+	cmd := fmt.Sprintf("forceload add %d %d %d %d", centerX-radius, centerZ-radius, centerX+radius, centerZ+radius)
+	resp, err := rcon.Exec(ctx, cmd)
+	if err != nil {
+		return fmt.Errorf("force-loading clone template area via RCON: %w", err)
+	}
+	log.Printf("forceLoadCloneTemplateArea: %s", strings.TrimSpace(resp))
+	return nil
+}
+
 // validateBuriedOreSeeding fails fast when the curriculum poses buried ore
 // tasks against a clone template but template ore seeding is disabled or
 // has nothing to place — those episodes would search empty stone forever

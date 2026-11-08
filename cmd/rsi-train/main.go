@@ -2248,6 +2248,17 @@ func connectEnvironments(ctx context.Context, base mcconfig.Settings, n int, aut
 		// every Reset issues needs it) - no separate check here, DialRCON
 		// below fails clearly on its own if that requirement was somehow
 		// missed.
+		//
+		// Force-loaded before seeding, not after: seedTemplateOres' own
+		// per-block /setblock calls need the same chunks loaded too, and
+		// relying on whatever transient load those calls might themselves
+		// trigger - rather than this explicit, permanent one - is exactly
+		// the unreliable behavior that left every later /clone finding
+		// "That position is not loaded" (see forceLoadCloneTemplateArea's
+		// own doc comment).
+		if err := forceLoadCloneTemplateArea(ctx, base.RCON.Address, base.RCON.Password, *seedConfig.cloneAreaFrom, seedConfig.cloneAreaRadius); err != nil {
+			return nil, [3]float64{}, fmt.Errorf("force-loading clone-area-from template: %w", err)
+		}
 		if err := seedTemplateOres(ctx, base.RCON.Address, base.RCON.Password, *seedConfig.cloneAreaFrom, seedConfig.cloneAreaRadius, seedConfig.oreBlocks, seedConfig.oreCount, seedConfig.oreMinDepth, seedConfig.oreMaxDepth, seedConfig.veinSizeMin, seedConfig.veinSizeMax, seedConfig.veinDiscardOnAirChance); err != nil {
 			return nil, [3]float64{}, fmt.Errorf("seeding clone-area-from template ore: %w", err)
 		}

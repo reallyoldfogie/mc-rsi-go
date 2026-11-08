@@ -1,4 +1,5 @@
 /docs/plans
+/docs/bugs
 
 # mc-agent's own runtime cache (downloaded protocol/block data, packet
 # logs, agent logs) — created under the working directory by any live
