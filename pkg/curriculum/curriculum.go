@@ -84,6 +84,22 @@ type Pool struct {
 	// midpoint or max), not a hardcoded distribution in the agent.
 	MineBuriedExploreDepth int
 
+	// MineBuriedExploreRadius is how far from the episode's mine-search
+	// anchor buried-search waypoints' quadrant corners sit horizontally
+	// (rlenv.Config.MineBuriedExploreRadius) — the horizontal counterpart
+	// to MineBuriedExploreDepth above, decoupling the blind-exploration
+	// patrol's footprint from MineBuriedSearchRadius (which also bounds
+	// FindVisibleBlock's literal detection distance). 0 leaves rlenv's
+	// legacy MineSearchRadius/2 behavior — found live, 2026-11-09: at this
+	// run's own MineBuriedSearchRadius 12, that legacy behavior gave a
+	// 12x12 total patrol box, far smaller than the area ore is actually
+	// seeded across (65x65 at -clone-area-radius 32), so the bot's blind
+	// search routinely never covered any of the seeded ore. Should be set
+	// close to twice the run's own -clone-area-radius so the patrol
+	// actually spans the working area, independent of
+	// MineBuriedSearchRadius's own (smaller, intentional) detection range.
+	MineBuriedExploreRadius int
+
 	// MineFarTargetOffsets/MineFarBlocks/MineFarSearchRadius pose "go there,
 	// then mine": a mine block is placed beside a goto target sampled from
 	// MineFarTargetOffsets. The search radius must be smaller than the

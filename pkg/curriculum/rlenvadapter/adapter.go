@@ -154,6 +154,7 @@ type mineBuriedTask struct {
 	requiredTool         string
 	requiredToolEnchants map[string]int
 	exploreDepth         int
+	exploreRadius        int
 }
 
 func (t mineBuriedTask) Name() string            { return "mine_buried" }
@@ -166,6 +167,7 @@ func (t mineBuriedTask) ToOverride() rlenv.TaskOverride {
 		MineRequiredTool:             t.requiredTool,
 		MineRequiredToolEnchantments: t.requiredToolEnchants,
 		MineBuriedExploreDepth:       t.exploreDepth,
+		MineBuriedExploreRadius:      t.exploreRadius,
 		// The target already exists, baked into the shared clone
 		// template — DefaultEpisodeSeeder must not also place a fresh,
 		// immediately-visible instance beside the bot (caught live,
@@ -198,6 +200,7 @@ func (mineBuriedFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 		requiredTool:         pool.MineBuriedRequiredTool,
 		requiredToolEnchants: pool.MineBuriedRequiredToolEnchantments,
 		exploreDepth:         pool.MineBuriedExploreDepth,
+		exploreRadius:        pool.MineBuriedExploreRadius,
 	}
 }
 
@@ -306,12 +309,13 @@ var chainStageNames = map[int]string{1: "chain_gather", 2: "chain_table", 3: "ch
 // not five near-identical ones, since they share everything but
 // stage/craftItem/mineTarget.
 type chainTask struct {
-	stage        int
-	offset       [3]float64
-	searchRadius int
-	craftItem    string // "" for stage 1; curriculum.ChainTableItem for 2/3; the goal item for 4/5.
-	mineTarget   string // only meaningful at stage 5 (ChainMine): the buried block to mine once craftItem is crafted.
-	exploreDepth int    // MineBuriedExploreDepth for stage 5; ignored earlier.
+	stage         int
+	offset        [3]float64
+	searchRadius  int
+	craftItem     string // "" for stage 1; curriculum.ChainTableItem for 2/3; the goal item for 4/5.
+	mineTarget    string // only meaningful at stage 5 (ChainMine): the buried block to mine once craftItem is crafted.
+	exploreDepth  int    // MineBuriedExploreDepth for stage 5; ignored earlier.
+	exploreRadius int    // MineBuriedExploreRadius for stage 5; ignored earlier.
 }
 
 func (t chainTask) Name() string {
@@ -333,16 +337,17 @@ func (t chainTask) GoalDescription() string {
 }
 func (t chainTask) ToOverride() rlenv.TaskOverride {
 	return rlenv.TaskOverride{
-		GoToTargetDisabled:     false,
-		TargetOffset:           t.offset,
-		MineTargetBlock:        curriculum.ChainTreeBlock,
-		MineSearchRadius:       t.searchRadius,
-		CraftTargetItem:        t.craftItem,
-		ChainStage:             t.stage,
-		ChainMineTargetBlock:   t.mineTarget,
-		MineBuriedExploreDepth: t.exploreDepth,
-		CollectDrops:           true,
-		SeedAtGoal:             true,
+		GoToTargetDisabled:      false,
+		TargetOffset:            t.offset,
+		MineTargetBlock:         curriculum.ChainTreeBlock,
+		MineSearchRadius:        t.searchRadius,
+		CraftTargetItem:         t.craftItem,
+		ChainStage:              t.stage,
+		ChainMineTargetBlock:    t.mineTarget,
+		MineBuriedExploreDepth:  t.exploreDepth,
+		MineBuriedExploreRadius: t.exploreRadius,
+		CollectDrops:            true,
+		SeedAtGoal:              true,
 	}
 }
 
@@ -412,7 +417,7 @@ func (chainMineFactory) Draw(pool curriculum.Pool, rng *rand.Rand) Task {
 	offset := pool.ChainTargetOffsets[rng.IntN(len(pool.ChainTargetOffsets))]
 	item := pool.ChainGoalItems[rng.IntN(len(pool.ChainGoalItems))]
 	mineTarget := pool.ChainMineTargetBlocks[rng.IntN(len(pool.ChainMineTargetBlocks))]
-	return chainTask{stage: rlenv.ChainMine, offset: offset, searchRadius: pool.ChainSearchRadius, craftItem: item, mineTarget: mineTarget, exploreDepth: pool.MineBuriedExploreDepth}
+	return chainTask{stage: rlenv.ChainMine, offset: offset, searchRadius: pool.ChainSearchRadius, craftItem: item, mineTarget: mineTarget, exploreDepth: pool.MineBuriedExploreDepth, exploreRadius: pool.MineBuriedExploreRadius}
 }
 
 // equipTask poses equipping (and optionally using) a held/worn item.
