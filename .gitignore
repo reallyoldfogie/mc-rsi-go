@@ -36,6 +36,12 @@
 /runs/
 run.pid
 
+# Your own launch script - every real run's flag values (paths, ports,
+# safety-net thresholds) are specific to that run/experiment, and may be
+# worth keeping private beyond that too. start_trainer.sh.example is the
+# tracked starting point; copy it to start_trainer.sh and edit from there.
+/start_trainer.sh
+
 /bin
 *.log
 .worktrees

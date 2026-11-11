@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Template for launching a supervised mc-rsi-trainer run.
+#
+# Copy this to start_trainer.sh (gitignored - every real run's own flag
+# values are specific to that run/experiment, and may be worth keeping
+# private even beyond that: a server address, a path that reveals more
+# than you want committed, etc.) and fill in the placeholders below:
+#
+#   cp start_trainer.sh.example start_trainer.sh
+#   chmod +x start_trainer.sh
+#   # edit run_dir and the flags below for your own run, then:
+#   ./start_trainer.sh
+#
+# Every flag's full meaning, default, and interaction with the others is
+# documented at its own definition in cmd/rsi-train/main.go's flag.*Var
+# usage strings - run `./bin/rsi-train -h` to see all of them at once.
+# This template only covers the commonly-needed ones; more advanced
+# features (multi-environment training via -parallel-envs/-shared-server,
+# buried-ore template seeding via -seed-template-ore-*, teleport-based
+# episode resets via -auto-reset-origin/-clone-area-*) are documented the
+# same way - add them once you actually need them, rather than copying
+# every possible flag up front. See docs/getting-started.md for the
+# overall setup this assumes (a running mc-agent-compatible Minecraft
+# server with RCON enabled).
+#
+# This launches scripts/supervise-rsi-train.sh, which restarts rsi-train
+# on its own if the run exits unexpectedly, detached from this shell via
+# setsid/nohup so it survives the launching terminal closing. To stop a
+# run started this way: `kill -TERM "$(cat run.pid)"` (saves a checkpoint
+# first, rather than killing it outright). See docs/boot-time-autostart.md
+# if you also want this wired into systemd for boot-time auto-start.
+
+# Directory holding this run's own config files and outputs. See
+# docs/getting-started.md for what mc-agent-config.json (connection/RCON/
+# task settings) needs to contain; curriculum.json and trainer-config.json
+# are both optional (see the flags below).
+run_dir="runs/REPLACE-WITH-YOUR-RUN-NAME"
+
+SUPERVISE_PIDFILE=run.pid setsid nohup scripts/supervise-rsi-train.sh "$run_dir/train.log" \
+  ./bin/rsi-train \
+  -mc-agent-config "$run_dir/mc-agent-config.json" \
+  -checkpoint-dir "$run_dir/checkpoints/" \
+  `# Optional: per-episode task/goal sampling instead of -mc-agent-config's` \
+  `# single static task for the whole run. Omit this flag entirely if you` \
+  `# don't have a curriculum pool file.` \
+  -curriculum-config "$run_dir/curriculum.json" \
+  `# Optional: per-run architecture/learning-rate overrides (hidden size,` \
+  `# learning rate, entropy coefficient, etc). Omit to use main.go's own` \
+  `# built-in defaults instead.` \
+  -trainer-config "$run_dir/trainer-config.json" \
+  `# Depth for a brand-new generation-0 policy; irrelevant once` \
+  `# -checkpoint-dir already has a saved generation to resume from.` \
+  -hidden-layers 2 \
+  `# Episode safety nets: end a genuinely wedged episode (one that keeps` \
+  `# hitting the per-step timeout, or produces identical observations for` \
+  `# a long stretch) instead of letting it burn its whole step budget.` \
+  `# 0 disables either net; see each flag's own usage text for the units` \
+  `# (consecutive timed-out steps vs consecutive unchanged-observation` \
+  `# steps) and how they interact with env.step_timeout_seconds in your` \
+  `# mc-agent-config.json.` \
+  -max-step-timeouts 5 \
+  -stuck-timeout 300 \
+  `# Prometheus metrics port - see monitoring/README.md. Pick a different` \
+  `# one per concurrently-running run on the same machine.` \
+  -metrics-addr :9400 \
+  -eval-episodes 5 \
+  `# Save an interim checkpoint every N training epochs, not just every` \
+  `# generation; 0 disables interim checkpoints entirely.` \
+  -checkpoint-interval 10 &
