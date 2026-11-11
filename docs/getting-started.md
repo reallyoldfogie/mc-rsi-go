@@ -123,6 +123,15 @@ a fixed number of leapfrog rounds instead — useful for a first, short test run
 for every flag (how many PPO epochs the Student trains per round, how many episodes each side is
 evaluated over, how often interim checkpoints are saved, and so on).
 
+A real run quickly accumulates a long command line as you tune these — once that happens, pass
+`-run-config <path>` instead: a JSON file of `{"flag-name": value}` pairs applied as this command's
+own flag defaults before the real command line is parsed (a flag given directly on the command line
+always wins over the same key in the file). A key starting with `_` is ignored, which is this
+project's convention for documenting *why* a run picked a given value, since JSON itself has no
+comment syntax — see any existing `curriculum.json`/`trainer-config.json`'s own `"_comment"` field
+for the same convention. `start_trainer.sh.example` (copy it to `start_trainer.sh`, which is
+gitignored, and edit for your own run) uses this as its own launch pattern.
+
 It also serves live Prometheus metrics by default (`-metrics-addr`, default `:9400`) — see step 5,
 below, for a Grafana dashboard that graphs them instead of reading the log.
 

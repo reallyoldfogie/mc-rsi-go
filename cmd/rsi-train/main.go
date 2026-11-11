@@ -124,6 +124,15 @@ type flags struct {
 func parseFlags(args []string) (flags, error) {
 	fs := flag.NewFlagSet("rsi-train", flag.ContinueOnError)
 	f := flags{}
+	// -run-config itself is read separately, below, via scanRunConfigFlag
+	// - BEFORE fs.Parse(args) - so its effect (applyRunConfigFile calling
+	// fs.Set per key) lands before the real parse and a command-line flag
+	// can still override the same key. It's registered here as a no-op
+	// target (runConfigPath is never read again) purely so fs.Parse(args)
+	// itself doesn't reject -run-config as an unknown flag once it
+	// reaches it for real. See docs/plans/22-run-config-file.md.
+	var runConfigPath string
+	fs.StringVar(&runConfigPath, runConfigFlagName, "", "optional path to a JSON file of {\"flag-name\": value} pairs (literal flag names, without the leading '-') applied as this command's own flag defaults before the real command-line arguments are parsed - a flag given on the command line always wins over the same key in this file. A key starting with \"_\" is ignored (a documentation-only comment, matching curriculum.json's own \"_comment\" convention - JSON itself has no comment syntax). The key \"run-config\" is rejected if it appears inside the file (no recursion). See docs/plans/22-run-config-file.md.")
 	fs.StringVar(&f.checkpointDir, "checkpoint-dir", "", "directory to load the latest generation from (if any) and save new ones into (required)")
 	fs.BoolVar(&f.packetLogs, "packet-logs", false, "write each bot's packet/agent log to <checkpoint-dir>/packet-logs (roughly 15 GB a day with 7 bots; off by default)")
 	fs.StringVar(&f.mcAgentConfigPath, "mc-agent-config", "", "path to mc-agent's own config.Settings JSON file — connection, RCON, the rlenv task, replay recording (required)")
@@ -166,6 +175,15 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.sshRemoteRCONPort, "ssh-remote-rcon-port", sshtunnel.DefaultRCONPort, "remote RCON port reached through -ssh-target")
 	fs.IntVar(&f.sshLocalServerPort, "ssh-local-server-port", 0, "local Minecraft tunnel port; 0 chooses a free port")
 	fs.IntVar(&f.sshLocalRCONPort, "ssh-local-rcon-port", 0, "local RCON tunnel port; 0 chooses a free port")
+	runConfigFile, err := scanRunConfigFlag(args)
+	if err != nil {
+		return flags{}, fmt.Errorf("rsi-train: %w", err)
+	}
+	if runConfigFile != "" {
+		if err := applyRunConfigFile(fs, runConfigFile); err != nil {
+			return flags{}, fmt.Errorf("rsi-train: -%s: %w", runConfigFlagName, err)
+		}
+	}
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}

@@ -1,0 +1,27 @@
+{
+  "_comment": "Template for -run-config (docs/plans/22-run-config-file.md). Copy this to your own run's directory (e.g. runs/my-run/run-flags.json - everything under /runs/ is gitignored) and edit. Every flag's generic meaning/defaults/interactions is documented at its own definition in cmd/rsi-train/main.go (`./bin/rsi-train -h` prints every one of them, including many more advanced flags this template doesn't cover - add them here the same way once you actually need them). A key starting with '_' is ignored - use that for your own 'why this value' notes, the same way this file does; the key 'run-config' itself is rejected if it appears here (no recursion).",
+
+  "mc-agent-config": "runs/REPLACE-WITH-YOUR-RUN-NAME/mc-agent-config.json",
+  "checkpoint-dir": "runs/REPLACE-WITH-YOUR-RUN-NAME/checkpoints/",
+
+  "_comment_curriculum_config": "Optional: per-episode task/goal sampling instead of -mc-agent-config's single static task for the whole run. Delete this key entirely if you don't have a curriculum pool file.",
+  "curriculum-config": "runs/REPLACE-WITH-YOUR-RUN-NAME/curriculum.json",
+
+  "_comment_trainer_config": "Optional: per-run architecture/learning-rate overrides (hidden size, learning rate, entropy coefficient, etc). Delete this key to use main.go's own built-in defaults instead.",
+  "trainer-config": "runs/REPLACE-WITH-YOUR-RUN-NAME/trainer-config.json",
+
+  "_comment_hidden_layers": "Depth for a brand-new generation-0 policy; irrelevant once -checkpoint-dir already has a saved generation to resume from.",
+  "hidden-layers": 2,
+
+  "_comment_safety_nets": "End a genuinely wedged episode (one that keeps hitting the per-step timeout, or produces identical observations for a long stretch) instead of letting it burn its whole step budget. 0 disables either net; see each flag's own usage text for the units (consecutive timed-out steps vs. consecutive unchanged-observation steps) and how they interact with env.step_timeout_seconds in your mc-agent-config.json.",
+  "max-step-timeouts": 5,
+  "stuck-timeout": 300,
+
+  "_comment_metrics_addr": "Prometheus metrics port (see monitoring/README.md) - pick a different one per concurrently-running run on the same machine.",
+  "metrics-addr": ":9400",
+
+  "eval-episodes": 5,
+
+  "_comment_checkpoint_interval": "Save an interim checkpoint every N training epochs, not just every generation; 0 disables interim checkpoints entirely.",
+  "checkpoint-interval": 10
+}
