@@ -1,0 +1,35 @@
+# System-level systemd unit that fires start_trainer.sh once at boot.
+#
+# This is a TRIGGER, not a supervisor: it launches the existing detached
+# scripts/supervise-rsi-train.sh loop (via start_trainer.sh) and then exits.
+# All restart/backoff logic stays in that shell supervisor, not here - see
+# docs/boot-time-autostart.md for the full explanation, the reasoning behind
+# every setting below, and how to operate this day to day (checking whether
+# the run is actually still alive, stopping it, re-enabling it, etc.).
+#
+# Install (requires root):
+#   sudo cp scripts/systemd/mc-rsi-trainer.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable mc-rsi-trainer.service
+#
+# This file is the tracked source of truth; the installed copy under
+# /etc/systemd/system/ is NOT itself version-controlled, so re-run the copy
+# step above after editing this file.
+
+[Unit]
+Description=mc-rsi-trainer: boot-time trigger for the supervised training run
+Documentation=file:///home/reallyoldfogie/src/github.com/reallyoldfogie/mc-rsi-trainer/docs/boot-time-autostart.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=reallyoldfogie
+Group=reallyoldfogie
+WorkingDirectory=/home/reallyoldfogie/src/github.com/reallyoldfogie/mc-rsi-trainer
+ExecStartPre=/home/reallyoldfogie/src/github.com/reallyoldfogie/mc-rsi-trainer/scripts/wait-for-mc-server.sh
+ExecStart=/usr/bin/bash start_trainer.sh
+
+[Install]
+WantedBy=multi-user.target
