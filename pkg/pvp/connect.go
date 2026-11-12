@@ -73,6 +73,7 @@ func ConnectManagedParticipant(ctx context.Context, p Participant, settings mcco
 		Address:          conn.Address,
 		Version:          version,
 		Auth:             auth,
+		Authenticated:    !conn.Offline,
 		MCDataGenPath:    conn.MCDataGenPath,
 		MCProtocolGoPath: conn.MCProtocolGoPath,
 		StopFilePath:     ".agentStop-pvp-" + auth.Name,

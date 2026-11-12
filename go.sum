@@ -80,6 +80,8 @@ github.com/reallyoldfogie/cRL-go v0.16.0 h1:wzHslsH7JYlz43PRdssFaaitz4inqUhbzc9m
 github.com/reallyoldfogie/cRL-go v0.16.0/go.mod h1:qirLO/t/yHDS8MhMbs7qAOJBiEU8vBcuRJyix+X30Tc=
 github.com/reallyoldfogie/mc-agent v0.0.86 h1:E8QaTIBJpe9hvgN4yjMCYZCFPt+qq3LK5IGKX/uUYJ8=
 github.com/reallyoldfogie/mc-agent v0.0.86/go.mod h1:z2osYIPllbewSeV3b3wRPCBfxhVYBeC1or2Y9tlFRdQ=
+github.com/reallyoldfogie/mc-agent v0.0.87 h1:wdd0Mct2/e+zQ5z1bYVTgSVQsI3wl7EgeB6gOKHb0Xs=
+github.com/reallyoldfogie/mc-agent v0.0.87/go.mod h1:z2osYIPllbewSeV3b3wRPCBfxhVYBeC1or2Y9tlFRdQ=
 github.com/reallyoldfogie/mc-bot-go v0.2.7 h1:LIu4/evPOMCu9699EO2SmAk7/v9Wgy64C7bGPY3eX/0=
 github.com/reallyoldfogie/mc-bot-go v0.2.7/go.mod h1:a1PEyOa8tw4vgLPQHSKKYUkQmyxNV5Btdt9e+UVuDgA=
 github.com/reallyoldfogie/mc-client-test-go v0.2.0 h1:r1btx7WirLAc/T6eLnjgFUgnTXVwOAX0ayYRlEOO7Ag=

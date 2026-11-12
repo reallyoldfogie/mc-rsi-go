@@ -351,6 +351,7 @@ func connectAgent(ctx context.Context, settings mcconfig.Settings) (models.Agent
 		Address:          conn.Address,
 		Version:          version,
 		Auth:             auth,
+		Authenticated:    !conn.Offline,
 		MCDataGenPath:    conn.MCDataGenPath,
 		MCProtocolGoPath: conn.MCProtocolGoPath,
 		StopFilePath:     ".agentStop-infer",

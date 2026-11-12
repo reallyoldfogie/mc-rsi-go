@@ -2731,6 +2731,7 @@ func connectAgent(ctx context.Context, settings mcconfig.Settings, instanceSuffi
 		Address:          conn.Address,
 		Version:          version,
 		Auth:             auth,
+		Authenticated:    !conn.Offline,
 		MCDataGenPath:    conn.MCDataGenPath,
 		MCProtocolGoPath: conn.MCProtocolGoPath,
 		StopFilePath:     ".agentStop" + instanceSuffix,
