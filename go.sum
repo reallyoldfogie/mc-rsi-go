@@ -78,6 +78,8 @@ github.com/prometheus/procfs v0.21.1 h1:GljZCt+zSTS+NZq88cyQ1LjZ+RCHp3uVuabBWA5+
 github.com/prometheus/procfs v0.21.1/go.mod h1:aB55Cww9pdSJVHk0hUf0inxWyyjPogFIjmHKYgMKmtY=
 github.com/reallyoldfogie/cRL-go v0.16.0 h1:wzHslsH7JYlz43PRdssFaaitz4inqUhbzc9mfxKsLmY=
 github.com/reallyoldfogie/cRL-go v0.16.0/go.mod h1:qirLO/t/yHDS8MhMbs7qAOJBiEU8vBcuRJyix+X30Tc=
+github.com/reallyoldfogie/cRL-go v0.17.0 h1:gJB/mWbtdv2e+CRYun2mkbvEYILbB9KL70OC+CCjxho=
+github.com/reallyoldfogie/cRL-go v0.17.0/go.mod h1:MaE+yhsmb2wiiPmIagUvoHqgInN+JHtU5ZeE5+YKzxI=
 github.com/reallyoldfogie/mc-agent v0.0.86 h1:E8QaTIBJpe9hvgN4yjMCYZCFPt+qq3LK5IGKX/uUYJ8=
 github.com/reallyoldfogie/mc-agent v0.0.86/go.mod h1:z2osYIPllbewSeV3b3wRPCBfxhVYBeC1or2Y9tlFRdQ=
 github.com/reallyoldfogie/mc-agent v0.0.87 h1:wdd0Mct2/e+zQ5z1bYVTgSVQsI3wl7EgeB6gOKHb0Xs=

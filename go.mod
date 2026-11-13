@@ -11,7 +11,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/moby/moby/client v0.2.1
 	github.com/prometheus/client_golang v1.24.0
-	github.com/reallyoldfogie/cRL-go v0.16.0
+	github.com/reallyoldfogie/cRL-go v0.17.0
 	github.com/reallyoldfogie/mc-agent v0.0.87
 	github.com/reallyoldfogie/mc-bot-go v0.2.7
 	github.com/reallyoldfogie/mc-client-test-go v0.2.0
@@ -67,11 +67,3 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-// TEMPORARY, for docs/plans/23-ONNX-support.md Phase 4 development only:
-// points at cRL-go's own 23-onnx-support worktree/branch so this branch
-// can use pkg/onnx/pkg/onnxexport/pkg/onnxinfer before they're tagged.
-// Remove this line (and bump the require above to the real tag) once
-// cRL-go's 23-onnx-support branch is merged and tagged — see README.md's
-// "ONNX support" section for why.
-replace github.com/reallyoldfogie/cRL-go => ../../../cRL-go/.worktrees/23-onnx-support
