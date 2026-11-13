@@ -67,3 +67,11 @@ require (
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// TEMPORARY, for docs/plans/23-ONNX-support.md Phase 4 development only:
+// points at cRL-go's own 23-onnx-support worktree/branch so this branch
+// can use pkg/onnx/pkg/onnxexport/pkg/onnxinfer before they're tagged.
+// Remove this line (and bump the require above to the real tag) once
+// cRL-go's 23-onnx-support branch is merged and tagged — see README.md's
+// "ONNX support" section for why.
+replace github.com/reallyoldfogie/cRL-go => ../../../cRL-go/.worktrees/23-onnx-support
