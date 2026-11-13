@@ -113,6 +113,7 @@ type flags struct {
 	curriculumConfigPath                  string
 	metricsAddr                           string
 	hiddenLayers                          int
+	onnxExportEachGeneration              bool
 	competitionConfigPath                 string
 	sshTarget                             string
 	sshRemoteServerPort                   int
@@ -169,6 +170,7 @@ func parseFlags(args []string) (flags, error) {
 	fs.StringVar(&f.curriculumConfigPath, "curriculum-config", "", "optional path to a pkg/curriculum pool JSON file (target_offsets/mine_target_blocks/mine_search_radius/craft_target_items) — if set, each environment's Config.TaskSelector picks a fresh task+goal every episode (pkg/curriculum/rlenvadapter.Select) instead of -mc-agent-config's single static env.target_offset/mine/craft settings for the whole run. Unset preserves that static-Config behavior exactly.")
 	fs.StringVar(&f.metricsAddr, "metrics-addr", ":9400", "address to serve Prometheus metrics on (see monitoring/README.md); empty disables the metrics server entirely")
 	fs.IntVar(&f.hiddenLayers, "hidden-layers", 2, "number of hidden layers in a freshly-created generation-0 policy network (docs/plans/20-configurable-depth-step-memory-and-dynamic-architecture.md Part A); only used when -checkpoint-dir has no existing generation to resume — an existing checkpoint's own depth always wins, whatever this flag says, including one produced by cmd/deepen-checkpoint with a depth other than 2. 2 is the default this repo has always used.")
+	fs.BoolVar(&f.onnxExportEachGeneration, "onnx-export-each-generation", false, "alongside every generation this run saves via lineage.Save (a round win, or the periodic defensive re-save), also export it as model.onnx+manifest.json (pkg/onnxmanifest's format, same as cmd/onnx-export) under <checkpoint-dir>/onnx/generation-<N>/ — see docs/plans/23-ONNX-support.md. An export failure is logged but never stops training; the native checkpoint remains the only thing a run actually depends on to resume. false (the default) preserves existing behavior unchanged. Does not cover architecture-competition mode (-competition-config) or the one-time generation-0/warm-start bootstrap save — only the ongoing per-round saves.")
 	fs.StringVar(&f.competitionConfigPath, "competition-config", "", "run configuration-driven architecture competition mode from this JSON file; when set, -checkpoint-dir and -mc-agent-config are taken from the competition config")
 	fs.StringVar(&f.sshTarget, "ssh-target", "", "open an SSH-managed tunnel to user@host (or ssh://user@host), forwarding the remote Minecraft and RCON ports for this run")
 	fs.IntVar(&f.sshRemoteServerPort, "ssh-remote-server-port", sshtunnel.DefaultMinecraftPort, "remote Minecraft port reached through -ssh-target")
@@ -338,7 +340,7 @@ func run(args []string) error {
 		curriculumPool = &pool
 	}
 
-	exporter := newCheckpointExporter(f.checkpointDir)
+	exporter := newCheckpointExporter(f.checkpointDir, f.onnxExportEachGeneration)
 	envCountReq := newEnvCountRequest()
 	restartReq := newRestartRequest()
 	envConfirmer := newParallelEnvsConfirmer(f.checkpointDir)
@@ -589,7 +591,7 @@ func run(args []string) error {
 				// the next win. Found live: an accidental `rm` of the whole
 				// checkpoint dir, mid-round, with the next restart's fate
 				// resting entirely on the round finishing first.
-				if err := lineage.Save(f.checkpointDir, teacherParams, rec, lineage.PlainCodec); err != nil {
+				if err := savePlainGeneration(f.checkpointDir, teacherParams, rec, f.onnxExportEachGeneration); err != nil {
 					log.Printf("  re-saving generation %d checkpoint: %v", rec.Generation, err)
 				}
 			}
@@ -776,7 +778,7 @@ func run(args []string) error {
 				EnvironmentID:        environmentID,
 				Metadata:             progress,
 			}
-			if err := lineage.Save(f.checkpointDir, result.StudentParams, rec, lineage.PlainCodec); err != nil {
+			if err := savePlainGeneration(f.checkpointDir, result.StudentParams, rec, f.onnxExportEachGeneration); err != nil {
 				return fmt.Errorf("round %d: saving generation %d: %w", round, rec.Generation, err)
 			}
 			teacherParams = result.StudentParams
@@ -1672,7 +1674,7 @@ func runRecurrentRounds(ctx context.Context, stop context.CancelFunc, f flags, t
 				Metadata:             progress,
 				Recurrent:            true,
 			}
-			if err := lineage.Save(f.checkpointDir, result.StudentParams, rec, lineage.RecurrentCodec); err != nil {
+			if err := saveRecurrentGeneration(f.checkpointDir, result.StudentParams, rec, f.onnxExportEachGeneration); err != nil {
 				return fmt.Errorf("round %d: saving generation %d: %w", round, rec.Generation, err)
 			}
 			teacherParams = result.StudentParams

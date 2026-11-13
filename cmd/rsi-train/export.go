@@ -25,7 +25,8 @@ import (
 // lets an operator force that save at the moment they notice, rather than
 // hope one of those two triggers comes first.
 type checkpointExporter struct {
-	dir string
+	dir        string
+	exportONNX bool
 
 	mu                        sync.Mutex
 	teacherParams             *actorcritic.Params
@@ -42,8 +43,8 @@ type checkpointExporter struct {
 	recurrentStudentParentGen int
 }
 
-func newCheckpointExporter(dir string) *checkpointExporter {
-	return &checkpointExporter{dir: dir}
+func newCheckpointExporter(dir string, exportONNX bool) *checkpointExporter {
+	return &checkpointExporter{dir: dir, exportONNX: exportONNX}
 }
 
 // setTeacher records the generation currently being trained against -
@@ -111,7 +112,7 @@ func (e *checkpointExporter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if teacherParams != nil {
-		if err := lineage.Save(e.dir, teacherParams, teacherRec, lineage.PlainCodec); err != nil {
+		if err := savePlainGeneration(e.dir, teacherParams, teacherRec, e.exportONNX); err != nil {
 			result.Error = fmt.Sprintf("saving generation %d: %v", teacherRec.Generation, err)
 			respondJSON(w, http.StatusInternalServerError, result)
 			return
@@ -119,7 +120,7 @@ func (e *checkpointExporter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		result.Teacher = fmt.Sprintf("generation %d re-saved under %s", teacherRec.Generation, e.dir)
 	}
 	if recurrentTeacherParams != nil {
-		if err := lineage.Save(e.dir, recurrentTeacherParams, recurrentTeacherRec, lineage.RecurrentCodec); err != nil {
+		if err := saveRecurrentGeneration(e.dir, recurrentTeacherParams, recurrentTeacherRec, e.exportONNX); err != nil {
 			result.Error = fmt.Sprintf("saving recurrent generation %d: %v", recurrentTeacherRec.Generation, err)
 			respondJSON(w, http.StatusInternalServerError, result)
 			return
