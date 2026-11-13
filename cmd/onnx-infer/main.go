@@ -40,6 +40,7 @@ import (
 	rofutils "github.com/reallyoldfogie/mc-bot-go/utils"
 
 	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/onnxmanifest"
+	"github.com/reallyoldfogie/mc-rsi-trainer/pkg/sshtunnel"
 )
 
 func main() {
@@ -54,6 +55,12 @@ type flags struct {
 	episodes          int
 	episodeLen        int
 	greedy            bool
+
+	sshTarget           string
+	sshRemoteServerPort int
+	sshRemoteRCONPort   int
+	sshLocalServerPort  int
+	sshLocalRCONPort    int
 }
 
 func parseFlags(args []string) (flags, error) {
@@ -64,6 +71,11 @@ func parseFlags(args []string) (flags, error) {
 	fs.IntVar(&f.episodes, "episodes", 0, "number of episodes to run, then exit; 0 runs until interrupted (Ctrl+C)")
 	fs.IntVar(&f.episodeLen, "episode-len", 200, "max steps per episode, matching rsi-train's -eval-episode-len default")
 	fs.BoolVar(&f.greedy, "greedy", true, "act on the policy's highest-probability action every step (matches rsi-train's own evaluation behavior); false samples from the policy's distribution instead")
+	fs.StringVar(&f.sshTarget, "ssh-target", "", "open an SSH-managed tunnel to user@host (or ssh://user@host), forwarding the remote Minecraft and RCON ports for this run — same flag/behavior as cmd/rsi-train's own -ssh-target")
+	fs.IntVar(&f.sshRemoteServerPort, "ssh-remote-server-port", sshtunnel.DefaultMinecraftPort, "remote Minecraft port reached through -ssh-target")
+	fs.IntVar(&f.sshRemoteRCONPort, "ssh-remote-rcon-port", sshtunnel.DefaultRCONPort, "remote RCON port reached through -ssh-target")
+	fs.IntVar(&f.sshLocalServerPort, "ssh-local-server-port", 0, "local Minecraft tunnel port; 0 chooses a free port")
+	fs.IntVar(&f.sshLocalRCONPort, "ssh-local-rcon-port", 0, "local RCON tunnel port; 0 chooses a free port")
 	if err := fs.Parse(args); err != nil {
 		return flags{}, err
 	}
@@ -79,6 +91,14 @@ func parseFlags(args []string) (flags, error) {
 	}
 	if f.episodeLen <= 0 {
 		return flags{}, fmt.Errorf("onnx-infer: -episode-len must be positive, got %d", f.episodeLen)
+	}
+	if f.sshTarget != "" {
+		if f.sshRemoteServerPort <= 0 || f.sshRemoteRCONPort <= 0 || f.sshLocalServerPort < 0 || f.sshLocalRCONPort < 0 {
+			return flags{}, fmt.Errorf("onnx-infer: SSH tunnel ports must be positive remotely and non-negative locally")
+		}
+		if f.sshLocalServerPort != 0 && f.sshLocalServerPort == f.sshLocalRCONPort {
+			return flags{}, fmt.Errorf("onnx-infer: SSH local Minecraft and RCON ports must differ")
+		}
 	}
 	return f, nil
 }
@@ -106,6 +126,21 @@ func run(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	if f.sshTarget != "" {
+		tunnel, err := sshtunnel.Start(ctx, sshtunnel.Config{
+			Target: f.sshTarget, RemoteServerPort: f.sshRemoteServerPort,
+			RemoteRCONPort: f.sshRemoteRCONPort, LocalServerPort: f.sshLocalServerPort,
+			LocalRCONPort: f.sshLocalRCONPort,
+		})
+		if err != nil {
+			return err
+		}
+		defer tunnel.Close()
+		mcSettings.Connection.Address = tunnel.MinecraftAddress()
+		mcSettings.RCON.Address = tunnel.RCONAddress()
+		log.Printf("SSH tunnel active: Minecraft=%s RCON=%s", mcSettings.Connection.Address, mcSettings.RCON.Address)
+	}
 
 	a, err := connectAgent(ctx, mcSettings)
 	if err != nil {
